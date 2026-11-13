@@ -446,24 +446,44 @@ every checked operation checked.
     for values that are not words, the registers of the constants the body uses (filled
     when it starts), and the temporaries. A local whose address is taken is reached
     through it, as memory is.
-  - *Common shapes* have instructions of their own: compare-and-branch, arithmetic and
-    shifts on 64- and 32-bit integers without the general operators, an element of a
-    slice read or written in one step, a loop's back edge that also lets other threads
-    run.
+  - *Two forms of an instruction.* `vm_compile.gm` produces instructions that say
+    everything (`Ins`: the types of the operands, the node to blame for a trap). For
+    each, `vm_assemble` (`bc.gm`) picks a 16-byte form (`Bc`) that the loop dispatches
+    on: its operation is specialized on what `Ins` holds as data (the width and
+    signedness of an integer, the size of a load, the kind of comparison), its operands
+    are at most three registers or small constants, and it does only the common case.
+    When that case does not apply (an overflow, an access outside an allocation, an
+    index out of bounds), or for an instruction without such a form, the loop runs the
+    instruction from its `Ins` (`vm_free`, or `vm_framed` for the ones that need the
+    frame), which does every case and raises the traps. The two lists have the same
+    indices, so jump targets are shared.
   - *Scratch memory* that the tree's buffers come from is marked and released only
     around statements and loops that contain the tree's instructions.
   - *Size.* The loop's C must stay below the size at which the C back end has Clang
-    compile a function without optimization (`GM_LONG_FN`): the rarely hot instructions
-    run in a function of their own (`vm_slow`) and fast paths are `#inline` functions.
+    compile a function without optimization (`GM_LONG_FN`): its arms are a few
+    operations each, and the loop keeps only the registers, the instructions and the
+    index of the current one in variables of its own, so that the C compiler holds them
+    in machine registers. Everything else about the body that is running is in its
+    record (`CallRec`).
 
   A `break` or `continue` that a subtree raises to a loop of the machine jumps to it;
   other flows leave the body as they would leave the tree's.
-  - *Calls.* A call of a function whose body the machine runs, with its parameters in
-    the frame's storage, takes a short path: the arguments go from registers and slots
-    straight to the callee's storage (taken from scratch memory), its frame comes from a
-    pool of finished frames, and the result goes straight to the caller's register or
-    slot. Other calls (through fibers, threads, parameters with addresses) go the general
-    way.
+  - *Calls* stay in the loop: a call does not run the loop again on the host stack. The
+    callee's storage and its record are taken from scratch memory, the arguments go from
+    registers and slots straight to that storage, and a return steps back to the caller's
+    record. This holds for direct calls, for function values, and for the clauses of
+    handler literals and handler declarations that an operation runs (so a `for` over an
+    iterator runs its body in the loop too). A body in which no instruction needs a
+    frame (no deferred statement, no handler installed, no closure made, nothing left to
+    the tree evaluator) runs without a frame object: a local whose address is taken
+    keeps the address of its memory in a register of its own, and the frame a nested
+    function captures is reached through another. A direct call of such a body uses a
+    *site* worked out when the call first runs (where each argument goes, the size of
+    the storage, where the result goes). A body that needs a frame gets one from the
+    pool when it is called, and its deferred statements, handlers and temporaries end
+    when it returns or a flow leaves it (`vm_ret`, `vm_raise`), exactly as for a call
+    made the general way (`enter`): through fibers, with several threads, or from the
+    tree evaluator.
   - *Handler contexts.* The machine keeps the current handler context: a `with` records
     it, installs its handlers on top, and goes back to it when left, by its end, by a
     `break` out of it (from its body or from a clause), by a jump out of a loop around it,
@@ -477,7 +497,10 @@ every checked operation checked.
   in its frame's part of that memory; the others get an allocation of their own.
 - **Memory** (`memory.gm`) is a flat address space in which every allocation gets fresh
   addresses and freed ones are remembered, so out-of-bounds, use-after-free, null, misaligned
-  and read-only accesses trap with a message that says which.
+  and read-only accesses trap with a message that says which. The space is handed out in
+  pages of 4096 addresses, each divided into slots of one power-of-two size holding one
+  allocation (a large allocation has pages of its own), so the allocation of an address
+  is found by its page and a shift, in constant time whatever the number of allocations.
 - **Control flow** leaves expressions as a `Flow` error; a `break` or `return` first writes
   its value where the loop, `with` or call it leaves puts its result. Blocks run their
   `defer` and `errdefer` statements on the way.

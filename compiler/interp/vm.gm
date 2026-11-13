@@ -1472,9 +1472,9 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
 vm_call :: fn(m: ^Machine, cx: u32, caller: ^const Code, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
     marker: u8 = 0
-    code := info.vm else return m.vm_invoke(cx, caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
+    code := info.vm else return m.vm_invoke(caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
     if info.addressed_params or args.len is not info.params.len or info.cost > sema.MAX_FRAME or m.depth >= MAX_DEPTH or (&marker).addr() < m.stack_floor or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 {
-        return m.vm_invoke(cx, caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
+        return m.vm_invoke(caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
     }
     mk := m.mark()
     store := m.tmp(info.frame_size)
@@ -1567,14 +1567,14 @@ vm_call_value :: fn(m: ^Machine, cx: u32, caller: ^const Code, at: u32, callee: 
             node := m.ctxs.items[us(k)]
             ctx = m.push_ctx(ctx, node.effect_, node.installed, node.with_frame, node.with_label, node.with_fr)
         }
-        r := m.vm_invoke(cx, caller, f, env, ctx, null, false, null, args, dst, n, regs, ret)
+        r := m.vm_invoke(caller, f, env, ctx, null, false, null, args, dst, n, regs, ret)
         m.pop_ctx(ctx, base)
         return r
     }
     addr := m.ptr_of(cv)
     if addr is 0 { return !m.trap(n.span, "call through a null function pointer") }
     f := m.fn_from_addr(addr) else return !m.trap(n.span, str.format("call through an invalid function pointer {:#x}", addr)!)
-    return m.vm_invoke(cx, caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
+    return m.vm_invoke(caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
 }
 
 /// Performs the operation of `n` (a `Perform`) with the arguments `args`, as `perform`
@@ -1592,11 +1592,11 @@ vm_perform :: fn(m: ^Machine, cx: u32, caller: ^const Code, args: []Arg, dst: De
         installing: ?(frame: ^Frame, label: u32) = null
         if fr := node.with_fr { installing = (frame: fr, label: node.with_label) }
         match node.installed {
-            .Lit(h, ?env, lcx) => return m.vm_invoke(cx, caller, m.p.handler_lit(h).clauses[us(x.op)], env, lcx, installing, true, null, args, dst, n, regs, ret)
+            .Lit(h, ?env, lcx) => return m.vm_invoke(caller, m.p.handler_lit(h).clauses[us(x.op)], env, lcx, installing, true, null, args, dst, n, regs, ret)
             .Decl(decls, value, outer) => for d in decls {
                 info := m.p.handler_decl(d)
                 if info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0 { continue }
-                return m.vm_invoke(cx, caller, info.clauses[us(x.op)], null, outer, installing, false, value, args, dst, n, regs, ret)
+                return m.vm_invoke(caller, info.clauses[us(x.op)], null, outer, installing, false, value, args, dst, n, regs, ret)
             }
             .Native(_) => {}
         }
@@ -1672,10 +1672,10 @@ vm_builtin :: fn(m: ^Machine, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, re
 MAX_BUILTIN_ARGS: usize : 6
 
 /// Calls `f` (capturing `env`, in context `cx`, a clause of the `with` `installing` if any)
-/// with the arguments `args` of the body `caller` in context `from`, after the handler
+/// with the arguments `args` of the body `caller`, after the handler
 /// value `self_` for a clause of a handler declaration; its result goes to `dst` (`ret` is
 /// the caller's own result).
-vm_invoke :: fn(m: ^Machine, from: u32, caller: ^const Code, f: u32, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, self_: ?[]u8, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+vm_invoke :: fn(m: ^Machine, caller: ^const Code, f: u32, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, self_: ?[]u8, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
     body := info.body else return m.call_missing(n.span, f)
     first: usize = if self_ is null { 0 } else { 1 }

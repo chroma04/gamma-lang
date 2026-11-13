@@ -20,6 +20,16 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **A faster interpreter.** `gamma run --backend=interp`, `gamma repl` and the web
+  playground run programs two to four times faster. The register machine now dispatches on
+  compact instructions specialized for their operand types, makes every call of a compiled
+  function inside its loop instead of recursing on the host stack (calls of handler
+  clauses and function values included, so iterating with `for` is much cheaper), needs no
+  frame object for functions without `defer`, handlers or closures, and compiles more of
+  the language itself: copies of structs, `try`, unwraps, assertions, slices, division,
+  shifts, pointer casts and most builtins. Finding the allocation of an address takes
+  constant time. Checked builds of every program also drop the repeated stack probe of
+  `#inline` functions.
 - **One wording for operating-system errors.** Every command describes a failed file,
   directory or process operation with the same table; errors it does not name get the
   system's own message (on Windows its native text) instead of a generic "input/output

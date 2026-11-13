@@ -244,10 +244,6 @@ Move :: struct {
 /// The `CallRec.ret_reg` of a call whose result goes elsewhere than to a register.
 NO_REG: u32 : 0xFFFF_FFFF
 
-/// The storage of a frame as bytes.
-#inline
-fbytes :: fn(regs: [^]u64) -> [^]u8 => regs.cast([^]u8)
-
 /// The little-endian word of 1, 2, 4 or 8 bytes at `p`.
 #inline
 ld1 :: fn(p: [^]const u8) -> u64 => u64(p[0])
@@ -315,6 +311,9 @@ log2 :: fn(v: u32) -> u8 {
     return k
 }
 
+/// The operation of `+`, `-` or `*` (`op` 0, 1, 2) among `add`, `sub` and `mul`.
+pick :: fn(op: u8, add: BcOp, sub: BcOp, mul: BcOp) -> BcOp => if op is 0 { add } else if op is 1 { sub } else { mul }
+
 bc_free :: fn() -> Bc => Bc(op: .Free, f: 0, w: 0, a: 0, b: 0, c: 0)
 
 bc3 :: fn(op: BcOp, a: u32, b: u32, c: u32) -> Bc => Bc(op: op, f: 0, w: 0, a: a, b: b, c: c)
@@ -348,23 +347,11 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
         .Const(r, v) => return bc3(.K, r, (v & 0xFFFF_FFFF).trunc(u32), (v >> 32).trunc(u32))
         .Mov(r, x) => return bc3(.Mov, r, x, 0)
         .Arith64(x) => {
-            op: BcOp = if x.wrap {
-                if x.op is 0 { .AddW } else if x.op is 1 { .SubW } else { .MulW }
-            } else if x.signed {
-                if x.op is 0 { .AddI } else if x.op is 1 { .SubI } else { .MulI }
-            } else {
-                if x.op is 0 { .AddU } else if x.op is 1 { .SubU } else { .MulU }
-            }
+            op := if x.wrap { pick(x.op, .AddW, .SubW, .MulW) } else if x.signed { pick(x.op, .AddI, .SubI, .MulI) } else { pick(x.op, .AddU, .SubU, .MulU) }
             return bc3(op, x.r, x.a, x.b)
         }
         .Arith32(x) => {
-            op: BcOp = if x.wrap {
-                if x.op is 0 { .AddM } else if x.op is 1 { .SubM } else { .MulM }
-            } else if x.signed {
-                if x.op is 0 { .AddS } else if x.op is 1 { .SubS } else { .MulS }
-            } else {
-                if x.op is 0 { .AddN } else if x.op is 1 { .SubN } else { .MulN }
-            }
+            op := if x.wrap { pick(x.op, .AddM, .SubM, .MulM) } else if x.signed { pick(x.op, .AddS, .SubS, .MulS) } else { pick(x.op, .AddN, .SubN, .MulN) }
             return Bc(op: op, f: 0, w: x.bits.trunc(u16), a: x.r, b: x.a, c: x.b)
         }
         .FloatOp(x) => {
