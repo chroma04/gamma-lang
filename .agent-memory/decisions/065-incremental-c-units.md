@@ -57,6 +57,11 @@ D. Measure: edit one compiler file → count recompiled units / wall; docs (arch
 - Flake seen once at -j 4: conformance/run/std_process "core module `complex` does not
   declare" (known memory-pressure flake, gotchas/environment.md); passes alone.
 
+- CI difftest failure (PR #122): concurrent builds sharing one cache (difftest: 200
+  programs × gcc,clang > KEPT_UNITS) — prune deleted objects another build had just found
+  → "clang: no such file …unit-….o". Fix: `units_to_prune` never removes objects used in
+  the last day (hits older than a day are touched). Verified seeds 3200..3400 locally.
+
 ## Not done / ideas
 - Unit 0 (all data) recompiles on every new string literal (~2 s): split data by owner.
 - Cold build is CPU-bound (370 cc processes); merging tiny units would cut process

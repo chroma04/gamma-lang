@@ -12,6 +12,7 @@
 //! Concurrent builds may compile the same object at once: each writes a file of its own and
 //! renames it into place, so a reader never sees a partial object.
 
+arena :: import "std/arena"
 cgen :: import "../cgen"
 fs :: import "std/fs"
 load :: import "../load"
@@ -220,12 +221,42 @@ prune_units :: fn(dir: string) needs Alloc + Clock + Fs {
         }
         if e.name.ends_with(".o") { objs.push(CachedProgram(modified: info.modified, path: p))! }
     }
-    if objs.items.len <= KEPT_UNITS { return }
-    objs.items.sort_by(fn(a, b: ^const CachedProgram) -> bool => a.modified < b.modified or (a.modified is b.modified and a.path < b.path))
-    for i in 0..(objs.items.len - KEPT_UNITS) {
-        o := objs.items[i].path
+    for o in units_to_prune(objs.items, now) {
         _ = Fs.remove(o)
         _ = Fs.remove(str.format("{}.c", o[0..o.len - 2])!)
+    }
+}
+
+/// The unit objects of `objs` beyond the `KEPT_UNITS` most recently used, at time `now`.
+/// An object used in the last day is never among them, however many there are: builds
+/// running at the same time share the cache, and one may be about to link an object it
+/// found there (a build marks an object it uses when the object is older than a day, see
+/// `unit_objects`).
+units_to_prune :: fn(objs: []CachedProgram, now: i64) -> []const string needs Alloc {
+    out := list(string)
+    if objs.len <= KEPT_UNITS { return out.items }
+    objs.sort_by(fn(a, b: ^const CachedProgram) -> bool => a.modified < b.modified or (a.modified is b.modified and a.path < b.path))
+    recent := now - 86400 * NS_PER_SECOND
+    for i in 0..(objs.len - KEPT_UNITS) {
+        if objs[i].modified >= recent { break }
+        out.push(objs[i].path)!
+    }
+    return out.items
+}
+
+test "unit objects used in the last day are kept" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        now: i64 = 10 * 86400 * NS_PER_SECOND
+        objs := list(CachedProgram)
+        // Two objects more than are kept: an old one, and the rest used just now.
+        objs.push(CachedProgram(modified: 0, path: "old.o"))!
+        for i in 0..(KEPT_UNITS + 1) { objs.push(CachedProgram(modified: now - i64(i), path: "new.o"))! }
+        pruned := units_to_prune(objs.items, now)
+        expect_eq(pruned.len, 1)
+        expect_eq(pruned[0], "old.o")
+        expect_eq(units_to_prune(objs.items[0..KEPT_UNITS], now).len, 0)
     }
 }
 
