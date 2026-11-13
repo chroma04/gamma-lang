@@ -1,6 +1,7 @@
 # Gamma implementation — agent memory INDEX (read first)
 
 ## State (2026-11-13) — PRs #1–#122 merged, v0.1.0 + rust-reference-final tagged
+- s69: Windows CI flake fixed (cache renames over open files; gotchas/environment.md).
 - s68 (#122): INCREMENTAL NATIVE BUILDS (decisions/065):
   stable C names (cgen/names.gm: gm_f_<name>_<hash>, content/key-named data and types),
   split by source file with per-unit pruned headers (units.gm split_by_file), unit

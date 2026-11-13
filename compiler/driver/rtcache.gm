@@ -86,10 +86,15 @@ private_name :: fn(dir, stem, ext: string) -> string needs Alloc + Rand {
     return load.join(dir, str.format("{}.tmp-{}.{}", stem, pkg.hex(r[..]), ext)!)
 }
 
-/// Renames `from` to `to` (replacing it), removing `from` if that fails. `null` if it fails.
+/// Renames `from` to `to` (replacing it), removing `from` if that fails. Every file of the
+/// cache is named after its contents, so when the rename fails but `to` exists, a concurrent
+/// build has put the same file there and that is success: Windows cannot replace a file
+/// that another process has open (an object being linked, an executable running). `null`
+/// if there is no `to`.
 rename_or_remove :: fn(from, to: string) -> ?() needs Fs {
     Fs.rename(from, to) else {
         _ = Fs.remove(from)
+        if load.is_file(to) { return () }
         return null
     }
     return ()
@@ -191,7 +196,12 @@ unit_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, sources: []c
             for o in todo_tmp.items { _ = Fs.remove(o) }
             return .Failed
         }
-        for i, tmp in enumerate(todo_tmp.items) { rename_or_remove(tmp, todo_obj.items[i]) else return .Failed }
+        for i, tmp in enumerate(todo_tmp.items) {
+            rename_or_remove(tmp, todo_obj.items[i]) else {
+                eprint("gamma: cannot put {} in the cache\n", todo_obj.items[i])
+                return .Failed
+            }
+        }
         prune_units(dir)
     }
     return .Objects(objects.items)
@@ -258,6 +268,18 @@ test "unit objects used in the last day are kept" {
         expect_eq(pruned[0], "old.o")
         expect_eq(units_to_prune(objs.items[0..KEPT_UNITS], now).len, 0)
     }
+}
+
+test "a cached file that cannot be replaced but is there is used" {
+    // A rename that fails stands for Windows refusing to replace a file another process has
+    // open: what a concurrent build put there is used.
+    ok(fs.write_all("/unit-1.o", "object"))
+    expect(rename_or_remove("/missing.tmp", "/unit-1.o") is not null)
+    expect(rename_or_remove("/missing.tmp", "/unit-2.o") is null)
+    // A rename that works replaces the file.
+    ok(fs.write_all("/unit-1.o.tmp", "new"))
+    expect(rename_or_remove("/unit-1.o.tmp", "/unit-1.o") is not null)
+    expect(not load.is_file("/unit-1.o.tmp"))
 }
 
 /// Whether `version`, a compiler's `compiler_version`, is that of gcc (which clang's is
