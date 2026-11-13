@@ -38,6 +38,8 @@ Code :: struct {
     /// if no local has. The memory dies when the body returns (`vm_drop_locals`).
     hidden: []u32
     info: ^FnInfo
+    /// The sites of its direct calls (`CallSite`).
+    sites: []CallSite
     /// The register holding the address of the frame the body captures, if it reads or
     /// writes that frame's locals (`NO_REG` if not).
     env_reg: u32
@@ -164,6 +166,9 @@ Ins :: union {
     Call: (f: u32, args: []Arg, dst: Dest, node: ^Node)
     /// A call of the function value in the slot at `at` (the value of `callee`).
     CallValue: (at: u32, callee: ^Node, args: []Arg, dst: Dest, node: ^Node)
+    /// The trap of the assertion `n` that failed, with the message (a string) in the slot
+    /// at `at` if `has_msg`.
+    AssertFail: (at: u32, has_msg: bool, n: ^Node)
     /// Performs the operation of `node` (a `Perform`) with arguments in registers and slots.
     Perform: (args: []Arg, dst: Dest, node: ^Node)
     /// Copies a slot's bytes to a local of this frame that has memory of its own (to one
@@ -271,14 +276,14 @@ VM_RETURN: usize : ~usize(0)
 /// Its generated C must stay below the size at which the C back end has Clang compile a
 /// function without optimization (`GM_LONG_FN`): the arms are a few operations each.
 vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
-    // The handler context changes in a `with`; `a.cx` is the body's own.
-    act := a
     // Register indices and jump targets are valid by construction: the registers and the
     // instructions are reached through many-pointers, without bounds checks. The loop
     // keeps only them and the index of the instruction in variables of its own; the rest
-    // of what is running is in `st`, which the calls and returns change.
-    st := VmState(code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, rec: null, cx: a.cx)
-    regs := st.regs
+    // of what is running is in its record `cur`: this one for the body, and one in
+    // scratch memory for each call made in the loop.
+    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), tm: 0)
+    cur := &base
+    regs := cur.regs
     bc := body.bc.ptr
     pc: usize = 0
     vm_consts(body, regs)
@@ -528,13 +533,13 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     regs[usize(i.a)] = (x % y).bits(u64) & mask64(u32(i.w))
                 }
                 .Up => {
-                    up := us(regs[usize(st.code.env_reg)]).to_ptr(^Frame) else break
+                    up := us(regs[usize(cur.code.env_reg)]).to_ptr(^Frame) else break
                     l := usize(i.b)
                     if up.mem.ptr[l] is not 0 or up.info.addressed.ptr[l] { break }
                     regs[usize(i.a)] = ldn((&up.store.ptr[us(up.info.offsets.ptr[l]) + usize(i.c)]).cast([^]u8), i.f)
                 }
                 .UpSet => {
-                    up := us(regs[usize(st.code.env_reg)]).to_ptr(^Frame) else break
+                    up := us(regs[usize(cur.code.env_reg)]).to_ptr(^Frame) else break
                     l := usize(i.a)
                     if up.mem.ptr[l] is not 0 or up.info.addressed.ptr[l] { break }
                     stn((&up.store.ptr[us(up.info.offsets.ptr[l]) + usize(i.c)]).cast([^]u8), i.f, regs[usize(i.b)])
@@ -543,6 +548,15 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     v := regs[usize(i.c)]
                     if v is 0 { break }
                     regs[usize(i.a)] = v
+                }
+                .SliceMake => {
+                    lo := regs[usize(i.c & 0xFFFF)]
+                    hi := regs[usize(i.c >> 16)]
+                    if i.f & 2 is not 0 { hi = hi +| 1 }
+                    if lo > hi or (i.f & 1 is not 0 and hi > regs[usize(i.b) + 1]) { break }
+                    pb := m.ptr_bytes.trunc(u8)
+                    stn(fat(regs, usize(i.a)), pb, regs[usize(i.b)] +% lo *% u64(i.w))
+                    stn(fat(regs, usize(i.a) + usize(pb)), pb, hi - lo)
                 }
                 .AlignChk => if regs[usize(i.a)] & u64(i.b) is not 0 { break }
                 .MemGet => {
@@ -566,35 +580,45 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 }
                 .Release => m.vm_release(regs, i.a)
                 .Call => {
-                    if not m.vm_push(&st, pc) { break }
-                    regs = st.regs
-                    bc = st.code.bc.ptr
+                    cur = m.vm_push(cur, pc, i.a) else break
+                    regs = cur.regs
+                    bc = cur.code.bc.ptr
                     pc = 0
                     continue
                 }
                 .RetW => {
                     v := regs[usize(i.a)]
-                    if st.rec is null {
-                        if st.code.hidden.len is not 0 { m.vm_drop_locals(st.code, regs) }
-                        m.wr_word(st.dst, v)
+                    p := cur.prev else {
+                        if cur.code.hidden.len is not 0 { m.vm_drop_locals(cur.code, regs) }
+                        m.wr_word(cur.dst, v)
                         done = true
                         break
                     }
-                    pc = m.vm_ret(&st, true, v)
-                    regs = st.regs
-                    bc = st.code.bc.ptr
+                    if cur.fr is null and cur.ret_reg is not NO_REG and cur.code.hidden.len is 0 {
+                        // The common return: a word to the caller's register.
+                        p.regs[usize(cur.ret_reg)] = v
+                        m.vm_pop(cur)
+                        p.pc +%= 1
+                        cur = p
+                    } else {
+                        cur = try m.vm_ret(cur, true, v)
+                    }
+                    pc = cur.pc
+                    regs = cur.regs
+                    bc = cur.code.bc.ptr
                     continue
                 }
                 .Ret, .RetSlot => {
-                    if i.op is .RetSlot { st.dst.copy_from(fat(regs, usize(i.a))[0..usize(i.b)]) }
-                    if st.rec is null {
-                        if st.code.hidden.len is not 0 { m.vm_drop_locals(st.code, regs) }
+                    if i.op is .RetSlot { cur.dst.copy_from(fat(regs, usize(i.a))[0..usize(i.b)]) }
+                    if cur.prev is null {
+                        if cur.code.hidden.len is not 0 { m.vm_drop_locals(cur.code, regs) }
                         done = true
                         break
                     }
-                    pc = m.vm_ret(&st, false, 0)
-                    regs = st.regs
-                    bc = st.code.bc.ptr
+                    cur = try m.vm_ret(cur, false, 0)
+                    pc = cur.pc
+                    regs = cur.regs
+                    bc = cur.code.bc.ptr
                     continue
                 }
                 .Free, .Framed => break
@@ -602,74 +626,114 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
             pc +%= 1
         }
         if done { break }
-        // The instruction as compiled: every case of it, traps included.
-        next := (if bc[pc].op is .Framed { m.vm_framed(&act, st.code, regs, pc, st.dst) } else { m.vm_free(st.cx, st.code, regs, pc, st.dst) }) else f => {
-            // The flow leaves the calls made in the loop, which have nothing to undo but
-            // the memory of their locals.
-            m.vm_leave_calls(&st, f)
-            regs = st.regs
-            bc = st.code.bc.ptr
-            pc = m.vm_flow(&act, a.cx, st.code, regs, f) else g => {
-                if st.code.hidden.len is not 0 { m.vm_drop_locals(st.code, regs) }
-                return !g
+        // The instruction as compiled: every case of it, traps included. A flow it raises
+        // goes to the loop it targets or leaves bodies (`vm_raise`).
+        next: usize = 0
+        if bc[pc].op is .Framed {
+            fr := cur.fr else return !m.trap(source.DUMMY, "internal error: an instruction needs a frame")
+            act := Act(fr: fr, cx: cur.cx)
+            res := m.vm_framed(&act, cur.code, regs, pc, cur.dst)
+            cur.cx = act.cx
+            next = res else f => {
+                cur = try m.vm_raise(cur, f)
+                cur.pc
             }
-            st.cx = act.cx
-            continue
+        } else {
+            next = m.vm_free(cur.cx, cur.code, regs, pc, cur.dst) else f => {
+                cur = try m.vm_raise(cur, f)
+                cur.pc
+            }
         }
-        if next is VM_RETURN { break }
-        if st.rec is null { st.cx = act.cx }
+        if next is VM_RETURN {
+            if cur.prev is null { break }
+            cur = try m.vm_ret(cur, false, 0)
+            next = cur.pc
+        }
+        regs = cur.regs
+        bc = cur.code.bc.ptr
         pc = next
     }
-    // The body returns, its result in `dst`.
-    if a.fr.defers.items.len is 0 and act.cx is a.cx { return () }
-    return m.vm_return(act, a.cx, st.dst)
+    // The body returns, its result in `ret`.
+    if a.fr.defers.items.len is 0 and base.cx is a.cx { return () }
+    return m.vm_return(Act(fr: a.fr, cx: base.cx), a.cx, ret)
 }
 
-/// What is running in the machine's loop besides the instruction: the body, its registers,
-/// where its result goes, the innermost call made in the loop (`null` in the body the
-/// loop was entered for) and the handler context.
-VmState :: struct {
-    code: ^Code
-    regs: [^]u64
-    dst: []u8
-    rec: ?^CallRec
-    cx: u32
-}
-
-/// Returns from the innermost call made in the loop to its caller, which becomes what is
-/// running: the result is the word `v` if `word`, else it is where the callee left it.
-/// Returns the index of the caller's next instruction.
+/// Returns from the call of `r`, made in the loop, to its caller: the result is the word
+/// `v` if `word`, else it is where the callee left it. A body with a frame runs its
+/// deferred statements and ends its frame, as `enter` does. Returns the record of the body
+/// that runs next, with the index of its next instruction in `pc` (a flow that the
+/// deferred statements raise continues in the caller, `vm_raise`).
 #noinline
-vm_ret :: fn(m: ^Machine, st: ^VmState, word: bool, v: u64) -> usize needs Alloc {
-    r := st.rec else return 0
-    if st.code.hidden.len is not 0 { m.vm_drop_locals(st.code, st.regs) }
+vm_ret :: fn(m: ^Machine, r: ^CallRec, word: bool, v: u64) -> Flow!^CallRec needs Run {
+    p := r.prev else return r
+    if fr := r.fr {
+        if word { m.wr_word(r.dst, v) }
+        res: Flow!() = ()
+        if fr.defers.items.len is not 0 or r.cx is not r.base_cx { res = m.vm_return(Act(fr: fr, cx: r.cx), r.base_cx, r.dst) }
+        if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
+        m.end_frame(fr)
+        m.vm_pop(r)
+        res else g => {
+            if .Trap(t) := g and m.mode is .Debug { t.trace.push(TraceCall(fn_id: r.f, span: p.code.ins[p.pc].call_span()))! }
+            return m.vm_raise(p, g)
+        }
+        if r.ret_reg is not NO_REG { p.regs[usize(r.ret_reg)] = m.rd_word(r.dst) }
+        p.pc += 1
+        return p
+    }
+    if r.code.hidden.len is not 0 { m.vm_drop_locals(r.code, r.regs) }
     if word {
-        if r.ret_reg is NO_REG { m.wr_word(st.dst, v) } else { r.regs[usize(r.ret_reg)] = v }
+        if r.ret_reg is NO_REG { m.wr_word(r.dst, v) } else { p.regs[usize(r.ret_reg)] = v }
     } else if r.ret_reg is not NO_REG {
-        r.regs[usize(r.ret_reg)] = m.rd_word(r.out)
+        p.regs[usize(r.ret_reg)] = m.rd_word(r.dst)
     }
     m.vm_pop(r)
-    st.cx = r.cx
-    st.code = r.code
-    st.regs = r.regs
-    st.dst = r.dst
-    st.rec = r.prev
-    return r.pc + 1
+    p.pc += 1
+    return p
 }
 
-/// Leaves every call made in the loop as the flow `f` does, back to the body the loop was
-/// entered for; a trap records the calls it leaves (Debug builds).
+/// Where the flow `flow`, raised in the body of `start`, continues: at a loop of that
+/// body or, leaving it as `enter` leaves a body (its deferred statements run, its frame
+/// ends), in a caller whose call was made in the loop; a `return` ends the call of its
+/// body. Returns the record of the body that runs next, with the index of its next
+/// instruction in `pc`, or the flow if it leaves the body the loop was entered for. A
+/// trap records the calls it leaves (Debug builds).
 #noinline
-vm_leave_calls :: fn(m: ^Machine, st: ^VmState, f: Flow) needs Alloc {
-    while r := st.rec {
-        if .Trap(t) := f and m.mode is .Debug { t.trace.push(TraceCall(fn_id: r.f, span: r.code.ins[r.pc].call_span()))! }
-        if st.code.hidden.len is not 0 { m.vm_drop_locals(st.code, st.regs) }
+vm_raise :: fn(m: ^Machine, start: ^CallRec, flow: Flow) -> Flow!^CallRec needs Run {
+    r := start
+    f := flow
+    while true {
+        if fr := r.fr {
+            act := Act(fr: fr, cx: r.cx)
+            res := m.vm_flow(&act, r.base_cx, r.code, r.regs, f)
+            r.cx = act.cx
+            pc := res else g => {
+                f = g
+                VM_RETURN
+            }
+            if pc is not VM_RETURN {
+                r.pc = pc
+                return r
+            }
+        }
+        if r.code.hidden.len is not 0 { m.vm_drop_locals(r.code, r.regs) }
+        p := r.prev else return !f
+        returned := false
+        if fr := r.fr {
+            if .Return(frame, _) := f and frame is fr.id { returned = true }
+            if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
+            m.end_frame(fr)
+        }
+        if not returned {
+            if .Trap(t) := f and m.mode is .Debug { t.trace.push(TraceCall(fn_id: r.f, span: p.code.ins[p.pc].call_span()))! }
+        }
         m.vm_pop(r)
-        st.cx = r.cx
-        st.code = r.code
-        st.regs = r.regs
-        st.dst = r.dst
-        st.rec = r.prev
+        if returned {
+            if r.ret_reg is not NO_REG { p.regs[usize(r.ret_reg)] = m.rd_word(r.dst) }
+            p.pc += 1
+            return p
+        }
+        r = p
     }
 }
 
@@ -705,81 +769,220 @@ call_span :: fn(i: ^const Ins) -> source.Span => match i^ {
 /// from scratch memory and the arguments are written, and the callee becomes what is
 /// running. Returns false if the call has to be made the general way (`vm_call`).
 #noinline
-vm_push :: fn(m: ^Machine, st: ^VmState, pc: usize) -> bool needs Alloc {
-    r := m.vm_push_rec(st.code, st.regs, st.dst, st.rec, pc, st.cx) else return false
-    st.rec = r
-    st.cx = r.callee_cx
-    st.code = r.callee
-    st.regs = r.frame
-    st.dst = r.out
-    return true
+vm_push :: fn(m: ^Machine, cur: ^CallRec, pc: usize, site: u32) -> ?^CallRec needs Alloc {
+    if site is not NO_REG {
+        s := &cur.code.sites.ptr[usize(site)]
+        if s.state is 0 { m.vm_site(cur.code, pc, s) }
+        if s.state is 1 {
+            if n := m.vm_push_site(cur, pc, s) { return n }
+        }
+    }
+    return m.vm_push_rec(cur, pc)
 }
 
-/// The record of `vm_push`, the call at `pc` of `code` (`null` if it is not made in the loop).
-vm_push_rec :: fn(m: ^Machine, code: ^Code, regs: [^]u64, dst: []u8, rec: ?^CallRec, pc: usize, cx: u32) -> ?^CallRec needs Alloc {
-    match code.ins.ptr[pc] {
-        .Call(x) => return m.vm_push_fn(code, regs, dst, rec, pc, cx, x.f, null, cx, x.args, x.dst, x.node)
-        // An operation whose handler is a literal: its clause runs in the frame and
-        // context where the literal was written.
+/// Works out the site `s` of the direct call at `pc` of `code`.
+vm_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite) needs Alloc {
+    s.state = 2
+    .Call(x) := code.ins.ptr[pc] else return ()
+    info := m.fn_info(x.f)
+    callee := info.vm else return ()
+    if not callee.frameless or callee.env_reg is not NO_REG or x.args.len is not info.params.len or info.cost > sema.MAX_FRAME { return () }
+    match x.dst {
+        .Reg(rr) => {
+            s.out_kind = 0
+            s.ret_reg = rr
+        }
+        .None => {
+            if x.node.size > 8 { return () }
+            s.out_kind = 0
+        }
+        .Slot(at) => {
+            s.out_kind = 1
+            s.out_at = at
+        }
+        .Ret => { s.out_kind = 2 }
+    }
+    moves := list(Move)
+    for i in 0..x.args.len {
+        p := usize(info.params[i])
+        off := info.offsets[p].trunc(u32)
+        match x.args[i] {
+            .Reg(r) => {
+                // A word parameter kept in the frame's storage is a register there.
+                if m.word_locals and not info.addressed[p] and info.sizes[p] > 0 {
+                    moves.push(Move(kind: 0, src: r, dst: off / 8, size: 8))!
+                } else {
+                    moves.push(Move(kind: 2, src: r, dst: off, size: info.sizes[p].trunc(u32)))!
+                }
+            }
+            .Slot(at, size) => moves.push(Move(kind: 1, src: at, dst: off, size: size))!
+        }
+    }
+    s.moves = moves.items
+    s.f = x.f
+    s.out_size = x.node.size.trunc(u32)
+    s.callee = callee
+    s.frame_size = us(info.frame_size)
+    s.state = 1
+}
+
+/// `vm_push` for the common call that `s` describes: `null` if it cannot be made now (on
+/// a fiber, with other threads, too deep, or without room in the scratch chunk).
+#inline
+vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) -> ?^CallRec {
+    if m.depth >= MAX_DEPTH or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 { return null }
+    callee := s.callee else return null
+    sc := &m.scratch
+    chunk := sc.chunks.items.ptr[sc.cur]
+    base := chunk.ptr.addr()
+    top := ((base +% sc.top +% 7) & ~us(7)) -% base
+    head := (@size_of(CallRec) + 7) / 8 * 8
+    if top +% head +% s.frame_size > chunk.len { return null }
+    b := (&chunk.ptr[top]).cast([^]u8)
+    n := b.cast(^CallRec)
+    frame := (&b[head]).cast([^]u64)
+    fat(frame, 0)[0..s.frame_size].fill(0)
+    regs := cur.regs
+    k: usize = 0
+    while k < s.moves.len {
+        mv := &s.moves.ptr[k]
+        if mv.kind is 0 {
+            frame[usize(mv.dst)] = regs[usize(mv.src)]
+        } else if mv.kind is 1 {
+            fat(frame, usize(mv.dst))[0..usize(mv.size)].copy_from(fat(regs, usize(mv.src))[0..usize(mv.size)])
+        } else {
+            m.wr_word(fat(frame, usize(mv.dst))[0..usize(mv.size)], regs[usize(mv.src)])
+        }
+        k +%= 1
+    }
+    n.prev = cur
+    n.code = callee
+    n.regs = frame
+    n.fr = null
+    n.cx = cur.cx
+    n.base_cx = cur.cx
+    n.pc = 0
+    n.f = s.f
+    n.ret_reg = s.ret_reg
+    n.buf = [8]u8(fill: 0)
+    n.mark = Mark(cur: sc.cur, top: sc.top)
+    n.tm = m.temps.items.len
+    n.dst = if s.out_kind is 0 { n.buf[0..usize(s.out_size)] } else if s.out_kind is 1 { fat(regs, usize(s.out_at))[0..usize(s.out_size)] } else { cur.dst }
+    sc.top = top +% head +% s.frame_size
+    vm_consts(callee, frame)
+    m.depth +%= 1
+    cur.pc = pc
+    return n
+}
+
+/// `vm_push` for the call at `pc` of the body of `cur`, whatever it calls (`null` if it
+/// is not made in the loop).
+vm_push_rec :: fn(m: ^Machine, cur: ^CallRec, pc: usize) -> ?^CallRec needs Alloc {
+    cx := cur.cx
+    match cur.code.ins.ptr[pc] {
+        .Call(x) => return m.vm_push_fn(cur, pc, x.f, null, cx, null, false, null, x.args, x.dst, x.node)
+        // An operation that is not `ctl`: the clause of a handler literal runs in the
+        // frame and context where the literal was written, that of a handler declaration
+        // gets the handler's value first, in the context outside its `with`.
         .Perform(x) => {
             .Perform(p) := x.node.op else return null
             k := m.find_ctx(cx, &p.effect_)
             if k is 0 or m.p.is_ctl(p.effect_.eff, p.op) { return null }
-            .Lit(h, ?env, lcx) := m.ctxs.items[us(k)].installed else return null
-            if env is null { return null }
-            return m.vm_push_fn(code, regs, dst, rec, pc, cx, m.p.handler_lit(h).clauses[us(p.op)], env, lcx, x.args, x.dst, x.node)
+            node := &m.ctxs.items[us(k)]
+            installing: ?(frame: ^Frame, label: u32) = null
+            if fr := node.with_fr { installing = (frame: fr, label: node.with_label) }
+            match node.installed {
+                .Lit(h, ?env, lcx) => return m.vm_push_fn(cur, pc, m.p.handler_lit(h).clauses[us(p.op)], env, lcx, installing, true, null, x.args, x.dst, x.node)
+                .Decl(decls, value, outer) => for d in decls {
+                    info := m.p.handler_decl(d)
+                    if info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0 { continue }
+                    return m.vm_push_fn(cur, pc, info.clauses[us(p.op)], null, outer, installing, false, value, x.args, x.dst, x.node)
+                }
+                .Native(_) => {}
+            }
+            return null
         }
-        // A function value whose type lists no effect to handle at the call.
+        // A function pointer, or a function value whose type lists no effect to handle at
+        // the call.
         .CallValue(x) => {
-            .Fn(sig) := m.kind(x.callee.ty) else return null
-            if sig.effects.effects.len is not 0 { return null }
-            cv := fat(regs, usize(x.at))[0..us(x.callee.size)]
-            f := m.fn_from_addr(m.word(cv, 0)) else return null
-            return m.vm_push_fn(code, regs, dst, rec, pc, cx, f, m.frame_of(m.word(cv, 1)), m.word(cv, 2).trunc(u32), x.args, x.dst, x.node)
+            cv := fat(cur.regs, usize(x.at))[0..us(x.callee.size)]
+            if .Fn(sig) := m.kind(x.callee.ty) {
+                if sig.effects.effects.len is not 0 { return null }
+                f := m.fn_from_addr(m.word(cv, 0)) else return null
+                return m.vm_push_fn(cur, pc, f, m.frame_of(m.word(cv, 1)), m.word(cv, 2).trunc(u32), null, false, null, x.args, x.dst, x.node)
+            }
+            f := m.fn_from_addr(m.ptr_of(cv)) else return null
+            return m.vm_push_fn(cur, pc, f, null, cx, null, false, null, x.args, x.dst, x.node)
         }
         _ => return null
     }
 }
 
-/// `vm_push` for a call of `f`, capturing `env`, in context `callee_cx`, with the
-/// arguments `args`, whose result (the value of `n`) goes to `to`.
-vm_push_fn :: fn(m: ^Machine, code: ^Code, regs: [^]u64, dst: []u8, rec: ?^CallRec, pc: usize, cx: u32, f: u32, env: ?^Frame, callee_cx: u32, args: []Arg, to: Dest, n: ^Node) -> ?^CallRec needs Alloc {
-    x := (f: f, args: args, dst: to, node: n)
-    info := m.fn_info(x.f)
+/// `vm_push` for a call of `f`, capturing `env`, in context `callee_cx` (a clause of the
+/// `with` `installing` if any), with the arguments `args` after the handler value `self_`
+/// for a clause of a handler declaration; its result (the value of `n`) goes to `to`. A
+/// body that needs a frame gets it here, as `enter` gives it.
+vm_push_fn :: fn(m: ^Machine, cur: ^CallRec, pc: usize, f: u32, env: ?^Frame, callee_cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, self_: ?[]u8, args: []Arg, to: Dest, n: ^Node) -> ?^CallRec needs Alloc {
+    info := m.fn_info(f)
     callee := info.vm else return null
-    if callee.env_reg is not NO_REG and env is null { return null }
-    if not callee.frameless or x.args.len is not info.params.len or info.cost > sema.MAX_FRAME or m.depth >= MAX_DEPTH or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 { return null }
+    first: usize = if self_ is null { 0 } else { 1 }
+    if args.len + first is not info.params.len or info.cost > sema.MAX_FRAME or m.depth >= MAX_DEPTH or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 { return null }
+    regs := cur.regs
     mk := m.mark()
     // The storage stays aligned to 8 bytes after the record.
     head := (@size_of(CallRec) + 7) / 8 * 8
     b := m.tmp(u64(head) + info.frame_size)
     r := b.ptr.cast(^CallRec)
-    m.vm_put_args(info, 0, x.args, regs, b[head..b.len])
-    r.prev = rec
-    r.code = code
-    r.regs = regs
-    r.dst = dst
-    r.pc = pc
-    r.f = x.f
-    r.callee = callee
-    r.frame = (&b[head]).cast([^]u64)
+    store := b[head..b.len]
+    if v := self_ {
+        off := us(info.offsets[us(info.params[0])])
+        store[off..off + v.len].copy_from(v)
+    }
+    m.vm_put_args(info, first, args, regs, store)
+    r.prev = cur
+    r.code = callee
+    r.regs = (&b[head]).cast([^]u64)
+    r.fr = null
+    r.cx = callee_cx
+    r.base_cx = callee_cx
+    r.pc = 0
+    r.f = f
     r.mark = mk
-    r.cx = cx
-    r.callee_cx = callee_cx
-    if e := env and callee.env_reg is not NO_REG { r.frame[usize(callee.env_reg)] = u64(e.addr()) }
+    r.tm = m.temps.items.len
+    if e := env and callee.env_reg is not NO_REG { r.regs[usize(callee.env_reg)] = u64(e.addr()) }
     r.ret_reg = NO_REG
-    size := us(x.node.size)
-    match x.dst {
+    size := us(n.size)
+    match to {
         .Reg(rr) => {
             r.ret_reg = rr
-            r.out = r.buf[0..size]
+            r.dst = r.buf[0..size]
         }
-        .None => { r.out = if size <= 8 { r.buf[0..size] } else { m.tmp(x.node.size) } }
-        .Slot(at) => { r.out = fat(regs, usize(at))[0..size] }
-        .Ret => { r.out = dst }
+        .None => { r.dst = if size <= 8 { r.buf[0..size] } else { m.tmp(n.size) } }
+        .Slot(at) => { r.dst = fat(regs, usize(at))[0..size] }
+        .Ret => { r.dst = cur.dst }
     }
-    vm_consts(callee, r.frame)
+    if not callee.frameless {
+        fr := m.new_frame(f, info, r.dst, env, store)
+        fr.installing = installing
+        fr.is_clause_lit = is_clause_lit
+        // Parameters whose address is taken move to memory of their own.
+        if info.addressed_params {
+            for p in info.params {
+                if info.addressed[us(p)] {
+                    _ = m.local_addr(n.span, fr, p) else _ => {
+                        // The call made the general way reports it.
+                        m.end_frame(fr)
+                        m.release(mk)
+                        return null
+                    }
+                }
+            }
+        }
+        r.fr = fr
+    }
+    vm_consts(callee, r.regs)
     m.depth += 1
+    cur.pc = pc
     return r
 }
 
@@ -808,12 +1011,12 @@ vm_hidden_addr :: fn(m: ^Machine, code: ^const Code, regs: [^]u64, l: u32, span:
     return addr
 }
 
-/// Ends the call of `r`: releases the callee's storage.
+/// Ends the call of `r`: releases its record and storage.
 #inline
 vm_pop :: fn(m: ^Machine, r: ^const CallRec) {
     m.scratch.cur = r.mark.cur
     m.scratch.top = r.mark.top
-    m.depth -= 1
+    m.depth -%= 1
 }
 
 /// Runs the instruction at `pc` of `code` from its `Ins`, for one that needs no frame:
@@ -995,6 +1198,12 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
             out := list(u8)
             m.format_value(&out, m.res_types(ty).err, m.res_payload(ty, fat(regs, usize(at))[0..us(m.size(ty))]), false) else {}
             return !m.trap(n.span, str.format("unwrap of error value {}", out.items)!)
+        }
+        .AssertFail(at, has_msg, n) => {
+            if not has_msg { return !m.trap(n.span, "assertion failed") }
+            msg := try m.read_string(n.span, fat(regs, usize(at))[0..2 * us(m.ptr_bytes)])
+            if msg is "assertion failed" { return !m.trap(n.span, msg) }
+            return !m.trap(n.span, str.format("assertion failed: {}", msg)!)
         }
         .NoArm(n) => return !m.trap(n.span, "no match arm matched the scrutinee")
         .Mark(r) => {

@@ -151,6 +151,11 @@ BcOp :: union {
     /// `a` = the address of an addressed local, kept in register `c` once it has memory
     /// (`Code.hidden`).
     LocalAddrH
+    /// Writes to offset `a` of the frame's storage the slice from the register in the low
+    /// half of `c` to the one in its high half (inclusive if `f` has bit 2) of the elements
+    /// `w` bytes apart at the address in `b`; with bit 1 of `f`, the register after `b`
+    /// holds the length the bounds are checked against.
+    SliceMake
     /// Leaves the loop (to trap) if register `a` has any of the bits `b`.
     AlignChk
     /// Copies the `w` bytes aligned to 2 to the power `f` at the address in `b` plus `c` to
@@ -180,28 +185,60 @@ Bc :: struct {
     c: u32
 }
 
-/// A call the machine makes without leaving its loop (`vm_push`): what the caller resumes
-/// with and where the result goes. It lies in scratch memory just below the callee's
-/// storage, and is released with it.
+/// A body running in the machine's loop: the one the loop was entered for, or the callee
+/// of a call made in the loop (`vm_push`), whose record lies in scratch memory just below
+/// its storage and is released with it.
 CallRec :: struct {
+    /// The record of its caller (`null` for the body the loop was entered for).
     prev: ?^CallRec
-    /// The caller: its code, registers, result and the index of the call.
     code: ^Code
     regs: [^]u64
+    /// Where its result goes.
     dst: []u8
-    pc: usize
-    /// The caller's handler context, and the callee's.
+    /// Its frame (`null` for a body without one) and its handler context, now and when it
+    /// started.
+    fr: ?^Frame
     cx: u32
-    callee_cx: u32
-    /// The callee: its function, code, registers and where its result goes (`buf` for a
-    /// word that then goes to the caller's register `ret_reg`).
+    base_cx: u32
+    /// While it calls: the index of the call; when it resumes: of its next instruction.
+    pc: usize
+    /// As a callee: its function, the caller's register its result goes to from `buf`
+    /// (`NO_REG`: none), the scratch memory before the call and how many temporaries
+    /// there were (its own die when it returns).
     f: u32
     ret_reg: u32
-    callee: ^Code
-    frame: [^]u64
-    out: []u8
     buf: [8]u8
     mark: Mark
+    tm: usize
+}
+
+/// What the call of an instruction needs, worked out when it first runs (`vm_site`), for
+/// the common call: of a function whose body runs without a frame and captures none.
+CallSite :: struct {
+    /// 0: not worked out yet; 1: the common call, described below; 2: any other, which
+    /// `vm_push_rec` makes.
+    state: u8
+    /// Where the result goes: 0 the record's buffer (then to register `ret_reg`, if any),
+    /// 1 the caller's slot at `out_at`, 2 the caller's own result.
+    out_kind: u8
+    f: u32
+    ret_reg: u32
+    out_at: u32
+    out_size: u32
+    callee: ?^Code
+    frame_size: usize
+    moves: []Move
+}
+
+/// How an argument reaches the callee's storage: `kind` 0 copies the caller's register
+/// `src` to the callee's register `dst`; 1 copies `size` bytes from offset `src` of the
+/// caller's storage to offset `dst` of the callee's; 2 writes the caller's register `src`
+/// to the `size` bytes at offset `dst`.
+Move :: struct {
+    kind: u8
+    src: u32
+    dst: u32
+    size: u32
 }
 
 /// The `CallRec.ret_reg` of a call whose result goes elsewhere than to a register.
@@ -455,6 +492,11 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
             if x.op is .Rem { return Bc(op: if x.t.signed { BcOp.RemS } else { .RemU }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b) }
             return bc_free()
         }
+        .SliceMake(x) => {
+            if not words or not fits16(u64(x.lo)) or not fits16(u64(x.hi)) or not fits16(x.esz) or (x.has_len and x.len is not x.p + 1) { return bc_free() }
+            flags: u8 = (if x.has_len { 1 } else { 0 }) | (if x.inclusive { 2 } else { 0 })
+            return Bc(op: .SliceMake, f: flags, w: x.esz.trunc(u16), a: x.at, b: x.p, c: x.lo | (x.hi << 16))
+        }
         .AlignCheck(r, align, _) => {
             if align is 0 or align & (align - 1) is not 0 or not fits32(align) { return bc_free() }
             return bc3(.AlignChk, r, (align - 1).trunc(u32), 0)
@@ -471,7 +513,7 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
         .ZeroSlot(at, size) => return bc3(.ZeroSlot, at, size, 0)
         .Mark(r) => return bc3(.Mark, r, 0, 0)
         .Release(r) => return bc3(.Release, r, 0, 0)
-        .Call(_), .Perform(_), .CallValue(_) => return bc3(.Call, 0, 0, 0)
+        .Call(_), .Perform(_), .CallValue(_) => return bc3(.Call, NO_REG, 0, 0)
         .UpvarAt(x) => {
             if not words or x.levels is not 1 or not word_size(u64(x.size)) { return bc_free() }
             return Bc(op: .Up, f: x.size.trunc(u8), w: 0, a: x.r, b: x.local, c: x.rel)
@@ -507,6 +549,15 @@ vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs All
         out[k] = bc_of(&code.ins[k], m.word_locals)
         if out[k].op is .Framed and not in_memory(&code.ins[k]) { frameless = false }
     }
+    // Each direct call has a site (`Bc.a` is its index).
+    nsites: u32 = 0
+    for k in 0..code.ins.len {
+        if code.ins[k] is .Call(_) {
+            out[k].a = nsites
+            nsites += 1
+        }
+    }
+    code.sites = make_fill(usize(nsites), CallSite(state: 0, out_kind: 0, f: 0, ret_reg: NO_REG, out_at: 0, out_size: 0, callee: null, frame_size: 0, moves: empty_slice(Move)))!
     code.bc = out
     code.frameless = frameless
     // The frame a body captures is reached through a register after the others.

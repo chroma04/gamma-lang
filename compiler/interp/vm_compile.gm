@@ -92,7 +92,7 @@ vm_compile :: fn(m: ^Machine, info: ^FnInfo, body: ^Node) -> ^Code needs Alloc {
         regs_off := u64(rbase) * 8
         // At least one register past the locals.
         nregs := u64((c.max - rbase).max(1))
-        return new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: info.store_size, hidden: empty_slice(u32), info: info, env_reg: NO_REG, regs_off: regs_off, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
+        return new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: info.store_size, hidden: empty_slice(u32), info: info, env_reg: NO_REG, sites: empty_slice(CallSite), regs_off: regs_off, size: regs_off + 8 * nregs, loops: c.loops.items, consts: consts.items))!
     }
 }
 
@@ -498,12 +498,16 @@ vc_expr :: fn(c: ^Vc, n: ^Node, want: Want) needs Alloc {
 /// Whether the machine runs `n` itself (else `word` hands it to the tree).
 vc_compiles :: fn(c: ^Vc, n: ^const Node) -> bool needs Alloc => match n.op {
     .Word(_), .Local(_), .IntOp(_), .Cmp(_), .EqW(_), .Not(_), .Logic(_), .IntUn(_), .IntConv(_), .IntRot(_), .IntBits(_), .FloatOp(_), .Call(_), .Perform(_) => true
-    .Builtin(op, args) => vc_builtin_ok(op, args)
+    .Builtin(op, args) => vc_builtin_ok(op, args) or vc_assert_ok(op, args)
     .Try(x) => c.vc_try_ok(n, x.x, x.lift, x.levels)
     .Unwrap(x, _) => c.vc_unwrap_ok(n, x)
     .Else(lhs, _, _) => c.vc_else_shape(n, lhs) is not null
     _ => false
 }
+
+/// Whether `op` on `args` is an `@assert` the machine runs: of a condition, with or
+/// without a message.
+vc_assert_ok :: fn(op: tir.Builtin, args: []^Node) -> bool => op is .Assert and (args.len is 1 or args.len is 2) and is_word(args[0])
 
 /// Whether the machine runs the builtin operation `op` on the values of `args` itself
 /// (`Ins.Builtin`): one that `ev_builtin` gives the values of its arguments.
@@ -794,6 +798,24 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
                 }
             } else if vc_builtin_ok(op, args) {
                 c.vc_builtin(args, .Reg(save), n)
+            } else if vc_assert_ok(op, args) {
+                // Fast builds do not evaluate assertions.
+                if not c.m.fast() {
+                    c.vc_word(args[0])
+                    ok := c.vc_jump(.Jnz(save, 0))
+                    if args.len is 2 {
+                        slots := c.slot_top
+                        at := c.vc_slot_at(c.vc_alloc_slot(args[1].size))
+                        c.vc_to_slot(args[1], at)
+                        c.vc_emit(.AssertFail(at, true, n))
+                        c.slot_top = slots
+                    } else {
+                        c.vc_emit(.AssertFail(0, false, n))
+                    }
+                    c.vc_patch(ok, c.vc_here())
+                    c.top = save
+                }
+                c.vc_emit(.Const(c.vc_alloc(), 0))
             } else {
                 c.vc_emit(.EvalW(c.vc_alloc(), n))
             }
