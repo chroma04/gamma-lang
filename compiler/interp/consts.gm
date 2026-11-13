@@ -6,16 +6,16 @@
 const_addr :: fn(m: ^Machine, span: source.Span, t: Ty, at: source.Span) -> Flow!u64 needs Run {
     id := m.s.const_id(span, t) else return !m.unsupported(at, "a constant that was not evaluated")
     cell := m.s.consts.items[us(id)].cell else return !m.unsupported(at, "a constant without a compile-time value")
-    return m.cell_addr(at, cell, t, false)
+    return m.cell_addr(at, cell, t, m.align(t), false)
 }
 
 /// The address of the allocation holding `cell`, whose value has type `t`: made on first
-/// use, read-only unless it is a variable.
-cell_addr :: fn(m: ^Machine, span: source.Span, cell: ^tir.Cell, t: Ty, mutable: bool) -> Flow!u64 needs Run {
+/// use aligned to `align`, read-only unless it is a variable.
+cell_addr :: fn(m: ^Machine, span: source.Span, cell: ^tir.Cell, t: Ty, align: u64, mutable: bool) -> Flow!u64 needs Run {
     key := cell.addr()
     if a := m.cells.get(key) { return a.addr }
     n := m.size(t)
-    addr := try m.alloc_mem(span, n, m.align(t), if mutable { AllocKind.Global } else { AllocKind.Const }, mutable)
+    addr := try m.alloc_mem(span, n, align, if mutable { AllocKind.Global } else { AllocKind.Const }, mutable)
     // Registered first: the value may point into itself.
     m.cells.put(key, (addr: addr, ty: t))!
     b := make_fill(us(n), u8(0))!
@@ -40,7 +40,7 @@ global_addr :: fn(m: ^Machine, span: source.Span, decl: usize) -> Flow!u64 needs
     al := m.align(gl.ty).max(gl.align else 1)
     addr: u64 = 0
     if cell := gl.value and not gl.thread_local {
-        addr = try m.cell_addr(span, cell, gl.ty, true)
+        addr = try m.cell_addr(span, cell, gl.ty, al, true)
     } else if cell := gl.value {
         // Each thread's instance starts from the initial value.
         addr = try m.alloc_mem(span, m.size(gl.ty), al, .Global, true)
@@ -142,7 +142,7 @@ place_addr :: fn(m: ^Machine, span: source.Span, pl: tir.Place, pointee: Ty) -> 
     } else if pl.path.len > 0 {
         return !m.unsupported(span, "a compile-time pointer into this value")
     }
-    base := try m.cell_addr(span, pl.cell, root, not pl.cell.is_static)
+    base := try m.cell_addr(span, pl.cell, root, m.align(root), not pl.cell.is_static)
     addend: u64 = 0
     cur := root
     for i in pl.path {

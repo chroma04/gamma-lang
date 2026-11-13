@@ -35,6 +35,7 @@ make_fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
         if made.addressed[us(p)] { made.addressed_params = true }
     }
     if m.kind(def.ret) is .Result(_, _) { made.err_flag = m.offsets(def.ret)[0] }
+    made.ret_ty = def.ret
     // Registered before its body is lowered.
     m.infos.items[i] = made
     made.frame_size = made.store_size
@@ -42,6 +43,7 @@ make_fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
         body := lower_body(m, made, b)
         made.body = body
         c := vm_compile(m, made, body)
+        m.vm_assemble(made, c)
         made.vm = c
         made.frame_size = c.size
     }

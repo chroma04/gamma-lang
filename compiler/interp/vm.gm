@@ -27,6 +27,22 @@
 /// A compiled body.
 Code :: struct {
     ins: []Ins
+    /// The instructions as the machine's loop runs them (`bc.gm`), and whether the body
+    /// runs without a frame.
+    bc: []Bc
+    frameless: bool
+    /// The size of the locals in the frame's storage: the words after them are temporaries.
+    locals_size: u64
+    /// For a body that runs without a frame: the register holding the address of each
+    /// local that has memory of its own (0 until it has), `NO_REG` for the others; empty
+    /// if no local has. The memory dies when the body returns (`vm_drop_locals`).
+    hidden: []u32
+    info: ^FnInfo
+    /// The sites of its direct calls (`CallSite`).
+    sites: []CallSite
+    /// The register holding the address of the frame the body captures, if it reads or
+    /// writes that frame's locals (`NO_REG` if not).
+    env_reg: u32
     /// The frame's storage seen as words is the register file: the locals that are words
     /// (`vc_local_reg`) are registers, and so are the words from `regs_off` on, after the
     /// byte slots. `size` is the storage's whole size.
@@ -132,10 +148,27 @@ Ins :: union {
     /// Jumps if the register is zero, or (`Jnz`) not.
     Jz: (r: u32, to: u32)
     Jnz: (r: u32, to: u32)
+    /// Copies the `size` bytes aligned to `align` at the address in register `base` plus
+    /// `off` to the slot at `at`, or (`MemPut`) the slot's bytes there.
+    MemGet: (at: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
+    MemPut: (base: u32, off: u32, at: u32, size: u32, align: u32, n: ^Node)
+    /// Traps if the address in a register is not aligned to `align` (a pointer cast).
+    AlignCheck: (r: u32, align: u64, n: ^Node)
+    /// The trap of `n`, an unwrap of the absent optional or the error (`is_result`) of type
+    /// `ty` in the slot at `at`.
+    UnwrapTrap: (at: u32, ty: Ty, is_result: bool, n: ^Node)
+    /// The builtin operation of `node` (a `Builtin` that takes the values of its
+    /// arguments) with arguments in registers and slots.
+    Builtin: (args: []Arg, dst: Dest, node: ^Node)
+    /// Writes the string literal `n` (its address and length) to the slot at `at`.
+    StrSlot: (at: u32, n: ^Node)
     /// A call of function `f` with arguments in registers and slots.
     Call: (f: u32, args: []Arg, dst: Dest, node: ^Node)
     /// A call of the function value in the slot at `at` (the value of `callee`).
     CallValue: (at: u32, callee: ^Node, args: []Arg, dst: Dest, node: ^Node)
+    /// The trap of the assertion `n` that failed, with the message (a string) in the slot
+    /// at `at` if `has_msg`.
+    AssertFail: (at: u32, has_msg: bool, n: ^Node)
     /// Performs the operation of `node` (a `Perform`) with arguments in registers and slots.
     Perform: (args: []Arg, dst: Dest, node: ^Node)
     /// Copies a slot's bytes to a local of this frame that has memory of its own (to one
@@ -223,23 +256,490 @@ Dest :: union {
     Ret
 }
 
-// Running (the compiler of bodies to instructions is in `vm_compile.gm`).
-/// Runs the compiled body `code` in the frame of `a`, whose storage has room for its slots
-/// and registers.
+// Running (the compiler of bodies to instructions is in `vm_compile.gm`, the form they
+// run in is in `bc.gm`).
+
+/// What `vm_framed` returns as the next instruction when the body returned.
+VM_RETURN: usize : ~usize(0)
+
+/// Runs the compiled body `body` in the frame of `a`, whose storage has room for its slots
+/// and registers; its result goes to `ret`.
+///
+/// The loop dispatches on the `Bc` of each instruction, which does its common case. An
+/// instruction without one, or whose common case does not apply (the arm then leaves the
+/// loop with `break`), is run from its `Ins` by `vm_free` or `vm_framed`, which also raise
+/// the traps. A call of a body that needs no frame (`Code.frameless`) stays in the loop:
+/// `vm_push` gives the callee its storage and records what the caller resumes with, and a
+/// return pops the record. Only the body the loop was entered for can have a frame, so
+/// the frame, the handler context and the deferred statements are always those of `a`.
 ///
 /// Its generated C must stay below the size at which the C back end has Clang compile a
-/// function without optimization (`GM_LONG_FN`): the instructions that are rarely hot run
-/// in `vm_slow`, and the fast paths of the others are `#inline` functions.
-vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
-    fr := a.fr
-    // The handler context changes in a `with`; `a.cx` is the body's own.
-    act := a
+/// function without optimization (`GM_LONG_FN`): the arms are a few operations each.
+vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     // Register indices and jump targets are valid by construction: the registers and the
-    // instructions are reached through many-pointers, without bounds checks.
-    regs := fr.store.ptr.cast([^]u64)
-    ins := code.ins.ptr
+    // instructions are reached through many-pointers, without bounds checks. The loop
+    // keeps only them and the index of the instruction in variables of its own; the rest
+    // of what is running is in its record `cur`: this one for the body, and one in
+    // scratch memory for each call made in the loop.
+    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), tm: 0)
+    cur := &base
+    regs := cur.regs
+    bc := body.bc.ptr
     pc: usize = 0
-    // The registers of the constants (usually a few: copied a word at a time).
+    vm_consts(body, regs)
+    if body.env_reg is not NO_REG {
+        if e := a.fr.env { regs[usize(body.env_reg)] = u64(e.addr()) }
+    }
+    while true {
+        done := false
+        while true {
+            i := &bc[pc]
+            match i.op {
+                .Mov => { regs[usize(i.a)] = regs[usize(i.b)] }
+                .K => { regs[usize(i.a)] = u64(i.b) | (u64(i.c) <<% 32) }
+                .AddI => {
+                    v := (regs[usize(i.b)].bits(i64) +? regs[usize(i.c)].bits(i64)) else break
+                    regs[usize(i.a)] = v.bits(u64)
+                }
+                .SubI => {
+                    v := (regs[usize(i.b)].bits(i64) -? regs[usize(i.c)].bits(i64)) else break
+                    regs[usize(i.a)] = v.bits(u64)
+                }
+                .MulI => {
+                    v := (regs[usize(i.b)].bits(i64) *? regs[usize(i.c)].bits(i64)) else break
+                    regs[usize(i.a)] = v.bits(u64)
+                }
+                .AddU => { regs[usize(i.a)] = (regs[usize(i.b)] +? regs[usize(i.c)]) else break }
+                .SubU => { regs[usize(i.a)] = (regs[usize(i.b)] -? regs[usize(i.c)]) else break }
+                .MulU => { regs[usize(i.a)] = (regs[usize(i.b)] *? regs[usize(i.c)]) else break }
+                .AddW => { regs[usize(i.a)] = regs[usize(i.b)] +% regs[usize(i.c)] }
+                .SubW => { regs[usize(i.a)] = regs[usize(i.b)] -% regs[usize(i.c)] }
+                .MulW => { regs[usize(i.a)] = regs[usize(i.b)] *% regs[usize(i.c)] }
+                .AddS => { regs[usize(i.a)] = arith32(0, true, false, u32(i.w), regs[usize(i.b)], regs[usize(i.c)]) else break }
+                .SubS => { regs[usize(i.a)] = arith32(1, true, false, u32(i.w), regs[usize(i.b)], regs[usize(i.c)]) else break }
+                .MulS => { regs[usize(i.a)] = arith32(2, true, false, u32(i.w), regs[usize(i.b)], regs[usize(i.c)]) else break }
+                .AddN => { regs[usize(i.a)] = arith32(0, false, false, u32(i.w), regs[usize(i.b)], regs[usize(i.c)]) else break }
+                .SubN => { regs[usize(i.a)] = arith32(1, false, false, u32(i.w), regs[usize(i.b)], regs[usize(i.c)]) else break }
+                .MulN => { regs[usize(i.a)] = arith32(2, false, false, u32(i.w), regs[usize(i.b)], regs[usize(i.c)]) else break }
+                .AddM => { regs[usize(i.a)] = (regs[usize(i.b)] +% regs[usize(i.c)]) & mask64(u32(i.w)) }
+                .SubM => { regs[usize(i.a)] = (regs[usize(i.b)] -% regs[usize(i.c)]) & mask64(u32(i.w)) }
+                .MulM => { regs[usize(i.a)] = (regs[usize(i.b)] *% regs[usize(i.c)]) & mask64(u32(i.w)) }
+                .AddF => { regs[usize(i.a)] = (regs[usize(i.b)].bits(f64) + regs[usize(i.c)].bits(f64)).bits(u64) }
+                .SubF => { regs[usize(i.a)] = (regs[usize(i.b)].bits(f64) - regs[usize(i.c)].bits(f64)).bits(u64) }
+                .MulF => { regs[usize(i.a)] = (regs[usize(i.b)].bits(f64) * regs[usize(i.c)].bits(f64)).bits(u64) }
+                .DivF => { regs[usize(i.a)] = (regs[usize(i.b)].bits(f64) / regs[usize(i.c)].bits(f64)).bits(u64) }
+                .And => { regs[usize(i.a)] = regs[usize(i.b)] & regs[usize(i.c)] }
+                .Or => { regs[usize(i.a)] = regs[usize(i.b)] | regs[usize(i.c)] }
+                .Xor => { regs[usize(i.a)] = regs[usize(i.b)] ~ regs[usize(i.c)] }
+                .AddR => { regs[usize(i.a)] +%= regs[usize(i.b)] }
+                .AddK => { regs[usize(i.a)] +%= u64(i.b) | (u64(i.c) <<% 32) }
+                .Not => { regs[usize(i.a)] = if regs[usize(i.b)] is 0 { 1 } else { 0 } }
+                .Bool => { regs[usize(i.a)] = if regs[usize(i.a)] is 0 { 0 } else { 1 } }
+                .Mask => { regs[usize(i.a)] = regs[usize(i.b)] & mask64(u32(i.w)) }
+                .Sext => { regs[usize(i.a)] = sext(regs[usize(i.b)], u32(i.f)).bits(u64) & mask64(u32(i.w)) }
+                .LtU => { regs[usize(i.a)] = if regs[usize(i.b)] < regs[usize(i.c)] { 1 } else { 0 } }
+                .LeU => { regs[usize(i.a)] = if regs[usize(i.b)] <= regs[usize(i.c)] { 1 } else { 0 } }
+                .LtI => { regs[usize(i.a)] = if regs[usize(i.b)].bits(i64) < regs[usize(i.c)].bits(i64) { 1 } else { 0 } }
+                .LeI => { regs[usize(i.a)] = if regs[usize(i.b)].bits(i64) <= regs[usize(i.c)].bits(i64) { 1 } else { 0 } }
+                .LtS => { regs[usize(i.a)] = if sext(regs[usize(i.b)], u32(i.w)) < sext(regs[usize(i.c)], u32(i.w)) { 1 } else { 0 } }
+                .LeS => { regs[usize(i.a)] = if sext(regs[usize(i.b)], u32(i.w)) <= sext(regs[usize(i.c)], u32(i.w)) { 1 } else { 0 } }
+                .LtF => { regs[usize(i.a)] = if regs[usize(i.b)].bits(f64) < regs[usize(i.c)].bits(f64) { 1 } else { 0 } }
+                .LeF => { regs[usize(i.a)] = if regs[usize(i.b)].bits(f64) <= regs[usize(i.c)].bits(f64) { 1 } else { 0 } }
+                .Eq => { regs[usize(i.a)] = if regs[usize(i.b)] is regs[usize(i.c)] { 1 } else { 0 } }
+                .Ne => { regs[usize(i.a)] = if regs[usize(i.b)] is regs[usize(i.c)] { 0 } else { 1 } }
+                .JLtU => if not (regs[usize(i.a)] < regs[usize(i.b)]) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JLeU => if not (regs[usize(i.a)] <= regs[usize(i.b)]) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JLtI => if not (regs[usize(i.a)].bits(i64) < regs[usize(i.b)].bits(i64)) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JLeI => if not (regs[usize(i.a)].bits(i64) <= regs[usize(i.b)].bits(i64)) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JLtS => if not (sext(regs[usize(i.a)], u32(i.w)) < sext(regs[usize(i.b)], u32(i.w))) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JLeS => if not (sext(regs[usize(i.a)], u32(i.w)) <= sext(regs[usize(i.b)], u32(i.w))) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JLtF => if not (regs[usize(i.a)].bits(f64) < regs[usize(i.b)].bits(f64)) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JLeF => if not (regs[usize(i.a)].bits(f64) <= regs[usize(i.b)].bits(f64)) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JEq => if regs[usize(i.a)] is regs[usize(i.b)] {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JNe => if regs[usize(i.a)] is not regs[usize(i.b)] {
+                    pc = usize(i.c)
+                    continue
+                }
+                .Jmp => {
+                    pc = usize(i.a)
+                    continue
+                }
+                .Jz => if regs[usize(i.a)] is 0 {
+                    pc = usize(i.c)
+                    continue
+                }
+                .Jnz => if regs[usize(i.a)] is not 0 {
+                    pc = usize(i.c)
+                    continue
+                }
+                .Loop => {
+                    // Other threads run first (`vm_free`).
+                    if m.threads.list.items.len > 1 { break }
+                    pc = usize(i.a)
+                    continue
+                }
+                .Fr1 => { regs[usize(i.a)] = ld1(fat(regs, usize(i.b))) }
+                .Fr2 => { regs[usize(i.a)] = ld2(fat(regs, usize(i.b))) }
+                .Fr4 => { regs[usize(i.a)] = ld4(fat(regs, usize(i.b))) }
+                .Fr8 => { regs[usize(i.a)] = ld8(fat(regs, usize(i.b))) }
+                .FrSet1 => st1(fat(regs, usize(i.a)), regs[usize(i.b)])
+                .FrSet2 => st2(fat(regs, usize(i.a)), regs[usize(i.b)])
+                .FrSet4 => st4(fat(regs, usize(i.a)), regs[usize(i.b)])
+                .FrSet8 => st8(fat(regs, usize(i.a)), regs[usize(i.b)])
+                .FrD => { regs[usize(i.a)] = ldn(fat(regs, usize(i.b) + us(regs[usize(i.c)])), i.f) }
+                .FrSetD => stn(fat(regs, usize(i.a) + us(regs[usize(i.b)])), i.f, regs[usize(i.c)])
+                .JFrZ => if ldn(fat(regs, usize(i.a)), i.f) is 0 {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JFrNz => if ldn(fat(regs, usize(i.a)), i.f) is not 0 {
+                    pc = usize(i.c)
+                    continue
+                }
+                .JTag => if ldn(fat(regs, usize(i.a)), i.f) is not u64(i.b) {
+                    pc = usize(i.c)
+                    continue
+                }
+                .Ld1 => {
+                    p := m.mem.view(regs[usize(i.b)] +% u64(i.c), 1, false) else break
+                    regs[usize(i.a)] = ld1(p)
+                }
+                .Ld2 => {
+                    p := m.vm_view(regs[usize(i.b)] +% u64(i.c), 2, u64(i.w), false) else break
+                    regs[usize(i.a)] = ld2(p)
+                }
+                .Ld4 => {
+                    p := m.vm_view(regs[usize(i.b)] +% u64(i.c), 4, u64(i.w), false) else break
+                    regs[usize(i.a)] = ld4(p)
+                }
+                .Ld8 => {
+                    p := m.vm_view(regs[usize(i.b)] +% u64(i.c), 8, u64(i.w), false) else break
+                    regs[usize(i.a)] = ld8(p)
+                }
+                .St1 => {
+                    p := m.mem.view(regs[usize(i.a)] +% u64(i.c), 1, true) else break
+                    st1(p, regs[usize(i.b)])
+                }
+                .St2 => {
+                    p := m.vm_view(regs[usize(i.a)] +% u64(i.c), 2, u64(i.w), true) else break
+                    st2(p, regs[usize(i.b)])
+                }
+                .St4 => {
+                    p := m.vm_view(regs[usize(i.a)] +% u64(i.c), 4, u64(i.w), true) else break
+                    st4(p, regs[usize(i.b)])
+                }
+                .St8 => {
+                    p := m.vm_view(regs[usize(i.a)] +% u64(i.c), 8, u64(i.w), true) else break
+                    st8(p, regs[usize(i.b)])
+                }
+                .SliceLd => {
+                    k := regs[usize(i.c)]
+                    if k >= regs[usize(i.b) + 1] { break }
+                    p := m.vm_view(regs[usize(i.b)] +% k *% u64(i.w), u64(i.f), u64(i.f), false) else break
+                    regs[usize(i.a)] = ldn(p, i.f)
+                }
+                .SliceSt => {
+                    k := regs[usize(i.c)]
+                    if k >= regs[usize(i.a) + 1] { break }
+                    p := m.vm_view(regs[usize(i.a)] +% k *% u64(i.w), u64(i.f), u64(i.f), true) else break
+                    stn(p, i.f, regs[usize(i.b)])
+                }
+                .ScaleIdx => {
+                    k := regs[usize(i.a)]
+                    if k >= u64(i.b) { break }
+                    regs[usize(i.a)] = k *% u64(i.c)
+                }
+                .SliceIdx => {
+                    k := regs[usize(i.c)]
+                    if k >= regs[usize(i.b)] { break }
+                    regs[usize(i.a)] = regs[usize(i.a)] +% k *% u64(i.w)
+                }
+                .ArrIdx => {
+                    k := regs[usize(i.b)]
+                    if k >= u64(i.c) { break }
+                    regs[usize(i.a)] = regs[usize(i.a)] +% k *% u64(i.w)
+                }
+                .PtrIdx => { regs[usize(i.a)] = regs[usize(i.a)] +% regs[usize(i.b)] *% u64(i.c) }
+                .ShrU => {
+                    q := regs[usize(i.c)]
+                    if q >= u64(i.w) { break }
+                    regs[usize(i.a)] = regs[usize(i.b)] >> q
+                }
+                .ShrS => {
+                    q := regs[usize(i.c)]
+                    if q >= u64(i.w) { break }
+                    regs[usize(i.a)] = (sext(regs[usize(i.b)], u32(i.w)) >> q.trunc(u32)).bits(u64) & mask64(u32(i.w))
+                }
+                .ShlM => {
+                    q := regs[usize(i.c)]
+                    if q >= u64(i.w) { break }
+                    regs[usize(i.a)] = (regs[usize(i.b)] <<% q) & mask64(u32(i.w))
+                }
+                .ShlN => {
+                    q := regs[usize(i.c)]
+                    if q >= u64(i.w) { break }
+                    p := regs[usize(i.b)]
+                    low := (p <<% q) & mask64(u32(i.w))
+                    if (low >> q) is not p { break }
+                    regs[usize(i.a)] = low
+                }
+                .DivU => {
+                    q := regs[usize(i.c)]
+                    if q is 0 { break }
+                    regs[usize(i.a)] = regs[usize(i.b)] / q
+                }
+                .RemU => {
+                    q := regs[usize(i.c)]
+                    if q is 0 { break }
+                    regs[usize(i.a)] = regs[usize(i.b)] % q
+                }
+                .DivS => {
+                    x := sext(regs[usize(i.b)], u32(i.w))
+                    y := sext(regs[usize(i.c)], u32(i.w))
+                    if y is 0 or (y is -1 and x is lo64(u32(i.w))) { break }
+                    regs[usize(i.a)] = (x / y).bits(u64) & mask64(u32(i.w))
+                }
+                .RemS => {
+                    x := sext(regs[usize(i.b)], u32(i.w))
+                    y := sext(regs[usize(i.c)], u32(i.w))
+                    if y is 0 or (y is -1 and x is lo64(u32(i.w))) { break }
+                    regs[usize(i.a)] = (x % y).bits(u64) & mask64(u32(i.w))
+                }
+                .Up => {
+                    up := us(regs[usize(cur.code.env_reg)]).to_ptr(^Frame) else break
+                    l := usize(i.b)
+                    if up.mem.ptr[l] is not 0 or up.info.addressed.ptr[l] { break }
+                    regs[usize(i.a)] = ldn((&up.store.ptr[us(up.info.offsets.ptr[l]) + usize(i.c)]).cast([^]u8), i.f)
+                }
+                .UpSet => {
+                    up := us(regs[usize(cur.code.env_reg)]).to_ptr(^Frame) else break
+                    l := usize(i.a)
+                    if up.mem.ptr[l] is not 0 or up.info.addressed.ptr[l] { break }
+                    stn((&up.store.ptr[us(up.info.offsets.ptr[l]) + usize(i.c)]).cast([^]u8), i.f, regs[usize(i.b)])
+                }
+                .LocalAddrH => {
+                    v := regs[usize(i.c)]
+                    if v is 0 { break }
+                    regs[usize(i.a)] = v
+                }
+                .SliceMake => {
+                    lo := regs[usize(i.c & 0xFFFF)]
+                    hi := regs[usize(i.c >> 16)]
+                    if i.f & 2 is not 0 { hi = hi +| 1 }
+                    if lo > hi or (i.f & 1 is not 0 and hi > regs[usize(i.b) + 1]) { break }
+                    pb := m.ptr_bytes.trunc(u8)
+                    stn(fat(regs, usize(i.a)), pb, regs[usize(i.b)] +% lo *% u64(i.w))
+                    stn(fat(regs, usize(i.a) + usize(pb)), pb, hi - lo)
+                }
+                .AlignChk => if regs[usize(i.a)] & u64(i.b) is not 0 { break }
+                .MemGet => {
+                    p := m.vm_view(regs[usize(i.b)] +% u64(i.c), u64(i.w), u64(1) << u64(i.f), false) else break
+                    fat(regs, usize(i.a))[0..usize(i.w)].copy_from(p[0..usize(i.w)])
+                }
+                .MemPut => {
+                    p := m.vm_view(regs[usize(i.a)] +% u64(i.c), u64(i.w), u64(1) << u64(i.f), true) else break
+                    p[0..usize(i.w)].copy_from(fat(regs, usize(i.b))[0..usize(i.w)])
+                }
+                .CopySlot => {
+                    k := usize(i.c)
+                    fat(regs, usize(i.a))[0..k].copy_from(fat(regs, usize(i.b))[0..k])
+                }
+                .ZeroSlot => fat(regs, usize(i.a))[0..usize(i.b)].fill(0)
+                .Mark => {
+                    k := usize(i.a)
+                    regs[k] = u64(m.scratch.cur)
+                    regs[k + 1] = u64(m.scratch.top)
+                    regs[k + 2] = u64(m.temps.items.len)
+                }
+                .Release => m.vm_release(regs, i.a)
+                .Call => {
+                    cur = m.vm_push(cur, pc, i.a) else break
+                    regs = cur.regs
+                    bc = cur.code.bc.ptr
+                    pc = 0
+                    continue
+                }
+                .RetW => {
+                    v := regs[usize(i.a)]
+                    p := cur.prev else {
+                        if cur.code.hidden.len is not 0 { m.vm_drop_locals(cur.code, regs) }
+                        m.wr_word(cur.dst, v)
+                        done = true
+                        break
+                    }
+                    if cur.fr is null and cur.ret_reg is not NO_REG and cur.code.hidden.len is 0 {
+                        // The common return: a word to the caller's register.
+                        p.regs[usize(cur.ret_reg)] = v
+                        m.vm_pop(cur)
+                        p.pc +%= 1
+                        cur = p
+                    } else {
+                        cur = try m.vm_ret(cur, true, v)
+                    }
+                    pc = cur.pc
+                    regs = cur.regs
+                    bc = cur.code.bc.ptr
+                    continue
+                }
+                .Ret, .RetSlot => {
+                    if i.op is .RetSlot { cur.dst.copy_from(fat(regs, usize(i.a))[0..usize(i.b)]) }
+                    if cur.prev is null {
+                        if cur.code.hidden.len is not 0 { m.vm_drop_locals(cur.code, regs) }
+                        done = true
+                        break
+                    }
+                    cur = try m.vm_ret(cur, false, 0)
+                    pc = cur.pc
+                    regs = cur.regs
+                    bc = cur.code.bc.ptr
+                    continue
+                }
+                .Free, .Framed => break
+            }
+            pc +%= 1
+        }
+        if done { break }
+        // The instruction as compiled: every case of it, traps included. A flow it raises
+        // goes to the loop it targets or leaves bodies (`vm_raise`).
+        next: usize = 0
+        if bc[pc].op is .Framed {
+            fr := cur.fr else return !m.trap(source.DUMMY, "internal error: an instruction needs a frame")
+            act := Act(fr: fr, cx: cur.cx)
+            res := m.vm_framed(&act, cur.code, regs, pc, cur.dst)
+            cur.cx = act.cx
+            next = res else f => {
+                cur = try m.vm_raise(cur, f)
+                cur.pc
+            }
+        } else {
+            next = m.vm_free(cur.cx, cur.code, regs, pc, cur.dst) else f => {
+                cur = try m.vm_raise(cur, f)
+                cur.pc
+            }
+        }
+        if next is VM_RETURN {
+            if cur.prev is null { break }
+            cur = try m.vm_ret(cur, false, 0)
+            next = cur.pc
+        }
+        regs = cur.regs
+        bc = cur.code.bc.ptr
+        pc = next
+    }
+    // The body returns, its result in `ret`.
+    if a.fr.defers.items.len is 0 and base.cx is a.cx { return () }
+    return m.vm_return(Act(fr: a.fr, cx: base.cx), a.cx, ret)
+}
+
+/// Returns from the call of `r`, made in the loop, to its caller: the result is the word
+/// `v` if `word`, else it is where the callee left it. A body with a frame runs its
+/// deferred statements and ends its frame, as `enter` does. Returns the record of the body
+/// that runs next, with the index of its next instruction in `pc` (a flow that the
+/// deferred statements raise continues in the caller, `vm_raise`).
+#noinline
+vm_ret :: fn(m: ^Machine, r: ^CallRec, word: bool, v: u64) -> Flow!^CallRec needs Run {
+    p := r.prev else return r
+    if fr := r.fr {
+        if word { m.wr_word(r.dst, v) }
+        res: Flow!() = ()
+        if fr.defers.items.len is not 0 or r.cx is not r.base_cx { res = m.vm_return(Act(fr: fr, cx: r.cx), r.base_cx, r.dst) }
+        if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
+        m.end_frame(fr)
+        m.vm_pop(r)
+        res else g => {
+            if .Trap(t) := g and m.mode is .Debug { t.trace.push(TraceCall(fn_id: r.f, span: p.code.ins[p.pc].call_span()))! }
+            return m.vm_raise(p, g)
+        }
+        if r.ret_reg is not NO_REG { p.regs[usize(r.ret_reg)] = m.rd_word(r.dst) }
+        p.pc += 1
+        return p
+    }
+    if r.code.hidden.len is not 0 { m.vm_drop_locals(r.code, r.regs) }
+    if word {
+        if r.ret_reg is NO_REG { m.wr_word(r.dst, v) } else { p.regs[usize(r.ret_reg)] = v }
+    } else if r.ret_reg is not NO_REG {
+        p.regs[usize(r.ret_reg)] = m.rd_word(r.dst)
+    }
+    m.vm_pop(r)
+    p.pc += 1
+    return p
+}
+
+/// Where the flow `flow`, raised in the body of `start`, continues: at a loop of that
+/// body or, leaving it as `enter` leaves a body (its deferred statements run, its frame
+/// ends), in a caller whose call was made in the loop; a `return` ends the call of its
+/// body. Returns the record of the body that runs next, with the index of its next
+/// instruction in `pc`, or the flow if it leaves the body the loop was entered for. A
+/// trap records the calls it leaves (Debug builds).
+#noinline
+vm_raise :: fn(m: ^Machine, start: ^CallRec, flow: Flow) -> Flow!^CallRec needs Run {
+    r := start
+    f := flow
+    while true {
+        if fr := r.fr {
+            act := Act(fr: fr, cx: r.cx)
+            res := m.vm_flow(&act, r.base_cx, r.code, r.regs, f)
+            r.cx = act.cx
+            pc := res else g => {
+                f = g
+                VM_RETURN
+            }
+            if pc is not VM_RETURN {
+                r.pc = pc
+                return r
+            }
+        }
+        if r.code.hidden.len is not 0 { m.vm_drop_locals(r.code, r.regs) }
+        p := r.prev else return !f
+        returned := false
+        if fr := r.fr {
+            if .Return(frame, _) := f and frame is fr.id { returned = true }
+            if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
+            m.end_frame(fr)
+        }
+        if not returned {
+            if .Trap(t) := f and m.mode is .Debug { t.trace.push(TraceCall(fn_id: r.f, span: p.code.ins[p.pc].call_span()))! }
+        }
+        m.vm_pop(r)
+        if returned {
+            if r.ret_reg is not NO_REG { p.regs[usize(r.ret_reg)] = m.rd_word(r.dst) }
+            p.pc += 1
+            return p
+        }
+        r = p
+    }
+}
+
+/// The registers of the constants of `code` (usually a few: copied a word at a time).
+#inline
+vm_consts :: fn(code: ^const Code, regs: [^]u64) {
     if code.consts.len > 0 {
         cr := us(code.regs_off / 8)
         cs := code.consts.ptr
@@ -249,373 +749,533 @@ vm_run :: fn(m: ^Machine, a: Act, code: ^Code, dst: []u8) -> Flow!() needs Run {
             k += 1
         }
     }
-    while true {
-        match ins[pc] {
-            .Const(r, v) => { regs[usize(r)] = v }
-            .Arith64(op, signed, wrap, r, ra, rb, n) => {
-                p := regs[usize(ra)]
-                q := regs[usize(rb)]
-                if v := arith64(op, signed, wrap, p, q) {
-                    regs[usize(r)] = v
-                } else {
-                    regs[usize(r)] = m.int_word(arith_op(op, false), IntW(signed: signed, bits: 64), IntW(signed: signed, bits: 64), p, q, n) else f => {
-                        pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                        continue
-                    }
-                }
-            }
-            .Arith32(op, signed, wrap, bits, r, ra, rb, n) => {
-                p := regs[usize(ra)]
-                q := regs[usize(rb)]
-                if v := arith32(op, signed, wrap, bits, p, q) {
-                    regs[usize(r)] = v
-                } else {
-                    regs[usize(r)] = m.int_word(arith_op(op, false), IntW(signed: signed, bits: bits), IntW(signed: signed, bits: bits), p, q, n) else f => {
-                        pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                        continue
-                    }
-                }
-            }
-            .LocalAtD(r, at, d, size) => { regs[usize(r)] = st_rd(m, fr, usize(at) + us(regs[usize(d)]), size) }
-            .SetLocalAtD(at, d, size, v) => st_wr(m, fr, usize(at) + us(regs[usize(d)]), size, regs[usize(v)])
-            .ScaleIdx(ri, len, esz, n) => {
-                i := regs[usize(ri)]
-                if i >= len {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.bounds_trap(n, i, len))
-                    continue
-                }
-                regs[usize(ri)] = i * esz
-            }
-            .AddR(r, x) => { regs[usize(r)] +%= regs[usize(x)] }
-            .Bit(op, r, ra, rb) => {
-                p := regs[usize(ra)]
-                q := regs[usize(rb)]
-                regs[usize(r)] = if op is 0 { p & q } else if op is 1 { p | q } else { p ~ q }
-            }
-            .Shr(t, shift, r, ra, rb, n) => {
-                p := regs[usize(ra)]
-                q := regs[usize(rb)]
-                if v := shr_fast(t, shift, p, q) {
-                    regs[usize(r)] = v
-                } else {
-                    regs[usize(r)] = m.int_word(.Shr, t, shift, p, q, n) else f => {
-                        pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                        continue
-                    }
-                }
-            }
-            .Shl(t, shift, wrap, r, ra, rb, n) => {
-                p := regs[usize(ra)]
-                q := regs[usize(rb)]
-                if v := shl_fast(t, shift, wrap, p, q) {
-                    regs[usize(r)] = v
-                } else {
-                    regs[usize(r)] = m.int_word(.Shl(if wrap { ast.Flavor.Wrap } else { .Checked }), t, shift, p, q, n) else f => {
-                        pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                        continue
-                    }
-                }
-            }
-            .JCmp(op, how, ra, rb, to) => if not word_less(op, how, regs[usize(ra)], regs[usize(rb)]) {
-                pc = usize(to)
-                continue
-            }
-            .JEq(how, negated, ra, rb, to) => if word_eq(how, regs[usize(ra)], regs[usize(rb)]) is negated {
-                pc = usize(to)
-                continue
-            }
-            .IntOp(x) => {
-                regs[usize(x.r)] = m.int_word(x.op, x.t, x.shift, regs[usize(x.a)], regs[usize(x.b)], x.n) else f => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                    continue
-                }
-            }
-            .LocalAt(r, at, size) => { regs[usize(r)] = st_rd(m, fr, usize(at), size) }
-            .SetLocalAt(at, size, v) => st_wr(m, fr, usize(at), size, regs[usize(v)])
-            .Load(r, base, off, size, align, n) => {
-                addr := regs[usize(base)] +% u64(off)
-                b := m.mem.read(addr, u64(size), u64(align)) else e => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.mem_trap(n.span, e))
-                    continue
-                }
-                regs[usize(r)] = m.rd_word(b)
-            }
-            .Store(x) => {
-                addr := regs[usize(x.base)] +% u64(x.off)
-                b := m.mem.write_view(addr, u64(x.size), u64(x.align)) else e => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.mem_trap(x.n.span, e))
-                    continue
-                }
-                m.wr_word(b, regs[usize(x.v)])
-            }
-            .SliceIdx(x) => {
-                i := regs[usize(x.i)]
-                len := regs[usize(x.len)]
-                if i >= len {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.bounds_trap(x.n, i, len))
-                    continue
-                }
-                k := usize(x.p)
-                regs[k] = regs[k] +% i * x.esz
-            }
-            .SliceLd(x) => {
-                i := regs[usize(x.i)]
-                len := regs[usize(x.len)]
-                if i >= len {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.bounds_trap(x.n, i, len))
-                    continue
-                }
-                b := m.mem.read(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.mem_trap(x.n.span, e))
-                    continue
-                }
-                regs[usize(x.r)] = m.rd_word(b)
-            }
-            .SliceSt(x) => {
-                i := regs[usize(x.i)]
-                len := regs[usize(x.len)]
-                if i >= len {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.bounds_trap(x.n, i, len))
-                    continue
-                }
-                b := m.mem.write_view(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.mem_trap(x.n.span, e))
-                    continue
-                }
-                m.wr_word(b, regs[usize(x.v)])
-            }
-            .ArrIdx(x) => {
-                i := regs[usize(x.i)]
-                if i >= x.len {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.bounds_trap(x.n, i, x.len))
-                    continue
-                }
-                k := usize(x.p)
-                regs[k] = regs[k] +% i * x.esz
-            }
-            .PtrIdx(x) => {
-                k := usize(x.p)
-                regs[k] = regs[k] +% regs[usize(x.i)] *% x.esz
-            }
-            .AddK(r, k) => { regs[usize(r)] +%= k }
-            .Cmp(op, how, r, ra, rb) => { regs[usize(r)] = if word_less(op, how, regs[usize(ra)], regs[usize(rb)]) { 1 } else { 0 } }
-            .EqW(x) => { regs[usize(x.r)] = if word_eq(x.how, regs[usize(x.a)], regs[usize(x.b)]) is not x.negated { 1 } else { 0 } }
-            .Not(r, x) => { regs[usize(r)] = if regs[usize(x)] is 0 { 1 } else { 0 } }
-            .Bool(r) => { regs[usize(r)] = if regs[usize(r)] is 0 { 0 } else { 1 } }
-            .IntConv(x) => { regs[usize(x.r)] = conv_word(x.op, x.from, x.to, regs[usize(x.a)]) }
-            .IntBit(x) => { regs[usize(x.r)] = bit_word(x.op, x.t, regs[usize(x.a)], regs[usize(x.b)]) }
-            .FloatOp(x) => { regs[usize(x.r)] = float_op(x.op, x.wide, regs[usize(x.a)], regs[usize(x.b)]) }
-            .Jmp(to) => {
-                pc = usize(to)
-                continue
-            }
-            .Jz(r, to) => if regs[usize(r)] is 0 {
-                pc = usize(to)
-                continue
-            }
-            .Jnz(r, to) => if regs[usize(r)] is not 0 {
-                pc = usize(to)
-                continue
-            }
-            .Call(x) => {
-                m.vm_call(act, x.f, x.args, x.dst, x.node, regs, dst) else f => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                    continue
-                }
-            }
-            .Perform(x) => {
-                m.vm_perform(act, x.args, x.dst, x.node, regs, dst) else f => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                    continue
-                }
-            }
-            .UpvarAt(x) => {
-                regs[usize(x.r)] = m.vm_upvar_at(fr, x.levels, x.local, x.rel, x.size, x.align, x.n) else f => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                    continue
-                }
-            }
-            .SetUpvarAt(x) => {
-                m.vm_set_upvar_at(fr, x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n) else f => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                    continue
-                }
-            }
-            .CopySlot(d, src, size) => {
-                o := usize(d)
-                q := usize(src)
-                k := usize(size)
-                fr.store[o..o + k].copy_from(fr.store[q..q + k])
-            }
-            .SlotW(r, at, size) => {
-                o := usize(at)
-                regs[usize(r)] = st_rd(m, fr, o, size)
-            }
-            .WSlot(at, size, r) => {
-                o := usize(at)
-                st_wr(m, fr, o, size, regs[usize(r)])
-            }
-            .JSlot(at, size, nonzero, to) => {
-                o := usize(at)
-                if (st_rd(m, fr, o, size) is not 0) is nonzero {
-                    pc = usize(to)
-                    continue
-                }
-            }
-            .JTag(at, size, v, to) => {
-                o := usize(at)
-                if st_rd(m, fr, o, size) is not v {
-                    pc = usize(to)
-                    continue
-                }
-            }
-            .Mov(r, x) => { regs[usize(r)] = regs[usize(x)] }
-            .NoArm(n) => return !m.trap(n.span, "no match arm matched the scrutinee")
-            .RetW(r) => {
-                m.wr_word(dst, regs[usize(r)])
-                break
-            }
-            .RetEval(n) => {
-                m.ev(act, n, dst) else f => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                    continue
-                }
-                break
-            }
-            .Ret => break
-            .Mark(r) => {
-                k := usize(r)
-                regs[k] = u64(m.scratch.cur)
-                regs[k + 1] = u64(m.scratch.top)
-                regs[k + 2] = u64(m.temps.items.len)
-            }
-            .Release(r) => m.vm_release(regs, r)
-            .DeferHeight(r) => { regs[usize(r)] = u64(fr.defers.items.len) }
-            .ConstSlot(at, b) => {
-                o := usize(at)
-                fr.store[o..o + b.len].copy_from(b)
-            }
-            .ZeroSlot(at, size) => {
-                o := usize(at)
-                fr.store[o..o + usize(size)].fill(0)
-            }
-            .SliceMake(x) => {
-                lo := regs[usize(x.lo)]
-                hi := regs[usize(x.hi)]
-                if x.inclusive { hi = hi +| 1 }
-                if lo > hi or (x.has_len and hi > regs[usize(x.len)]) {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, m.slice_trap(x.n, lo, hi, if x.has_len { regs[usize(x.len)] } else { null }))
-                    continue
-                }
-                o := usize(x.at)
-                pb := us(m.ptr_bytes)
-                st_wr(m, fr, o, pb.trunc(u32), regs[usize(x.p)] +% lo * x.esz)
-                st_wr(m, fr, o + pb, pb.trunc(u32), hi - lo)
-            }
-            .LocalAddr(r, local, n) => {
-                regs[usize(r)] = m.local_addr(n.span, fr, local) else f => {
-                    pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                    continue
-                }
-            }
-            .RetSlot(at, size) => {
-                o := usize(at)
-                dst.copy_from(fr.store[o..o + usize(size)])
-                break
-            }
-            .CxSave(r) => { regs[usize(r)] = u64(act.cx) }
-            .CxRestore(r) => m.vm_cx_restore(&act, regs, r)
-            .WithDecl(x) => { act.cx = m.vm_with_decl(fr, act.cx, x.decls, x.at, x.size, x.label) }
-            .Loop(to) => {
-                if m.threads.list.items.len > 1 {
-                    m.tick(source.DUMMY) else f => {
-                        pc = try m.vm_flow(&act, a.cx, code, regs, f)
-                        continue
-                    }
-                }
-                pc = usize(to)
-                continue
-            }
-            _ => {
-                pc = try m.vm_slow(&act, a.cx, code, regs, pc, dst)
-                continue
-            }
-        }
-        pc += 1
-    }
-    // The body returns, its result in `dst`.
-    if fr.defers.items.len is 0 and act.cx is a.cx { return () }
-    return m.vm_return(act, a.cx, dst)
 }
 
-/// Runs the instruction at `pc` of `code` if it is one that `vm_run` leaves to it (those of
-/// the tree evaluator, deferred statements, loops' labels, locals in memory and calls of
-/// function values), which keeps `vm_run` small enough for the C compiler to optimize
-/// well; returns the index of the instruction to run next (`dst` is the function's result).
+/// The bytes of a frame's storage from offset `o`.
+#inline
+fat :: fn(regs: [^]u64, o: usize) -> [^]u8 => (&regs.cast([^]u8)[o]).cast([^]u8)
+
+/// The location of the call that instruction `i` makes.
+call_span :: fn(i: ^const Ins) -> source.Span => match i^ {
+    .Call(x) => x.node.span
+    .Perform(x) => x.node.span
+    .CallValue(x) => x.node.span
+    _ => source.DUMMY
+}
+
+/// Starts the call at `pc` of `code` inside the machine's loop, if its callee is a body
+/// the machine runs without a frame and the call is an ordinary one (outside fibers and
+/// other threads, not too deep): the callee's storage and the record of the call are taken
+/// from scratch memory and the arguments are written, and the callee becomes what is
+/// running. Returns false if the call has to be made the general way (`vm_call`).
 #noinline
-vm_slow :: fn(m: ^Machine, act: ^Act, base: u32, code: ^Code, regs: [^]u64, pc: usize, dst: []u8) -> Flow!usize needs Run {
+vm_push :: fn(m: ^Machine, cur: ^CallRec, pc: usize, site: u32) -> ?^CallRec needs Alloc {
+    if site is not NO_REG {
+        s := &cur.code.sites.ptr[usize(site)]
+        if s.state is 0 { m.vm_site(cur.code, pc, s) }
+        if s.state is 1 {
+            if n := m.vm_push_site(cur, pc, s) { return n }
+        }
+    }
+    return m.vm_push_rec(cur, pc)
+}
+
+/// Works out the site `s` of the direct call at `pc` of `code`.
+vm_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite) needs Alloc {
+    s.state = 2
+    .Call(x) := code.ins.ptr[pc] else return ()
+    info := m.fn_info(x.f)
+    callee := info.vm else return ()
+    if not callee.frameless or callee.env_reg is not NO_REG or x.args.len is not info.params.len or info.cost > sema.MAX_FRAME { return () }
+    match x.dst {
+        .Reg(rr) => {
+            s.out_kind = 0
+            s.ret_reg = rr
+        }
+        .None => {
+            if x.node.size > 8 { return () }
+            s.out_kind = 0
+        }
+        .Slot(at) => {
+            s.out_kind = 1
+            s.out_at = at
+        }
+        .Ret => { s.out_kind = 2 }
+    }
+    moves := list(Move)
+    for i in 0..x.args.len {
+        p := usize(info.params[i])
+        off := info.offsets[p].trunc(u32)
+        match x.args[i] {
+            .Reg(r) => {
+                // A word parameter kept in the frame's storage is a register there.
+                if m.word_locals and not info.addressed[p] and info.sizes[p] > 0 {
+                    moves.push(Move(kind: 0, src: r, dst: off / 8, size: 8))!
+                } else {
+                    moves.push(Move(kind: 2, src: r, dst: off, size: info.sizes[p].trunc(u32)))!
+                }
+            }
+            .Slot(at, size) => moves.push(Move(kind: 1, src: at, dst: off, size: size))!
+        }
+    }
+    s.moves = moves.items
+    s.f = x.f
+    s.out_size = x.node.size.trunc(u32)
+    s.callee = callee
+    s.frame_size = us(info.frame_size)
+    s.state = 1
+}
+
+/// `vm_push` for the common call that `s` describes: `null` if it cannot be made now (on
+/// a fiber, with other threads, too deep, or without room in the scratch chunk).
+#inline
+vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) -> ?^CallRec {
+    if m.depth >= MAX_DEPTH or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 { return null }
+    callee := s.callee else return null
+    sc := &m.scratch
+    chunk := sc.chunks.items.ptr[sc.cur]
+    base := chunk.ptr.addr()
+    top := ((base +% sc.top +% 7) & ~us(7)) -% base
+    head := (@size_of(CallRec) + 7) / 8 * 8
+    if top +% head +% s.frame_size > chunk.len { return null }
+    b := (&chunk.ptr[top]).cast([^]u8)
+    n := b.cast(^CallRec)
+    frame := (&b[head]).cast([^]u64)
+    fat(frame, 0)[0..s.frame_size].fill(0)
+    regs := cur.regs
+    k: usize = 0
+    while k < s.moves.len {
+        mv := &s.moves.ptr[k]
+        if mv.kind is 0 {
+            frame[usize(mv.dst)] = regs[usize(mv.src)]
+        } else if mv.kind is 1 {
+            fat(frame, usize(mv.dst))[0..usize(mv.size)].copy_from(fat(regs, usize(mv.src))[0..usize(mv.size)])
+        } else {
+            m.wr_word(fat(frame, usize(mv.dst))[0..usize(mv.size)], regs[usize(mv.src)])
+        }
+        k +%= 1
+    }
+    n.prev = cur
+    n.code = callee
+    n.regs = frame
+    n.fr = null
+    n.cx = cur.cx
+    n.base_cx = cur.cx
+    n.pc = 0
+    n.f = s.f
+    n.ret_reg = s.ret_reg
+    n.buf = [8]u8(fill: 0)
+    n.mark = Mark(cur: sc.cur, top: sc.top)
+    n.tm = m.temps.items.len
+    n.dst = if s.out_kind is 0 { n.buf[0..usize(s.out_size)] } else if s.out_kind is 1 { fat(regs, usize(s.out_at))[0..usize(s.out_size)] } else { cur.dst }
+    sc.top = top +% head +% s.frame_size
+    vm_consts(callee, frame)
+    m.depth +%= 1
+    cur.pc = pc
+    return n
+}
+
+/// `vm_push` for the call at `pc` of the body of `cur`, whatever it calls (`null` if it
+/// is not made in the loop).
+vm_push_rec :: fn(m: ^Machine, cur: ^CallRec, pc: usize) -> ?^CallRec needs Alloc {
+    cx := cur.cx
+    match cur.code.ins.ptr[pc] {
+        .Call(x) => return m.vm_push_fn(cur, pc, x.f, null, cx, null, false, null, x.args, x.dst, x.node)
+        // An operation that is not `ctl`: the clause of a handler literal runs in the
+        // frame and context where the literal was written, that of a handler declaration
+        // gets the handler's value first, in the context outside its `with`.
+        .Perform(x) => {
+            .Perform(p) := x.node.op else return null
+            k := m.find_ctx(cx, &p.effect_)
+            if k is 0 or m.p.is_ctl(p.effect_.eff, p.op) { return null }
+            node := &m.ctxs.items[us(k)]
+            installing: ?(frame: ^Frame, label: u32) = null
+            if fr := node.with_fr { installing = (frame: fr, label: node.with_label) }
+            match node.installed {
+                .Lit(h, ?env, lcx) => return m.vm_push_fn(cur, pc, m.p.handler_lit(h).clauses[us(p.op)], env, lcx, installing, true, null, x.args, x.dst, x.node)
+                .Decl(decls, value, outer) => for d in decls {
+                    info := m.p.handler_decl(d)
+                    if info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0 { continue }
+                    return m.vm_push_fn(cur, pc, info.clauses[us(p.op)], null, outer, installing, false, value, x.args, x.dst, x.node)
+                }
+                .Native(_) => {}
+            }
+            return null
+        }
+        // A function pointer, or a function value whose type lists no effect to handle at
+        // the call.
+        .CallValue(x) => {
+            cv := fat(cur.regs, usize(x.at))[0..us(x.callee.size)]
+            if .Fn(sig) := m.kind(x.callee.ty) {
+                if sig.effects.effects.len is not 0 { return null }
+                f := m.fn_from_addr(m.word(cv, 0)) else return null
+                return m.vm_push_fn(cur, pc, f, m.frame_of(m.word(cv, 1)), m.word(cv, 2).trunc(u32), null, false, null, x.args, x.dst, x.node)
+            }
+            f := m.fn_from_addr(m.ptr_of(cv)) else return null
+            return m.vm_push_fn(cur, pc, f, null, cx, null, false, null, x.args, x.dst, x.node)
+        }
+        _ => return null
+    }
+}
+
+/// `vm_push` for a call of `f`, capturing `env`, in context `callee_cx` (a clause of the
+/// `with` `installing` if any), with the arguments `args` after the handler value `self_`
+/// for a clause of a handler declaration; its result (the value of `n`) goes to `to`. A
+/// body that needs a frame gets it here, as `enter` gives it.
+vm_push_fn :: fn(m: ^Machine, cur: ^CallRec, pc: usize, f: u32, env: ?^Frame, callee_cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, self_: ?[]u8, args: []Arg, to: Dest, n: ^Node) -> ?^CallRec needs Alloc {
+    info := m.fn_info(f)
+    callee := info.vm else return null
+    first: usize = if self_ is null { 0 } else { 1 }
+    if args.len + first is not info.params.len or info.cost > sema.MAX_FRAME or m.depth >= MAX_DEPTH or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 { return null }
+    regs := cur.regs
+    mk := m.mark()
+    // The storage stays aligned to 8 bytes after the record.
+    head := (@size_of(CallRec) + 7) / 8 * 8
+    b := m.tmp(u64(head) + info.frame_size)
+    r := b.ptr.cast(^CallRec)
+    store := b[head..b.len]
+    if v := self_ {
+        off := us(info.offsets[us(info.params[0])])
+        store[off..off + v.len].copy_from(v)
+    }
+    m.vm_put_args(info, first, args, regs, store)
+    r.prev = cur
+    r.code = callee
+    r.regs = (&b[head]).cast([^]u64)
+    r.fr = null
+    r.cx = callee_cx
+    r.base_cx = callee_cx
+    r.pc = 0
+    r.f = f
+    r.mark = mk
+    r.tm = m.temps.items.len
+    if e := env and callee.env_reg is not NO_REG { r.regs[usize(callee.env_reg)] = u64(e.addr()) }
+    r.ret_reg = NO_REG
+    size := us(n.size)
+    match to {
+        .Reg(rr) => {
+            r.ret_reg = rr
+            r.dst = r.buf[0..size]
+        }
+        .None => { r.dst = if size <= 8 { r.buf[0..size] } else { m.tmp(n.size) } }
+        .Slot(at) => { r.dst = fat(regs, usize(at))[0..size] }
+        .Ret => { r.dst = cur.dst }
+    }
+    if not callee.frameless {
+        fr := m.new_frame(f, info, r.dst, env, store)
+        fr.installing = installing
+        fr.is_clause_lit = is_clause_lit
+        // Parameters whose address is taken move to memory of their own.
+        if info.addressed_params {
+            for p in info.params {
+                if info.addressed[us(p)] {
+                    _ = m.local_addr(n.span, fr, p) else _ => {
+                        // The call made the general way reports it.
+                        m.end_frame(fr)
+                        m.release(mk)
+                        return null
+                    }
+                }
+            }
+        }
+        r.fr = fr
+    }
+    vm_consts(callee, r.regs)
+    m.depth += 1
+    cur.pc = pc
+    return r
+}
+
+/// Ends the memory of the locals of a body without a frame (`Code.hidden`), whose
+/// registers are `regs`.
+#noinline
+vm_drop_locals :: fn(m: ^Machine, code: ^const Code, regs: [^]u64) needs Alloc {
+    for h in code.hidden {
+        if h is not NO_REG and regs[usize(h)] is not 0 {
+            _ = m.mem.kill(regs[usize(h)])
+            regs[usize(h)] = 0
+        }
+    }
+}
+
+/// The address of local `l` of a body without a frame, whose address is taken: its
+/// memory is made on first use, with what the local holds in the storage.
+vm_hidden_addr :: fn(m: ^Machine, code: ^const Code, regs: [^]u64, l: u32, span: source.Span) -> Flow!u64 needs Alloc {
+    h := usize(code.hidden[usize(l)])
+    if regs[h] is not 0 { return regs[h] }
+    i := usize(l)
+    info := code.info
+    addr := try m.alloc_mem(span, info.sizes[i], info.aligns[i], .Stack, true)
+    _ = m.mem.init(addr, fat(regs, us(info.offsets[i]))[0..us(info.sizes[i])])
+    regs[h] = addr
+    return addr
+}
+
+/// Ends the call of `r`: releases its record and storage.
+#inline
+vm_pop :: fn(m: ^Machine, r: ^const CallRec) {
+    m.scratch.cur = r.mark.cur
+    m.scratch.top = r.mark.top
+    m.depth -%= 1
+}
+
+/// Runs the instruction at `pc` of `code` from its `Ins`, for one that needs no frame:
+/// returns the index of the instruction to run next. `cx` is the handler context and `dst`
+/// the body's result.
+#noinline
+vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: []u8) -> Flow!usize needs Run {
+    match code.ins.ptr[pc] {
+        .Const(r, v) => { regs[usize(r)] = v }
+        .Arith64(op, signed, wrap, r, ra, rb, n) => {
+            p := regs[usize(ra)]
+            q := regs[usize(rb)]
+            regs[usize(r)] = arith64(op, signed, wrap, p, q) else try m.int_word(arith_op(op, false), IntW(signed: signed, bits: 64), IntW(signed: signed, bits: 64), p, q, n)
+        }
+        .Arith32(op, signed, wrap, bits, r, ra, rb, n) => {
+            p := regs[usize(ra)]
+            q := regs[usize(rb)]
+            regs[usize(r)] = arith32(op, signed, wrap, bits, p, q) else try m.int_word(arith_op(op, false), IntW(signed: signed, bits: bits), IntW(signed: signed, bits: bits), p, q, n)
+        }
+        .LocalAtD(r, at, d, size) => { regs[usize(r)] = st_rd(m, regs, usize(at) + us(regs[usize(d)]), size) }
+        .SetLocalAtD(at, d, size, v) => st_wr(m, regs, usize(at) + us(regs[usize(d)]), size, regs[usize(v)])
+        .ScaleIdx(ri, len, esz, n) => {
+            i := regs[usize(ri)]
+            if i >= len { return !m.bounds_trap(n, i, len) }
+            regs[usize(ri)] = i * esz
+        }
+        .AddR(r, x) => { regs[usize(r)] +%= regs[usize(x)] }
+        .Bit(op, r, ra, rb) => {
+            p := regs[usize(ra)]
+            q := regs[usize(rb)]
+            regs[usize(r)] = if op is 0 { p & q } else if op is 1 { p | q } else { p ~ q }
+        }
+        .Shr(t, shift, r, ra, rb, n) => {
+            p := regs[usize(ra)]
+            q := regs[usize(rb)]
+            regs[usize(r)] = shr_fast(t, shift, p, q) else try m.int_word(.Shr, t, shift, p, q, n)
+        }
+        .Shl(t, shift, wrap, r, ra, rb, n) => {
+            p := regs[usize(ra)]
+            q := regs[usize(rb)]
+            regs[usize(r)] = shl_fast(t, shift, wrap, p, q) else try m.int_word(.Shl(if wrap { ast.Flavor.Wrap } else { .Checked }), t, shift, p, q, n)
+        }
+        .JCmp(op, how, ra, rb, to) => if not word_less(op, how, regs[usize(ra)], regs[usize(rb)]) { return usize(to) }
+        .JEq(how, negated, ra, rb, to) => if word_eq(how, regs[usize(ra)], regs[usize(rb)]) is negated { return usize(to) }
+        .IntOp(x) => { regs[usize(x.r)] = try m.int_word(x.op, x.t, x.shift, regs[usize(x.a)], regs[usize(x.b)], x.n) }
+        .LocalAt(r, at, size) => { regs[usize(r)] = st_rd(m, regs, usize(at), size) }
+        .SetLocalAt(at, size, v) => st_wr(m, regs, usize(at), size, regs[usize(v)])
+        .Load(r, base, off, size, align, n) => {
+            addr := regs[usize(base)] +% u64(off)
+            b := m.mem.read(addr, u64(size), u64(align)) else e => return !m.mem_trap(n.span, e)
+            regs[usize(r)] = m.rd_word(b)
+        }
+        .Store(x) => {
+            addr := regs[usize(x.base)] +% u64(x.off)
+            b := m.mem.write_view(addr, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            m.wr_word(b, regs[usize(x.v)])
+        }
+        .SliceIdx(x) => {
+            i := regs[usize(x.i)]
+            len := regs[usize(x.len)]
+            if i >= len { return !m.bounds_trap(x.n, i, len) }
+            k := usize(x.p)
+            regs[k] = regs[k] +% i * x.esz
+        }
+        .SliceLd(x) => {
+            i := regs[usize(x.i)]
+            len := regs[usize(x.len)]
+            if i >= len { return !m.bounds_trap(x.n, i, len) }
+            b := m.mem.read(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            regs[usize(x.r)] = m.rd_word(b)
+        }
+        .SliceSt(x) => {
+            i := regs[usize(x.i)]
+            len := regs[usize(x.len)]
+            if i >= len { return !m.bounds_trap(x.n, i, len) }
+            b := m.mem.write_view(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            m.wr_word(b, regs[usize(x.v)])
+        }
+        .ArrIdx(x) => {
+            i := regs[usize(x.i)]
+            if i >= x.len { return !m.bounds_trap(x.n, i, x.len) }
+            k := usize(x.p)
+            regs[k] = regs[k] +% i * x.esz
+        }
+        .PtrIdx(x) => {
+            k := usize(x.p)
+            regs[k] = regs[k] +% regs[usize(x.i)] *% x.esz
+        }
+        .AddK(r, k) => { regs[usize(r)] +%= k }
+        .Cmp(op, how, r, ra, rb) => { regs[usize(r)] = if word_less(op, how, regs[usize(ra)], regs[usize(rb)]) { 1 } else { 0 } }
+        .EqW(x) => { regs[usize(x.r)] = if word_eq(x.how, regs[usize(x.a)], regs[usize(x.b)]) is not x.negated { 1 } else { 0 } }
+        .Not(r, x) => { regs[usize(r)] = if regs[usize(x)] is 0 { 1 } else { 0 } }
+        .Bool(r) => { regs[usize(r)] = if regs[usize(r)] is 0 { 0 } else { 1 } }
+        .IntConv(x) => { regs[usize(x.r)] = conv_word(x.op, x.from, x.to, regs[usize(x.a)]) }
+        .IntBit(x) => { regs[usize(x.r)] = bit_word(x.op, x.t, regs[usize(x.a)], regs[usize(x.b)]) }
+        .FloatOp(x) => { regs[usize(x.r)] = float_op(x.op, x.wide, regs[usize(x.a)], regs[usize(x.b)]) }
+        .IntUn(x) => { regs[usize(x.r)] = try m.int_un(x.op, x.t, regs[usize(x.a)], x.n) }
+        .Jmp(to) => return usize(to)
+        .Jz(r, to) => if regs[usize(r)] is 0 { return usize(to) }
+        .Jnz(r, to) => if regs[usize(r)] is not 0 { return usize(to) }
+        .Mov(r, x) => { regs[usize(r)] = regs[usize(x)] }
+        .Loop(to) => {
+            if m.threads.list.items.len > 1 { try m.tick(source.DUMMY) }
+            return usize(to)
+        }
+        .SliceMake(x) => {
+            lo := regs[usize(x.lo)]
+            hi := regs[usize(x.hi)]
+            if x.inclusive { hi = hi +| 1 }
+            if lo > hi or (x.has_len and hi > regs[usize(x.len)]) { return !m.slice_trap(x.n, lo, hi, if x.has_len { regs[usize(x.len)] } else { null }) }
+            o := usize(x.at)
+            pb := us(m.ptr_bytes)
+            st_wr(m, regs, o, pb.trunc(u32), regs[usize(x.p)] +% lo * x.esz)
+            st_wr(m, regs, o + pb, pb.trunc(u32), hi - lo)
+        }
+        .ConstSlot(at, b) => fat(regs, usize(at))[0..b.len].copy_from(b)
+        _ => return m.vm_free_other(cx, code, regs, pc, dst)
+    }
+    return pc + 1
+}
+
+/// `vm_free` for the calls and the instructions on slots.
+#noinline
+vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: []u8) -> Flow!usize needs Run {
+    match code.ins.ptr[pc] {
+        .Call(x) => try m.vm_call(cx, code, x.f, x.args, x.dst, x.node, regs, dst)
+        .CallValue(x) => try m.vm_call_value(cx, code, x.at, x.callee, x.args, x.dst, x.node, regs, dst)
+        .Perform(x) => try m.vm_perform(cx, code, x.args, x.dst, x.node, regs, dst)
+        .CopySlot(d, src, size) => {
+            k := usize(size)
+            fat(regs, usize(d))[0..k].copy_from(fat(regs, usize(src))[0..k])
+        }
+        .SlotW(r, at, size) => { regs[usize(r)] = st_rd(m, regs, usize(at), size) }
+        .WSlot(at, size, r) => st_wr(m, regs, usize(at), size, regs[usize(r)])
+        .JSlot(at, size, nonzero, to) => if (st_rd(m, regs, usize(at), size) is not 0) is nonzero { return usize(to) }
+        .JTag(at, size, v, to) => if st_rd(m, regs, usize(at), size) is not v { return usize(to) }
+        .Builtin(x) => try m.vm_builtin(x.args, x.dst, x.node, regs, dst)
+        .StrSlot(at, n) => {
+            pb := us(m.ptr_bytes)
+            match n.op {
+                .Str(bytes) => m.put_slice(fat(regs, usize(at))[0..2 * pb], try m.string_literal(n.span, bytes, false), u64(bytes.len))
+                .CStr(bytes) => m.put_ptr(fat(regs, usize(at))[0..pb], try m.string_literal(n.span, bytes, true))
+                _ => {}
+            }
+        }
+        .UpvarAt(x) => { regs[usize(x.r)] = try m.vm_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, x.n) }
+        .SetUpvarAt(x) => try m.vm_set_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n)
+        // The locals in memory of a body without a frame (`Code.hidden`).
+        .LocalAddr(r, local, n) => { regs[usize(r)] = try m.vm_hidden_addr(code, regs, local, n.span) }
+        .Local(r, local, _, size) => {
+            addr := try m.vm_hidden_addr(code, regs, local, source.DUMMY)
+            regs[usize(r)] = try m.load_word(source.DUMMY, addr, code.info.aligns[usize(local)], u64(size))
+        }
+        .SetLocal(x) => {
+            addr := try m.vm_hidden_addr(code, regs, x.local, x.n.span)
+            b: [8]u8 = ---
+            d := b[0..usize(x.size)]
+            m.wr_word(d, regs[usize(x.r)])
+            try m.store_at(x.n.span, addr, code.info.aligns[usize(x.local)], d)
+        }
+        .SetLocalSlot(x) => {
+            addr := try m.vm_hidden_addr(code, regs, x.local, x.span)
+            try m.store_at(x.span, addr, code.info.aligns[usize(x.local)], fat(regs, usize(x.at))[0..usize(x.size)])
+        }
+        .MemGet(x) => {
+            b := m.mem.read(regs[usize(x.base)] +% u64(x.off), u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            fat(regs, usize(x.at))[0..usize(x.size)].copy_from(b)
+        }
+        .MemPut(x) => {
+            b := m.mem.write_view(regs[usize(x.base)] +% u64(x.off), u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            b.copy_from(fat(regs, usize(x.at))[0..usize(x.size)])
+        }
+        .AlignCheck(r, align, n) => {
+            addr := regs[usize(r)]
+            if addr is not 0 and addr % align is not 0 { return !m.trap(n.span, str.format("misaligned pointer cast: address {:#x} is not aligned to {} bytes", addr, align)!) }
+        }
+        .UnwrapTrap(at, ty, is_result, n) => {
+            if not is_result { return !m.trap(n.span, "unwrap of null") }
+            out := list(u8)
+            m.format_value(&out, m.res_types(ty).err, m.res_payload(ty, fat(regs, usize(at))[0..us(m.size(ty))]), false) else {}
+            return !m.trap(n.span, str.format("unwrap of error value {}", out.items)!)
+        }
+        .AssertFail(at, has_msg, n) => {
+            if not has_msg { return !m.trap(n.span, "assertion failed") }
+            msg := try m.read_string(n.span, fat(regs, usize(at))[0..2 * us(m.ptr_bytes)])
+            if msg is "assertion failed" { return !m.trap(n.span, msg) }
+            return !m.trap(n.span, str.format("assertion failed: {}", msg)!)
+        }
+        .NoArm(n) => return !m.trap(n.span, "no match arm matched the scrutinee")
+        .Mark(r) => {
+            k := usize(r)
+            regs[k] = u64(m.scratch.cur)
+            regs[k + 1] = u64(m.scratch.top)
+            regs[k + 2] = u64(m.temps.items.len)
+        }
+        .Release(r) => m.vm_release(regs, r)
+        .ZeroSlot(at, size) => fat(regs, usize(at))[0..usize(size)].fill(0)
+        _ => {}
+    }
+    return pc + 1
+}
+
+/// Runs the instruction at `pc` of `code` from its `Ins`, for one that needs the frame of
+/// `act` (its locals in memory, the frames it captures, its deferred statements, its
+/// handler context, or the tree evaluator): returns the index of the instruction to run
+/// next, or `VM_RETURN` when the body returned (`dst` is its result).
+#noinline
+vm_framed :: fn(m: ^Machine, act: ^Act, code: ^Code, regs: [^]u64, pc: usize, dst: []u8) -> Flow!usize needs Run {
     fr := act.fr
     a := act^
     match code.ins.ptr[pc] {
         .Local(r, local, off, size) => {
             i := usize(local)
             if fr.mem[i] is not 0 {
-                regs[usize(r)] = m.load_word(source.DUMMY, fr.mem[i], fr.info.aligns[i], u64(size)) else f => return m.vm_flow(act, base, code, regs, f)
+                regs[usize(r)] = try m.load_word(source.DUMMY, fr.mem[i], fr.info.aligns[i], u64(size))
             } else {
-                o := usize(off)
-                regs[usize(r)] = st_rd(m, fr, o, size)
+                regs[usize(r)] = st_rd(m, regs, usize(off), size)
             }
         }
         .SetLocal(x) => {
             i := usize(x.local)
             v := regs[usize(x.r)]
             if in_store(fr, i) {
-                o := usize(x.off)
-                st_wr(m, fr, o, x.size, v)
+                st_wr(m, regs, usize(x.off), x.size, v)
             } else {
                 b: [8]u8 = ---
                 d := b[0..usize(x.size)]
                 m.wr_word(d, v)
-                m.set_local(x.n.span, fr, x.local, d) else f => return m.vm_flow(act, base, code, regs, f)
+                try m.set_local(x.n.span, fr, x.local, d)
             }
         }
-        .IntUn(x) => {
-            regs[usize(x.r)] = m.int_un(x.op, x.t, regs[usize(x.a)], x.n) else f => return m.vm_flow(act, base, code, regs, f)
-        }
-        .CallValue(x) => {
-            m.vm_call_value(a, x.at, x.callee, x.args, x.dst, x.node, regs, dst) else f => return m.vm_flow(act, base, code, regs, f)
-        }
-        .EvalW(r, n) => {
-            regs[usize(r)] = m.ew(a, n) else f => return m.vm_flow(act, base, code, regs, f)
-        }
+        .LocalAddr(r, local, n) => { regs[usize(r)] = try m.local_addr(n.span, fr, local) }
+        .EvalW(r, n) => { regs[usize(r)] = try m.ew(a, n) }
         .EvalSlot(off, n) => {
             o := usize(off)
-            m.ev(a, n, fr.store[o..o + us(n.size)]) else f => return m.vm_flow(act, base, code, regs, f)
+            try m.ev(a, n, fr.store[o..o + us(n.size)])
         }
-        .Discard(n) => {
-            m.ev_discard(a, n) else f => return m.vm_flow(act, base, code, regs, f)
+        .Discard(n) => try m.ev_discard(a, n)
+        .Stmt(st) => try m.exec_stmt(a, st)
+        .RetEval(n) => {
+            try m.ev(a, n, dst)
+            return VM_RETURN
         }
-        .Stmt(st) => {
-            m.exec_stmt(a, st) else f => return m.vm_flow(act, base, code, regs, f)
-        }
+        .DeferHeight(r) => { regs[usize(r)] = u64(fr.defers.items.len) }
         .Defer(is_err, body) => fr.defers.push(Deferred(is_err: is_err, body: body, cx: a.cx))!
-        .Unwind(r) => {
-            m.vm_unwind(a, us(regs[usize(r)]), false) else f => return m.vm_flow(act, base, code, regs, f)
-        }
-        .AssignW(place, value) => {
-            m.assign_word(a, place, value) else f => return m.vm_flow(act, base, code, regs, f)
-        }
+        .Unwind(r) => try m.vm_unwind(a, us(regs[usize(r)]), false)
+        .AssignW(place, value) => try m.assign_word(a, place, value)
         .Pat(x) => {
             o := usize(x.off)
-            ok := m.match_pat(a, x.pat, fr.store[o..o + usize(x.size)]) else f => return m.vm_flow(act, base, code, regs, f)
-            if not ok {
-                return usize(x.fail)
-            }
+            ok := try m.match_pat(a, x.pat, fr.store[o..o + usize(x.size)])
+            if not ok { return usize(x.fail) }
         }
         .SetLocalSlot(x) => {
             o := usize(x.at)
-            m.set_local(x.span, fr, x.local, fr.store[o..o + usize(x.size)]) else f => return m.vm_flow(act, base, code, regs, f)
+            try m.set_local(x.span, fr, x.local, fr.store[o..o + usize(x.size)])
         }
+        .CxSave(r) => { regs[usize(r)] = u64(act.cx) }
+        .CxRestore(r) => m.vm_cx_restore(act, regs, r)
+        .WithDecl(x) => { act.cx = m.vm_with_decl(fr, act.cx, x.decls, x.at, x.size, x.label) }
         .WithLit(id, at, label) => {
             o := usize(at)
             hb := fr.store[o..o + us(2 * m.ptr_bytes)]
@@ -627,13 +1287,13 @@ vm_slow :: fn(m: ^Machine, act: ^Act, base: u32, code: ^Code, regs: [^]u64, pc: 
     return pc + 1
 }
 
-/// The word of `size` bytes at offset `o` of the storage of `fr`.
+/// The word of `size` bytes at offset `o` of the storage whose registers are `regs`.
 #inline
-st_rd :: fn(m: ^const Machine, fr: ^Frame, o: usize, size: u32) -> u64 => m.rd_word(fr.store[o..o + usize(size)])
+st_rd :: fn(m: ^const Machine, regs: [^]u64, o: usize, size: u32) -> u64 => m.rd_word(fat(regs, o)[0..usize(size)])
 
-/// Writes the word `v` to the `size` bytes at offset `o` of the storage of `fr`.
+/// Writes the word `v` to the `size` bytes at offset `o` of the storage.
 #inline
-st_wr :: fn(m: ^const Machine, fr: ^Frame, o: usize, size: u32, v: u64) { m.wr_word(fr.store[o..o + usize(size)], v) }
+st_wr :: fn(m: ^const Machine, regs: [^]u64, o: usize, size: u32, v: u64) { m.wr_word(fat(regs, o)[0..usize(size)], v) }
 
 /// Whether local `i` of `fr` is in the frame's storage (not in memory of its own).
 #inline
@@ -661,11 +1321,12 @@ arith32 :: fn(op: u8, signed: bool, wrap: bool, bits: u32, p, q: u64) -> ?u64 {
     if signed {
         x := sext(p, bits)
         y := sext(q, bits)
-        v := if op is 0 { x + y } else if op is 1 { x - y } else { x * y }
-        if not wrap and (v < lo64(bits) or v > hi64(bits)) { return null }
+        v := if op is 0 { x +% y } else if op is 1 { x -% y } else { x *% y }
+        // In range if it is its own low bits, sign-extended.
+        if not wrap and sext(v.bits(u64), bits) is not v { return null }
         return v.bits(u64) & mask
     }
-    v := if op is 0 { p + q } else if op is 1 { p -% q } else { p * q }
+    v := if op is 0 { p +% q } else if op is 1 { p -% q } else { p *% q }
     if not wrap and (if op is 1 { p < q } else { v > mask }) { return null }
     return v & mask
 }
@@ -808,25 +1469,24 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
 /// function's own result). The common call, of a body the machine runs whose parameters
 /// all stay in its frame's storage, outside fibers and other threads, is made here, doing
 /// what `vm_invoke` and `enter` do for it; any other goes through them.
-vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+vm_call :: fn(m: ^Machine, cx: u32, caller: ^const Code, f: u32, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
     marker: u8 = 0
-    code := info.vm else return m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
+    code := info.vm else return m.vm_invoke(caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
     if info.addressed_params or args.len is not info.params.len or info.cost > sema.MAX_FRAME or m.depth >= MAX_DEPTH or (&marker).addr() < m.stack_floor or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 {
-        return m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
+        return m.vm_invoke(caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
     }
-    fr := a.fr
     mk := m.mark()
     store := m.tmp(info.frame_size)
     // The arguments are read before the result's register is cleared: it may hold one.
-    m.vm_put_args(info, 0, args, regs, fr, store)
+    m.vm_put_args(info, 0, args, regs, store)
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
-    direct := m.vm_direct(fr, dst, regs)
-    d := m.vm_dest(fr, dst, direct, n, ret, b[..])
+    direct := m.vm_direct(caller, dst, regs)
+    d := m.vm_dest(dst, direct, n, regs, ret, b[..])
     tm := m.temps.items.len
     callee := m.new_frame(f, info, d, null, store)
     m.depth += 1
-    r := m.vm_run(Act(fr: callee, cx: a.cx), code, d)
+    r := m.vm_run(Act(fr: callee, cx: cx), code, d)
     m.depth -= 1
     if m.temps.items.len > tm { m.kill_temps(tm) }
     id := callee.id
@@ -841,10 +1501,11 @@ vm_call :: fn(m: ^Machine, a: Act, f: u32, args: []Arg, dst: Dest, n: ^Node, reg
     if .Reg(rr) := dst and not direct { regs[usize(rr)] = m.rd_word(d) }
 }
 
-/// Writes the arguments `args` of a call (in registers and slots of `fr`) to the storage
-/// `store` of the callee `info` describes, as its parameters from the `first` on.
+/// Writes the arguments `args` of a call (in registers and slots of the frame whose
+/// registers are `regs`) to the storage `store` of the callee `info` describes, as its
+/// parameters from the `first` on.
 #inline
-vm_put_args :: fn(m: ^Machine, info: ^FnInfo, first: usize, args: []Arg, regs: [^]u64, fr: ^Frame, store: []u8) {
+vm_put_args :: fn(m: ^Machine, info: ^FnInfo, first: usize, args: []Arg, regs: [^]u64, store: []u8) {
     // Not `enumerate`: an iterator costs a call per element.
     i: usize = 0
     while i < args.len {
@@ -860,9 +1521,8 @@ vm_put_args :: fn(m: ^Machine, info: ^FnInfo, first: usize, args: []Arg, regs: [
                 }
             }
             .Slot(at, size) => {
-                o := usize(at)
                 k := usize(size)
-                store[off..off + k].copy_from(fr.store[o..o + k])
+                store[off..off + k].copy_from(fat(regs, usize(at))[0..k])
             }
         }
         i += 1
@@ -873,8 +1533,8 @@ vm_put_args :: fn(m: ^Machine, info: ^FnInfo, first: usize, args: []Arg, regs: [
 /// temporary register, which is a word of the frame's storage after its locals (it is
 /// zeroed first, so the call's arguments must have been read: the first may be in it).
 #inline
-vm_direct :: fn(m: ^const Machine, fr: ^Frame, dst: Dest, regs: [^]u64) -> bool {
-    if .Reg(r) := dst and m.word_locals and u64(r) * 8 >= fr.info.store_size {
+vm_direct :: fn(m: ^const Machine, caller: ^const Code, dst: Dest, regs: [^]u64) -> bool {
+    if .Reg(r) := dst and m.word_locals and u64(r) * 8 >= caller.locals_size {
         regs[usize(r)] = 0
         return true
     }
@@ -884,18 +1544,17 @@ vm_direct :: fn(m: ^const Machine, fr: ^Frame, dst: Dest, regs: [^]u64) -> bool 
 /// Where the callee of a call (of node `n`) writes a result going to `dst`: its register
 /// if `direct`, else `b` for a word, a slot, the function's result `ret`, or scratch memory.
 #inline
-vm_dest :: fn(m: ^Machine, fr: ^Frame, dst: Dest, direct: bool, n: ^Node, ret: []u8, b: []u8) -> []u8 needs Alloc => match dst {
-    .Reg(r) => if direct { fr.store[usize(r) * 8..usize(r) * 8 + us(n.size)] } else { b[0..us(n.size)] }
+vm_dest :: fn(m: ^Machine, dst: Dest, direct: bool, n: ^Node, regs: [^]u64, ret: []u8, b: []u8) -> []u8 needs Alloc => match dst {
+    .Reg(r) => if direct { fat(regs, usize(r) * 8)[0..us(n.size)] } else { b[0..us(n.size)] }
     .None => if n.size <= 8 { b[0..us(n.size)] } else { m.tmp(n.size) }
-    .Slot(at) => fr.store[usize(at)..us(u64(at) + n.size)]
+    .Slot(at) => fat(regs, usize(at))[0..us(n.size)]
     .Ret => ret
 }
 
 /// A call of the function value in the slot at `at`, of type `callee.ty` (a second-class
 /// function or a function pointer), as `call_value` makes it.
-vm_call_value :: fn(m: ^Machine, a: Act, at: u32, callee: ^Node, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
-    o := usize(at)
-    cv := a.fr.store[o..o + us(callee.size)]
+vm_call_value :: fn(m: ^Machine, cx: u32, caller: ^const Code, at: u32, callee: ^Node, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+    cv := fat(regs, usize(at))[0..us(callee.size)]
     if .Fn(sig) := m.kind(callee.ty) {
         f := m.fn_from_addr(m.word(cv, 0)) else return !m.trap(n.span, "internal error: a function value without code")
         env := m.frame_of(m.word(cv, 1))
@@ -903,46 +1562,45 @@ vm_call_value :: fn(m: ^Machine, a: Act, at: u32, callee: ^Node, args: []Arg, ds
         // Effects listed in the function type are handled where it is called (§11.6).
         base := ctx
         for eff in sig.effects.effects {
-            k := m.find_ctx(a.cx, &eff)
+            k := m.find_ctx(cx, &eff)
             if k is 0 { continue }
             node := m.ctxs.items[us(k)]
             ctx = m.push_ctx(ctx, node.effect_, node.installed, node.with_frame, node.with_label, node.with_fr)
         }
-        r := m.vm_invoke(a, f, env, ctx, null, false, null, args, dst, n, regs, ret)
+        r := m.vm_invoke(caller, f, env, ctx, null, false, null, args, dst, n, regs, ret)
         m.pop_ctx(ctx, base)
         return r
     }
     addr := m.ptr_of(cv)
     if addr is 0 { return !m.trap(n.span, "call through a null function pointer") }
     f := m.fn_from_addr(addr) else return !m.trap(n.span, str.format("call through an invalid function pointer {:#x}", addr)!)
-    return m.vm_invoke(a, f, null, a.cx, null, false, null, args, dst, n, regs, ret)
+    return m.vm_invoke(caller, f, null, cx, null, false, null, args, dst, n, regs, ret)
 }
 
 /// Performs the operation of `n` (a `Perform`) with the arguments `args`, as `perform`
 /// does: the clause of a handler literal or declaration is called as a function is, and
 /// other handlers get the argument values as bytes.
-vm_perform :: fn(m: ^Machine, a: Act, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+vm_perform :: fn(m: ^Machine, cx: u32, caller: ^const Code, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     x := match n.op {
         .Perform(x) => x
         _ => return !m.trap(n.span, "internal error: not an operation")
     }
-    k := m.find_ctx(a.cx, &x.effect_)
+    k := m.find_ctx(cx, &x.effect_)
     if k is 0 { return !m.trap(n.span, str.format("no handler installed for effect `{}`", m.s.tys.effect_name(x.effect_.eff))!) }
     if not m.p.is_ctl(x.effect_.eff, x.op) {
         node := &m.ctxs.items[us(k)]
         installing: ?(frame: ^Frame, label: u32) = null
         if fr := node.with_fr { installing = (frame: fr, label: node.with_label) }
         match node.installed {
-            .Lit(h, ?env, cx) => return m.vm_invoke(a, m.p.handler_lit(h).clauses[us(x.op)], env, cx, installing, true, null, args, dst, n, regs, ret)
+            .Lit(h, ?env, lcx) => return m.vm_invoke(caller, m.p.handler_lit(h).clauses[us(x.op)], env, lcx, installing, true, null, args, dst, n, regs, ret)
             .Decl(decls, value, outer) => for d in decls {
                 info := m.p.handler_decl(d)
                 if info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0 { continue }
-                return m.vm_invoke(a, info.clauses[us(x.op)], null, outer, installing, false, value, args, dst, n, regs, ret)
+                return m.vm_invoke(caller, info.clauses[us(x.op)], null, outer, installing, false, value, args, dst, n, regs, ret)
             }
             .Native(_) => {}
         }
     }
-    fr := a.fr
     mk := m.mark()
     base := m.argv.items.len
     i: usize = 0
@@ -953,7 +1611,7 @@ vm_perform :: fn(m: ^Machine, a: Act, args: []Arg, dst: Dest, n: ^Node, regs: [^
                 m.wr_word(b, regs[usize(r)])
                 m.argv.push(b)!
             }
-            .Slot(at, size) => m.argv.push(fr.store[usize(at)..usize(at) + usize(size)])!
+            .Slot(at, size) => m.argv.push(fat(regs, usize(at))[0..usize(size)])!
         }
         i += 1
     }
@@ -961,26 +1619,68 @@ vm_perform :: fn(m: ^Machine, a: Act, args: []Arg, dst: Dest, n: ^Node, regs: [^
     d := match dst {
         .Reg(_) => b[0..us(n.size)]
         .None => if n.size <= 8 { b[0..us(n.size)] } else { m.tmp(n.size) }
-        .Slot(at) => fr.store[usize(at)..us(u64(at) + n.size)]
+        .Slot(at) => fat(regs, usize(at))[0..us(n.size)]
         .Ret => ret
     }
-    res := m.perform(a.cx, n.span, &x.effect_, x.op, m.argv.items[base..m.argv.items.len], d)
+    res := m.perform(cx, n.span, &x.effect_, x.op, m.argv.items[base..m.argv.items.len], d)
     m.argv.truncate(base)
     m.release(mk)
     try res
     if .Reg(r) := dst { regs[usize(r)] = m.rd_word(d) }
 }
 
+/// The builtin operation of `n` (`vc_builtin_ok`) with the arguments `args` in registers
+/// and slots, as `ev_builtin` does it with their values; its result goes to `dst` (`ret` is
+/// the body's own result).
+vm_builtin :: fn(m: ^Machine, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+    .Builtin(op, xs) := n.op else return !m.trap(n.span, "internal error: not a builtin")
+    mk := m.mark()
+    vs := [MAX_BUILTIN_ARGS][]u8(fill: empty_slice(u8))
+    i: usize = 0
+    while i < args.len {
+        match args[i] {
+            .Reg(r) => {
+                b := m.tmp(xs[i].size)
+                m.wr_word(b, regs[usize(r)])
+                vs[i] = b
+            }
+            .Slot(at, size) => { vs[i] = fat(regs, usize(at))[0..usize(size)] }
+        }
+        i += 1
+    }
+    b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+    d := match dst {
+        .Reg(_) => b[0..us(n.size)]
+        .None => if n.size <= 8 { b[0..us(n.size)] } else { m.tmp(n.size) }
+        .Slot(at) => fat(regs, usize(at))[0..us(n.size)]
+        .Ret => ret
+    }
+    vals := vs[0..args.len]
+    match op {
+        .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .CopyElems, .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore, .Fence, .CstrLen, .VecLoad, .VecStore => try m.memory_builtin(n.span, op, xs, vals, n.ty, d)
+        _ => {
+            t0 := if xs.len > 0 { xs[0].ty } else { n.ty }
+            t1 := if xs.len > 1 { xs[1].ty } else { t0 }
+            try m.apply_builtin(n.span, op, n.ty, t0, t1, vals, d)
+        }
+    }
+    m.release(mk)
+    if .Reg(r) := dst { regs[usize(r)] = m.rd_word(d) }
+}
+
+/// The most arguments of a builtin operation that the machine runs (`vm_builtin`).
+MAX_BUILTIN_ARGS: usize : 6
+
 /// Calls `f` (capturing `env`, in context `cx`, a clause of the `with` `installing` if any)
-/// with the arguments `args`, after the handler value `self_` for a clause of a handler
-/// declaration; its result goes to `dst` (`ret` is the function's own result).
-vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, self_: ?[]u8, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
+/// with the arguments `args` of the body `caller`, after the handler
+/// value `self_` for a clause of a handler declaration; its result goes to `dst` (`ret` is
+/// the caller's own result).
+vm_invoke :: fn(m: ^Machine, caller: ^const Code, f: u32, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, self_: ?[]u8, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
     body := info.body else return m.call_missing(n.span, f)
     first: usize = if self_ is null { 0 } else { 1 }
     if args.len + first is not info.params.len { return !m.trap(n.span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len + first, info.params.len)!) }
     if info.cost > sema.MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
-    fr := a.fr
     mk := m.mark()
     store := m.tmp(info.frame_size)
     if v := self_ {
@@ -988,10 +1688,10 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
         store[off..off + v.len].copy_from(v)
     }
     // The arguments are read before the result's register is cleared: it may hold one.
-    m.vm_put_args(info, first, args, regs, fr, store)
+    m.vm_put_args(info, first, args, regs, store)
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
-    direct := m.vm_direct(fr, dst, regs)
-    d := m.vm_dest(fr, dst, direct, n, ret, b[..])
+    direct := m.vm_direct(caller, dst, regs)
+    d := m.vm_dest(dst, direct, n, regs, ret, b[..])
     res := m.enter(n.span, f, info, body, store, env, cx, installing, is_clause_lit, d)
     m.release(mk)
     try res
@@ -999,8 +1699,9 @@ vm_invoke :: fn(m: ^Machine, a: Act, f: u32, env: ?^Frame, cx: u32, installing: 
 }
 
 /// The word at offset `rel` of local `l` of the frame `levels` capture links up from `fr`.
-vm_upvar_at :: fn(m: ^Machine, fr: ^Frame, levels: u32, l: u32, rel: u32, size: u32, align: u32, n: ^Node) -> Flow!u64 needs Alloc {
-    up := (if levels is 1 { fr.env } else { frame_up(fr, levels) }) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+vm_upvar_at :: fn(m: ^Machine, env: ?^Frame, levels: u32, l: u32, rel: u32, size: u32, align: u32, n: ^Node) -> Flow!u64 needs Alloc {
+    e := env else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+    up := frame_up(e, levels - 1) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
     i := usize(l)
     if up.mem[i] is 0 and not up.info.addressed[i] {
         o := us(up.info.offsets[i]) + usize(rel)
@@ -1009,8 +1710,9 @@ vm_upvar_at :: fn(m: ^Machine, fr: ^Frame, levels: u32, l: u32, rel: u32, size: 
     return m.vm_local_at(up, l, u64(rel), size, align, n)
 }
 
-vm_set_upvar_at :: fn(m: ^Machine, fr: ^Frame, levels: u32, l: u32, rel: u32, size: u32, align: u32, v: u64, n: ^Node) -> Flow!() needs Alloc {
-    up := (if levels is 1 { fr.env } else { frame_up(fr, levels) }) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+vm_set_upvar_at :: fn(m: ^Machine, env: ?^Frame, levels: u32, l: u32, rel: u32, size: u32, align: u32, v: u64, n: ^Node) -> Flow!() needs Alloc {
+    e := env else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+    up := frame_up(e, levels - 1) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
     i := usize(l)
     if up.mem[i] is 0 and not up.info.addressed[i] {
         o := us(up.info.offsets[i]) + usize(rel)

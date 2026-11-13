@@ -1,0 +1,580 @@
+// The register machine's code as it runs: one 16-byte `Bc` per instruction of a compiled
+// body (`Ins`, `vm.gm`), at the same index, so jump targets are the same in both.
+//
+// `vm_compile` produces `Ins`, which says everything about an instruction (the types of
+// its operands, the node to blame for a trap). `vm_assemble` picks for each the `Bc` that
+// does its common case and nothing else: the operation is specialized on what `Ins` holds
+// as data (the width and signedness of integers, the size of a load), its operands are at
+// most three registers or small constants, and it never traps itself. An instruction
+// without such a form, and any instruction whose common case does not apply when it runs
+// (an overflow, an access outside an allocation), is run from its `Ins` by `vm_free` or
+// `vm_framed`, which do all the cases.
+//
+// The operations that read the bytes of the frame or of memory as words assume a
+// little-endian target and host (`Machine.word_locals`); elsewhere they are left to
+// `vm_free`.
+
+/// The operation of a `Bc`. Registers are named by the fields `a`, `b` and `c`.
+BcOp :: union {
+    /// Run from the `Ins`: by `vm_free`, or by `vm_framed` if it needs the frame.
+    Free
+    Framed
+    /// `a = b`; `a = b | c << 32` (a constant).
+    Mov
+    K
+    /// `a = b op c` on 64-bit integers: checked signed, checked unsigned, wrapping.
+    AddI
+    SubI
+    MulI
+    AddU
+    SubU
+    MulU
+    AddW
+    SubW
+    MulW
+    /// The same on integers of `w` bits (at most 32): checked signed, checked unsigned,
+    /// wrapping.
+    AddS
+    SubS
+    MulS
+    AddN
+    SubN
+    MulN
+    AddM
+    SubM
+    MulM
+    /// `a = b op c` on `f64`s.
+    AddF
+    SubF
+    MulF
+    DivF
+    And
+    Or
+    Xor
+    /// `a += b`; `a += b | c << 32`.
+    AddR
+    AddK
+    /// `a = (b is 0)`; `a = (a is not 0)`.
+    Not
+    Bool
+    /// `a = b` truncated to `w` bits; `a = b` sign-extended from `f` bits, truncated to `w`.
+    Mask
+    Sext
+    /// `a = (b < c)` and `a = (b <= c)`: unsigned, signed 64-bit, signed of `w` bits, `f64`.
+    LtU
+    LeU
+    LtI
+    LeI
+    LtS
+    LeS
+    LtF
+    LeF
+    /// `a = (b is c)`, `a = (b is not c)` on words that are equal when their bits are.
+    Eq
+    Ne
+    /// Jumps to `c` unless `a < b` (`a <= b`), compared as above.
+    JLtU
+    JLeU
+    JLtI
+    JLeI
+    JLtS
+    JLeS
+    JLtF
+    JLeF
+    /// Jumps to `c` if `a is b` (`JEq`) or if `a is not b` (`JNe`).
+    JEq
+    JNe
+    /// Jumps to `a`; to `c` if register `a` is zero (`Jz`) or not (`Jnz`); `Loop` jumps
+    /// back to `a` where no other thread is waiting to run.
+    Jmp
+    Jz
+    Jnz
+    Loop
+    /// `a` = the word of 1, 2, 4 or 8 bytes at offset `b` of the frame's storage.
+    Fr1
+    Fr2
+    Fr4
+    Fr8
+    /// Writes register `b` to the 1, 2, 4 or 8 bytes at offset `a` of the frame's storage.
+    FrSet1
+    FrSet2
+    FrSet4
+    FrSet8
+    /// `a` = the word of `f` bytes at offset `b` plus register `c` of the frame's storage;
+    /// writes register `c` to the `f` bytes at offset `a` plus register `b`.
+    FrD
+    FrSetD
+    /// Jumps to `c` if the word of `f` bytes at offset `a` of the frame's storage is zero
+    /// (`JFrZ`), is not (`JFrNz`), or is not `b` (`JTag`).
+    JFrZ
+    JFrNz
+    JTag
+    /// `a` = the word of 1, 2, 4 or 8 bytes at the address in `b` plus `c`, aligned to `w`.
+    Ld1
+    Ld2
+    Ld4
+    Ld8
+    /// Writes register `b` to the 1, 2, 4 or 8 bytes at the address in `a` plus `c`.
+    St1
+    St2
+    St4
+    St8
+    /// `a` = element `c` (of `f` bytes, `w` apart) of the slice whose pointer is in `b`
+    /// and whose length is in the register after it; `SliceSt` writes register `b` to
+    /// element `c` of the slice in `a` and the register after it.
+    SliceLd
+    SliceSt
+    /// Register `a` (an index below `b`) times `c`.
+    ScaleIdx
+    /// The address of element `c` (`w` bytes apart) of the slice whose pointer is in `a`
+    /// and length in `b`, into `a`; `ArrIdx`: of element `b` of the array of `c` elements
+    /// at the address in `a`; `PtrIdx`: of element `b`, `c` bytes apart, unchecked.
+    SliceIdx
+    ArrIdx
+    PtrIdx
+    /// `a = b >> c` on unsigned (`ShrU`) or signed (`ShrS`) integers of `w` bits, and
+    /// `a = b << c` wrapping (`ShlM`) or checked unsigned (`ShlN`), where `c` is below `w`.
+    ShrU
+    ShrS
+    ShlM
+    ShlN
+    /// `a = b / c` and `a = b % c` on unsigned integers, or on signed integers of `w` bits.
+    DivU
+    RemU
+    DivS
+    RemS
+    /// `a` = the word of `f` bytes at offset `c` of local `b` of the captured frame
+    /// (`Code.env_reg`), where it is in that frame's storage; `UpSet` writes register `b`
+    /// to the `f` bytes at offset `c` of its local `a`.
+    Up
+    UpSet
+    /// `a` = the address of an addressed local, kept in register `c` once it has memory
+    /// (`Code.hidden`).
+    LocalAddrH
+    /// Writes to offset `a` of the frame's storage the slice from the register in the low
+    /// half of `c` to the one in its high half (inclusive if `f` has bit 2) of the elements
+    /// `w` bytes apart at the address in `b`; with bit 1 of `f`, the register after `b`
+    /// holds the length the bounds are checked against.
+    SliceMake
+    /// Leaves the loop (to trap) if register `a` has any of the bits `b`.
+    AlignChk
+    /// Copies the `w` bytes aligned to 2 to the power `f` at the address in `b` plus `c` to
+    /// offset `a` of the frame's storage; `MemPut` copies those at offset `b` to the
+    /// address in `a` plus `c`.
+    MemGet
+    MemPut
+    /// Copies `c` bytes of the frame's storage from offset `b` to offset `a`; zeroes `b`
+    /// bytes at offset `a`.
+    CopySlot
+    ZeroSlot
+    Mark
+    Release
+    /// The call of the `Ins`: made in the loop if the callee needs no frame.
+    Call
+    RetW
+    Ret
+    RetSlot
+}
+
+Bc :: struct {
+    op: BcOp
+    f: u8
+    w: u16
+    a: u32
+    b: u32
+    c: u32
+}
+
+/// A body running in the machine's loop: the one the loop was entered for, or the callee
+/// of a call made in the loop (`vm_push`), whose record lies in scratch memory just below
+/// its storage and is released with it.
+CallRec :: struct {
+    /// The record of its caller (`null` for the body the loop was entered for).
+    prev: ?^CallRec
+    code: ^Code
+    regs: [^]u64
+    /// Where its result goes.
+    dst: []u8
+    /// Its frame (`null` for a body without one) and its handler context, now and when it
+    /// started.
+    fr: ?^Frame
+    cx: u32
+    base_cx: u32
+    /// While it calls: the index of the call; when it resumes: of its next instruction.
+    pc: usize
+    /// As a callee: its function, the caller's register its result goes to from `buf`
+    /// (`NO_REG`: none), the scratch memory before the call and how many temporaries
+    /// there were (its own die when it returns).
+    f: u32
+    ret_reg: u32
+    buf: [8]u8
+    mark: Mark
+    tm: usize
+}
+
+/// What the call of an instruction needs, worked out when it first runs (`vm_site`), for
+/// the common call: of a function whose body runs without a frame and captures none.
+CallSite :: struct {
+    /// 0: not worked out yet; 1: the common call, described below; 2: any other, which
+    /// `vm_push_rec` makes.
+    state: u8
+    /// Where the result goes: 0 the record's buffer (then to register `ret_reg`, if any),
+    /// 1 the caller's slot at `out_at`, 2 the caller's own result.
+    out_kind: u8
+    f: u32
+    ret_reg: u32
+    out_at: u32
+    out_size: u32
+    callee: ?^Code
+    frame_size: usize
+    moves: []Move
+}
+
+/// How an argument reaches the callee's storage: `kind` 0 copies the caller's register
+/// `src` to the callee's register `dst`; 1 copies `size` bytes from offset `src` of the
+/// caller's storage to offset `dst` of the callee's; 2 writes the caller's register `src`
+/// to the `size` bytes at offset `dst`.
+Move :: struct {
+    kind: u8
+    src: u32
+    dst: u32
+    size: u32
+}
+
+/// The `CallRec.ret_reg` of a call whose result goes elsewhere than to a register.
+NO_REG: u32 : 0xFFFF_FFFF
+
+/// The little-endian word of 1, 2, 4 or 8 bytes at `p`.
+#inline
+ld1 :: fn(p: [^]const u8) -> u64 => u64(p[0])
+
+#inline
+ld2 :: fn(p: [^]const u8) -> u64 => u64(p[0]) | (u64(p[1]) << 8)
+
+#inline
+ld4 :: fn(p: [^]const u8) -> u64 => u64(p[0]) | (u64(p[1]) << 8) | (u64(p[2]) << 16) | (u64(p[3]) << 24)
+
+#inline
+ld8 :: fn(p: [^]const u8) -> u64 => u64(p[0]) | (u64(p[1]) << 8) | (u64(p[2]) << 16) | (u64(p[3]) << 24) | (u64(p[4]) << 32) | (u64(p[5]) << 40) | (u64(p[6]) << 48) | (u64(p[7]) << 56)
+
+#inline
+st1 :: fn(p: [^]u8, v: u64) { p[0] = v.trunc(u8) }
+
+#inline
+st2 :: fn(p: [^]u8, v: u64) {
+    p[0] = v.trunc(u8)
+    p[1] = (v >> 8).trunc(u8)
+}
+
+#inline
+st4 :: fn(p: [^]u8, v: u64) {
+    p[0] = v.trunc(u8)
+    p[1] = (v >> 8).trunc(u8)
+    p[2] = (v >> 16).trunc(u8)
+    p[3] = (v >> 24).trunc(u8)
+}
+
+#inline
+st8 :: fn(p: [^]u8, v: u64) {
+    p[0] = v.trunc(u8)
+    p[1] = (v >> 8).trunc(u8)
+    p[2] = (v >> 16).trunc(u8)
+    p[3] = (v >> 24).trunc(u8)
+    p[4] = (v >> 32).trunc(u8)
+    p[5] = (v >> 40).trunc(u8)
+    p[6] = (v >> 48).trunc(u8)
+    p[7] = (v >> 56).trunc(u8)
+}
+
+/// The little-endian word of `size` (1, 2, 4 or 8) bytes at `p`.
+#inline
+ldn :: fn(p: [^]const u8, size: u8) -> u64 => if size is 8 { ld8(p) } else if size is 4 { ld4(p) } else if size is 1 { ld1(p) } else { ld2(p) }
+
+#inline
+stn :: fn(p: [^]u8, size: u8, v: u64) {
+    if size is 8 { st8(p, v) } else if size is 4 { st4(p, v) } else if size is 1 { st1(p, v) } else { st2(p, v) }
+}
+
+/// The host memory of the `size` bytes at `addr` aligned to `align` (a power of two), for
+/// reading or (`write`) writing: `null` if the access is not a valid one (`vm_free` then
+/// reports why).
+#inline
+vm_view :: fn(m: ^const Machine, addr: u64, size: u64, align: u64, write: bool) -> ?[^]u8 {
+    if addr & (align - 1) is not 0 { return null }
+    return m.mem.view(addr, size, write)
+}
+
+/// The exponent of the power of two `v`.
+log2 :: fn(v: u32) -> u8 {
+    k: u8 = 0
+    while (u32(1) << u32(k)) < v { k += 1 }
+    return k
+}
+
+/// The operation of `+`, `-` or `*` (`op` 0, 1, 2) among `add`, `sub` and `mul`.
+pick :: fn(op: u8, add: BcOp, sub: BcOp, mul: BcOp) -> BcOp => if op is 0 { add } else if op is 1 { sub } else { mul }
+
+bc_free :: fn() -> Bc => Bc(op: .Free, f: 0, w: 0, a: 0, b: 0, c: 0)
+
+bc3 :: fn(op: BcOp, a: u32, b: u32, c: u32) -> Bc => Bc(op: op, f: 0, w: 0, a: a, b: b, c: c)
+
+/// Whether `v` is 1, 2, 4 or 8.
+word_size :: fn(v: u64) -> bool => v is 1 or v is 2 or v is 4 or v is 8
+
+fits32 :: fn(v: u64) -> bool => v <= 0xFFFF_FFFF
+
+fits16 :: fn(v: u64) -> bool => v <= 0xFFFF
+
+/// An alignment `vm_view` can check: a power of two that fits in `Bc.w`.
+bc_align :: fn(v: u32) -> bool => v > 0 and v <= 0x8000 and v & (v - 1) is 0
+
+/// The comparison `a op b` as a `Bc` with the operation `lt` or `le`: `>` and `>=` swap
+/// the operands. `r` is the third operand (the result's register or the jump's target),
+/// which the jumps have last and the others first.
+bc_cmp :: fn(op: tir.BinOp, lt: BcOp, le: BcOp, jump: bool, a: u32, b: u32, r: u32, w: u16) -> Bc {
+    swap := op is .Gt or op is .Ge
+    which := if op is .Lt or op is .Gt { lt } else { le }
+    x := if swap { b } else { a }
+    y := if swap { a } else { b }
+    if jump { return Bc(op: which, f: 0, w: w, a: x, b: y, c: r) }
+    return Bc(op: which, f: 0, w: w, a: r, b: x, c: y)
+}
+
+/// The `Bc` of instruction `i`; `words` tells whether frame and memory bytes may be read
+/// as little-endian words.
+bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
+    match i^ {
+        .Const(r, v) => return bc3(.K, r, (v & 0xFFFF_FFFF).trunc(u32), (v >> 32).trunc(u32))
+        .Mov(r, x) => return bc3(.Mov, r, x, 0)
+        .Arith64(x) => {
+            op := if x.wrap { pick(x.op, .AddW, .SubW, .MulW) } else if x.signed { pick(x.op, .AddI, .SubI, .MulI) } else { pick(x.op, .AddU, .SubU, .MulU) }
+            return bc3(op, x.r, x.a, x.b)
+        }
+        .Arith32(x) => {
+            op := if x.wrap { pick(x.op, .AddM, .SubM, .MulM) } else if x.signed { pick(x.op, .AddS, .SubS, .MulS) } else { pick(x.op, .AddN, .SubN, .MulN) }
+            return Bc(op: op, f: 0, w: x.bits.trunc(u16), a: x.r, b: x.a, c: x.b)
+        }
+        .FloatOp(x) => {
+            if not x.wide { return bc_free() }
+            op: BcOp = match x.op {
+                .Add(_) => .AddF
+                .Sub(_) => .SubF
+                .Mul(_) => .MulF
+                _ => .DivF
+            }
+            return bc3(op, x.r, x.a, x.b)
+        }
+        .Bit(op, r, a, b) => return bc3(if op is 0 { BcOp.And } else if op is 1 { .Or } else { .Xor }, r, a, b)
+        .AddR(r, x) => return bc3(.AddR, r, x, 0)
+        .AddK(r, k) => return bc3(.AddK, r, (k & 0xFFFF_FFFF).trunc(u32), (k >> 32).trunc(u32))
+        .Not(r, x) => return bc3(.Not, r, x, 0)
+        .Bool(r) => return bc3(.Bool, r, 0, 0)
+        .IntConv(x) => {
+            if x.op is .Sat { return bc_free() }
+            if x.from.signed { return Bc(op: .Sext, f: x.from.bits.trunc(u8), w: x.to.bits.trunc(u16), a: x.r, b: x.a, c: 0) }
+            return Bc(op: .Mask, f: 0, w: x.to.bits.trunc(u16), a: x.r, b: x.a, c: 0)
+        }
+        .Cmp(x) => match x.how {
+            .Unsigned => return bc_cmp(x.op, .LtU, .LeU, false, x.a, x.b, x.r, 0)
+            .Signed(bits) => {
+                if bits is 64 { return bc_cmp(x.op, .LtI, .LeI, false, x.a, x.b, x.r, 0) }
+                return bc_cmp(x.op, .LtS, .LeS, false, x.a, x.b, x.r, bits.trunc(u16))
+            }
+            .F64 => return bc_cmp(x.op, .LtF, .LeF, false, x.a, x.b, x.r, 0)
+            _ => return bc_free()
+        }
+        .JCmp(x) => match x.how {
+            .Unsigned => return bc_cmp(x.op, .JLtU, .JLeU, true, x.a, x.b, x.to, 0)
+            .Signed(bits) => {
+                if bits is 64 { return bc_cmp(x.op, .JLtI, .JLeI, true, x.a, x.b, x.to, 0) }
+                return bc_cmp(x.op, .JLtS, .JLeS, true, x.a, x.b, x.to, bits.trunc(u16))
+            }
+            .F64 => return bc_cmp(x.op, .JLtF, .JLeF, true, x.a, x.b, x.to, 0)
+            _ => return bc_free()
+        }
+        .EqW(x) => match x.how {
+            .Unsigned, .Signed(_) => return bc3(if x.negated { BcOp.Ne } else { .Eq }, x.r, x.a, x.b)
+            _ => return bc_free()
+        }
+        // It jumps if the words' equality is `negated`.
+        .JEq(x) => match x.how {
+            .Unsigned, .Signed(_) => return bc3(if x.negated { BcOp.JEq } else { .JNe }, x.a, x.b, x.to)
+            _ => return bc_free()
+        }
+        .Jmp(to) => return bc3(.Jmp, to, 0, 0)
+        .Jz(r, to) => return bc3(.Jz, r, 0, to)
+        .Jnz(r, to) => return bc3(.Jnz, r, 0, to)
+        .Loop(to) => return bc3(.Loop, to, 0, 0)
+        .LocalAt(r, at, size) => {
+            if not words or not word_size(u64(size)) { return bc_free() }
+            return bc3(if size is 8 { BcOp.Fr8 } else if size is 4 { .Fr4 } else if size is 1 { .Fr1 } else { .Fr2 }, r, at, 0)
+        }
+        .SlotW(r, at, size) => {
+            if not words or not word_size(u64(size)) { return bc_free() }
+            return bc3(if size is 8 { BcOp.Fr8 } else if size is 4 { .Fr4 } else if size is 1 { .Fr1 } else { .Fr2 }, r, at, 0)
+        }
+        .SetLocalAt(at, size, v) => {
+            if not words or not word_size(u64(size)) { return bc_free() }
+            return bc3(if size is 8 { BcOp.FrSet8 } else if size is 4 { .FrSet4 } else if size is 1 { .FrSet1 } else { .FrSet2 }, at, v, 0)
+        }
+        .WSlot(at, size, r) => {
+            if not words or not word_size(u64(size)) { return bc_free() }
+            return bc3(if size is 8 { BcOp.FrSet8 } else if size is 4 { .FrSet4 } else if size is 1 { .FrSet1 } else { .FrSet2 }, at, r, 0)
+        }
+        .LocalAtD(r, at, d, size) => {
+            if not words or not word_size(u64(size)) { return bc_free() }
+            return Bc(op: .FrD, f: size.trunc(u8), w: 0, a: r, b: at, c: d)
+        }
+        .SetLocalAtD(at, d, size, v) => {
+            if not words or not word_size(u64(size)) { return bc_free() }
+            return Bc(op: .FrSetD, f: size.trunc(u8), w: 0, a: at, b: d, c: v)
+        }
+        .JSlot(at, size, nonzero, to) => {
+            if not words or not word_size(u64(size)) { return bc_free() }
+            return Bc(op: if nonzero { BcOp.JFrNz } else { .JFrZ }, f: size.trunc(u8), w: 0, a: at, b: 0, c: to)
+        }
+        .JTag(at, size, v, to) => {
+            if not words or not word_size(u64(size)) or not fits32(v) { return bc_free() }
+            return Bc(op: .JTag, f: size.trunc(u8), w: 0, a: at, b: v.trunc(u32), c: to)
+        }
+        .Load(x) => {
+            if not words or not word_size(u64(x.size)) or not bc_align(x.align) { return bc_free() }
+            return Bc(op: if x.size is 8 { BcOp.Ld8 } else if x.size is 4 { .Ld4 } else if x.size is 1 { .Ld1 } else { .Ld2 }, f: 0, w: x.align.trunc(u16), a: x.r, b: x.base, c: x.off)
+        }
+        .Store(x) => {
+            if not words or not word_size(u64(x.size)) or not bc_align(x.align) { return bc_free() }
+            return Bc(op: if x.size is 8 { BcOp.St8 } else if x.size is 4 { .St4 } else if x.size is 1 { .St1 } else { .St2 }, f: 0, w: x.align.trunc(u16), a: x.base, b: x.v, c: x.off)
+        }
+        .SliceLd(x) => {
+            if not words or not word_size(u64(x.size)) or x.align is not x.size or x.len is not x.p + 1 or not fits16(x.esz) { return bc_free() }
+            return Bc(op: .SliceLd, f: x.size.trunc(u8), w: x.esz.trunc(u16), a: x.r, b: x.p, c: x.i)
+        }
+        .SliceSt(x) => {
+            if not words or not word_size(u64(x.size)) or x.align is not x.size or x.len is not x.p + 1 or not fits16(x.esz) { return bc_free() }
+            return Bc(op: .SliceSt, f: x.size.trunc(u8), w: x.esz.trunc(u16), a: x.p, b: x.v, c: x.i)
+        }
+        .ScaleIdx(ri, len, esz, _) => {
+            if not fits32(len) or not fits32(esz) { return bc_free() }
+            return bc3(.ScaleIdx, ri, len.trunc(u32), esz.trunc(u32))
+        }
+        .SliceIdx(x) => {
+            if not fits16(x.esz) { return bc_free() }
+            return Bc(op: .SliceIdx, f: 0, w: x.esz.trunc(u16), a: x.p, b: x.len, c: x.i)
+        }
+        .ArrIdx(x) => {
+            if not fits16(x.esz) or not fits32(x.len) { return bc_free() }
+            return Bc(op: .ArrIdx, f: 0, w: x.esz.trunc(u16), a: x.p, b: x.i, c: x.len.trunc(u32))
+        }
+        .PtrIdx(x) => {
+            if not fits32(x.esz) { return bc_free() }
+            return bc3(.PtrIdx, x.p, x.i, x.esz.trunc(u32))
+        }
+        .Shr(x) => return Bc(op: if x.t.signed { BcOp.ShrS } else { .ShrU }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b)
+        .Shl(x) => {
+            if not x.wrap and x.t.signed { return bc_free() }
+            return Bc(op: if x.wrap { BcOp.ShlM } else { .ShlN }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b)
+        }
+        .IntOp(x) => {
+            if x.op is .Div { return Bc(op: if x.t.signed { BcOp.DivS } else { .DivU }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b) }
+            if x.op is .Rem { return Bc(op: if x.t.signed { BcOp.RemS } else { .RemU }, f: 0, w: x.t.bits.trunc(u16), a: x.r, b: x.a, c: x.b) }
+            return bc_free()
+        }
+        .SliceMake(x) => {
+            if not words or not fits16(u64(x.lo)) or not fits16(u64(x.hi)) or not fits16(x.esz) or (x.has_len and x.len is not x.p + 1) { return bc_free() }
+            flags: u8 = (if x.has_len { 1 } else { 0 }) | (if x.inclusive { 2 } else { 0 })
+            return Bc(op: .SliceMake, f: flags, w: x.esz.trunc(u16), a: x.at, b: x.p, c: x.lo | (x.hi << 16))
+        }
+        .AlignCheck(r, align, _) => {
+            if align is 0 or align & (align - 1) is not 0 or not fits32(align) { return bc_free() }
+            return bc3(.AlignChk, r, (align - 1).trunc(u32), 0)
+        }
+        .MemGet(x) => {
+            if not fits16(u64(x.size)) or not bc_align(x.align) { return bc_free() }
+            return Bc(op: .MemGet, f: log2(x.align), w: x.size.trunc(u16), a: x.at, b: x.base, c: x.off)
+        }
+        .MemPut(x) => {
+            if not fits16(u64(x.size)) or not bc_align(x.align) { return bc_free() }
+            return Bc(op: .MemPut, f: log2(x.align), w: x.size.trunc(u16), a: x.base, b: x.at, c: x.off)
+        }
+        .CopySlot(d, src, size) => return bc3(.CopySlot, d, src, size)
+        .ZeroSlot(at, size) => return bc3(.ZeroSlot, at, size, 0)
+        .Mark(r) => return bc3(.Mark, r, 0, 0)
+        .Release(r) => return bc3(.Release, r, 0, 0)
+        .Call(_), .Perform(_), .CallValue(_) => return bc3(.Call, NO_REG, 0, 0)
+        .UpvarAt(x) => {
+            if not words or x.levels is not 1 or not word_size(u64(x.size)) { return bc_free() }
+            return Bc(op: .Up, f: x.size.trunc(u8), w: 0, a: x.r, b: x.local, c: x.rel)
+        }
+        .SetUpvarAt(x) => {
+            if not words or x.levels is not 1 or not word_size(u64(x.size)) { return bc_free() }
+            return Bc(op: .UpSet, f: x.size.trunc(u8), w: 0, a: x.local, b: x.v, c: x.rel)
+        }
+        .RetW(r) => return bc3(.RetW, r, 0, 0)
+        .Ret => return bc3(.Ret, 0, 0, 0)
+        .RetSlot(at, size) => return bc3(.RetSlot, at, size, 0)
+        // These need the frame: its locals in memory, its deferred statements, the frames
+        // it captures or its handler context, or they run the tree evaluator in it.
+        .Local(_), .SetLocal(_), .LocalAddr(_), .SetLocalSlot(_), .EvalW(_), .EvalSlot(_), .Discard(_), .Stmt(_), .AssignW(_), .Pat(_), .RetEval(_), .DeferHeight(_), .Defer(_), .Unwind(_), .CxSave(_), .CxRestore(_), .WithLit(_), .WithDecl(_) => return Bc(op: .Framed, f: 0, w: 0, a: 0, b: 0, c: 0)
+        _ => return bc_free()
+    }
+}
+
+/// Whether instruction `i` reaches a local that has memory of its own.
+in_memory :: fn(i: ^const Ins) -> bool => match i^ {
+    .Local(_), .SetLocal(_), .LocalAddr(_), .SetLocalSlot(_) => true
+    _ => false
+}
+
+/// Assembles the instructions of `code` (`Code.bc`) and tells whether its body runs
+/// without a frame (`Code.frameless`): no instruction needs one. The locals whose address
+/// is taken then keep the address of their memory in a register of their own after the
+/// others (`Code.hidden`), which extends the storage; with a frame it is in `Frame.mem`.
+vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs Alloc {
+    out := make_fill(code.ins.len, bc_free())!
+    frameless := true
+    for k in 0..code.ins.len {
+        out[k] = bc_of(&code.ins[k], m.word_locals)
+        if out[k].op is .Framed and not in_memory(&code.ins[k]) { frameless = false }
+    }
+    // Each direct call has a site (`Bc.a` is its index).
+    nsites: u32 = 0
+    for k in 0..code.ins.len {
+        if code.ins[k] is .Call(_) {
+            out[k].a = nsites
+            nsites += 1
+        }
+    }
+    code.sites = make_fill(usize(nsites), CallSite(state: 0, out_kind: 0, f: 0, ret_reg: NO_REG, out_at: 0, out_size: 0, callee: null, frame_size: 0, moves: empty_slice(Move)))!
+    code.bc = out
+    code.frameless = frameless
+    // The frame a body captures is reached through a register after the others.
+    for k in 0..code.ins.len {
+        if code.ins[k] is .UpvarAt(_) or code.ins[k] is .SetUpvarAt(_) {
+            code.env_reg = (code.size / 8).trunc(u32)
+            code.size += 8
+            break
+        }
+    }
+    if not frameless { return () }
+    hidden := make_fill(info.addressed.len, NO_REG)!
+    n: u64 = 0
+    for l in 0..info.addressed.len {
+        if info.addressed[l] {
+            hidden[l] = (code.size / 8 + n).trunc(u32)
+            n += 1
+        }
+    }
+    if n is 0 {
+        free(hidden)
+        return ()
+    }
+    code.hidden = hidden
+    code.size += 8 * n
+    for k in 0..code.ins.len {
+        match code.ins[k] {
+            .LocalAddr(r, local, _) => { out[k] = bc3(.LocalAddrH, r, local, hidden[usize(local)]) }
+            .Local(_), .SetLocal(_), .SetLocalSlot(_) => { out[k] = bc_free() }
+            _ => {}
+        }
+    }
+}

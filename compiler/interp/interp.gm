@@ -138,6 +138,8 @@ FnInfo :: struct {
     addressed_params: bool = false
     /// For a function returning a result: the offset of the byte telling an error.
     err_flag: ?u64 = null
+    /// The function's result type (`null` for what is not a function's body).
+    ret_ty: ?Ty = null
     /// The body compiled for the register machine (`vm.gm`).
     vm: ?^Code = null
     /// The size of the frame's storage: the locals, then the machine's slots and registers.
@@ -474,11 +476,7 @@ pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string, filt
 
 /// Frees what the machine holds (the trap of an outcome is kept).
 deinit :: fn(m: ^Machine) needs Alloc {
-    for a in m.mem.allocs.items {
-        if a.data.len > 0 { free(a.data) }
-    }
-    m.mem.allocs.deinit()
-    free(m.mem.cache)
+    m.mem.mem_deinit()
     for c in m.scratch.chunks.items { free(c) }
     m.scratch.chunks.deinit()
     m.infos.deinit()

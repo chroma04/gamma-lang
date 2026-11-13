@@ -129,7 +129,9 @@ enter :: fn(m: ^Machine, span: source.Span, f: u32, info: ^FnInfo, body: ^Node, 
     fr.installing = installing
     fr.is_clause_lit = is_clause_lit
     // Parameters whose address is taken move to memory of their own.
-    if info.addressed_params {
+    // (Without a frame, the body gives them memory itself: `Code.hidden`.)
+    frameless := if c := info.vm { c.frameless } else { false }
+    if info.addressed_params and not frameless {
         for p in info.params {
             if info.addressed[us(p)] {
                 _ = m.local_addr(span, fr, p) else fl => {

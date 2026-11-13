@@ -169,7 +169,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         }
     }
     // Running out of stack is checked (§14.1, §18): the thread's or the fiber's.
-    if fg.g.opts.checks { fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);") }
+    if fg.g.opts.checks and not probe_free(fg.g, def) { fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);") }
     // Debug builds keep a backtrace chain (see gm_bt in the runtime).
     pop := ""
     if fg.g.opts.debug {
@@ -249,6 +249,38 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         text = replacen1(text, "static ", "static GM_LONG_FN ")
     }
     g.bodies.extend(text)!
+}
+
+/// Whether `def` needs no stack probe of its own: an `#inline` function of an optimized
+/// build, which becomes part of its callers, that calls nothing but functions that
+/// probe. Every chain of calls then still reaches a probe after at most one such
+/// function, and a caller's probe is not repeated for each helper inlined into it.
+probe_free :: fn(g: ^Gen, def: ^const Func) -> bool needs Alloc {
+    if g.opts.debug { return false }
+    if x := def.hints.inline and x {
+        b := def.body else return false
+        return calls_probe(g, b)
+    }
+    return false
+}
+
+/// Whether every call in `e` is a direct call of a function that is not `#inline`.
+calls_probe :: fn(g: ^Gen, e: ^Expr) -> bool needs Alloc {
+    match e.kind {
+        .Call(callee, _) => match callee {
+            .Fn(f) => {
+                if x := g.prog.func(f).hints.inline and x { return false }
+            }
+            _ => return false
+        }
+        .Write(_), .Resume(_), .With(_) => return false
+        _ => {}
+    }
+    ok := true
+    tir.for_each_child(e, fn(x: ^Expr) {
+        if not calls_probe(g, x) { ok = false }
+    })
+    return ok
 }
 
 /// The attributes (each with a trailing space) for a C function with `names` temporaries
