@@ -96,7 +96,7 @@ pub Split :: struct {
 }
 
 /// As `split`, with the text the units share kept apart.
-pub split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
+split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
     all := items_of(parts.funcs) else return null
     // The inline functions, by name: their definitions are shared.
     inline_names := hash_map.hash_map(string, ())

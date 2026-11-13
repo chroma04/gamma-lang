@@ -16,15 +16,22 @@ case "$gamma0" in /*) ;; *) gamma0=$(pwd)/$gamma0 ;; esac
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/src" "$work/out"
+mkdir -p "$work/src" "$work/out" "$work/c"
 while read -r dir tree; do
     mkdir -p "$work/src/$dir"
     git -C "$root" archive "$tree" | tar -x -C "$work/src/$dir"
 done < "$here/seed/SOURCE"
 
 cd "$work/src"
-GAMMA_STD=lib/std GAMMA_RUNTIME=runtime GAMMA_CACHE_DIR= GAMMA_C_UNITS=8 \
-    "$gamma0" build compiler --emit-c -o "$work/out/gammac"
+GAMMA_STD=lib/std GAMMA_RUNTIME=runtime GAMMA_CACHE_DIR= GAMMA_C_UNITS=2 \
+    "$gamma0" build compiler --emit-c -o "$work/c/gammac"
+# The seed holds each unit under the hash of its text.
+sha256() {
+    if command -v sha256sum > /dev/null; then sha256sum; else shasum -a 256; fi
+}
+for unit in "$work"/c/*.c; do
+    cp "$unit" "$work/out/$(sha256 < "$unit" | cut -c1-16).c"
+done
 cp "$here/seed/SOURCE" "$work/out/SOURCE"
 if diff -r "$here/seed" "$work/out" > /dev/null; then
     echo "verify: the seed is the compiler's C for the sources it names"

@@ -1,6 +1,10 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-13) — PRs #1–#122 merged, v0.1.0 + rust-reference-final tagged
+## State (2026-11-13) — PRs #1–#124 merged, v0.1.0 + rust-reference-final tagged
+- s70: FAST BOOTSTRAP (decisions/066): build.sh 141 s → 52 s (4 cpus). Seed = the by-file
+  units of a compiler build, files `<sha16 of text>.c`; build.sh compiles them with the
+  driver's flags; gamma0 adopts the objects (`GAMMA_UNIT_OBJECTS`, rtcache adopt_object);
+  stage 2 hits the cache. Stale seed = slower bootstrap → refresh now and then.
 - s69: Windows CI flake fixed (cache renames over open files; gotchas/environment.md).
 - s68 (#122): INCREMENTAL NATIVE BUILDS (decisions/065):
   stable C names (cgen/names.gm: gm_f_<name>_<hash>, content/key-named data and types),
@@ -69,7 +73,7 @@
 - architecture/   overview.md (code map — update!), sema-notes.md
 - decisions/      001–059, one topic each (filenames say it): 008 C back end, 017 Safe/Fil-C,
                   020 bytecode VM, 023 tooling, 025/030 design reviews, 033 lint, 034 wasm,
-                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52), 057 perf round 4 (s55), 058 perf round 5 (s56), 059 playground root stack (s57), 060 stale-element growth summaries (s58), 061 tuple-expression spread (s60), 062 perf round 6 (s61; profiling recipe), 063 perf round 7 (s62; unit-cache idea, what is left), 064 interpreter redesign (s67: Bc forms, in-loop calls, page memory; stats recipe). `ls decisions/` for the rest.
+                  035 Cranelift (removed), 036 website, 037 errors policy + array spread, 043 self-hosting, 044 s39 pain-point changes, 045 dangling error + shadowing stays, 046 gammac evaluator, 047 `?x` pattern, 048 gammac C back end, 049 temp arrays as slices + flush before blocking, 050 native coverage, 051 gammac interpreter, 052 retire Rust + C seed, 053 Gamma test harness + SpawnOptions env/group, 054 s50 pain-point sweep, 055 compiler performance (s51), 056 interpreter VM (s52), 057 perf round 4 (s55), 058 perf round 5 (s56), 059 playground root stack (s57), 060 stale-element growth summaries (s58), 061 tuple-expression spread (s60), 062 perf round 6 (s61; profiling recipe), 063 perf round 7 (s62; unit-cache idea, what is left), 064 interpreter redesign (s67: Bc forms, in-loop calls, page memory; stats recipe), 065 incremental C units (s68), 066 fast bootstrap (s70). `ls decisions/` for the rest.
 - spec-notes/     amendments.md (index of spec edits) · open-issues.md (unresolved) ·
                   pain-points.md (repeated usability pain: flag to user, user rule)
 - sessions/       s01–s30 logs (compacted; s28 = decisions/030, s29/s31/s32 have none)

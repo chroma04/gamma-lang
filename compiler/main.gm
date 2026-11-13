@@ -107,6 +107,8 @@ environment:
   GAMMA_CACHE_DIR
                  the package store (default: the user's cache directory; empty turns it off)
   GAMMA_C_UNITS  the number of C units of a Debug build (default: by size and processors)
+  GAMMA_UNIT_OBJECTS
+                 a directory of objects compiled ahead for the C units of a build
   GAMMA_RUNNER   the program that runs the executables of another target (e.g. qemu-s390x)
   WASI_SDK_PATH  the WASI SDK (for wasm32-wasi; its clang is the default C compiler there)
   WASM_OPT       the wasm-opt program (default: wasm-opt) for programs that use fibers
