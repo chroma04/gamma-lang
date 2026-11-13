@@ -36,10 +36,17 @@ fi
 # The compiler of the current sources, built by a compiler of the current sources.
 "$start" build compiler -o "$out/stage1"
 "$out/stage1" build compiler -o "$out/stage2"
-GAMMA_C_UNITS=8 "$out/stage2" build compiler --emit-c -o "$out/c/gammac"
+# The units a build of the compiler compiles, and the runtime. Each goes to the seed under
+# the hash of its text, by which the seed's compiler finds its object (GAMMA_UNIT_OBJECTS).
+GAMMA_C_UNITS=2 "$out/stage2" build compiler --emit-c -o "$out/c/gammac"
 
+sha256() {
+    if command -v sha256sum > /dev/null; then sha256sum; else shasum -a 256; fi
+}
 rm -f bootstrap/seed/*.c bootstrap/seed/*.h
-cp "$out"/c/*.c "$out"/c/*.h bootstrap/seed/
+for unit in "$out"/c/*.c; do
+    cp "$unit" "bootstrap/seed/$(sha256 < "$unit" | cut -c1-16).c"
+done
 {
     printf 'compiler %s\n' "$(git rev-parse HEAD:compiler)"
     printf 'lib %s\n' "$(git rev-parse HEAD:lib)"

@@ -60,6 +60,7 @@ runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source: st
         return obj
     }
     pkg.make_dirs(dir) else return null
+    if adopt_object(source, dir, stem) { return obj }
     // The source stays next to the object (a debugger reads it); writing it is idempotent
     // but goes through a private file too, so a concurrent build never compiles a partial one.
     c_file := load.join(dir, str.format("{}.c", stem)!)
@@ -98,6 +99,25 @@ rename_or_remove :: fn(from, to: string) -> ?() needs Fs {
         return null
     }
     return ()
+}
+
+/// Puts the object that was compiled ahead from the C text `source` in the cache `dir` as
+/// `stem.o`, and returns whether there was one. `$GAMMA_UNIT_OBJECTS` names a directory of
+/// such objects: `<h>.o` is the object of the text whose SHA-256 starts with the 16 digits
+/// `<h>`. Whoever fills the directory compiles each text with the compiler and the flags of
+/// the build that will look for it (`bootstrap/build.sh` does, with the seed); like the
+/// cache, it is used without any check.
+adopt_object :: fn(source, dir, stem: string) -> bool needs Alloc + Env + Fs + Rand {
+    ahead := Env.var("GAMMA_UNIT_OBJECTS") else return false
+    if ahead.len is 0 { return false }
+    from := load.join(ahead, str.format("{}.o", pkg.sha256_hex(source)[0..16])!)
+    if not load.is_file(from) { return false }
+    tmp := private_name(dir, stem, "o")
+    fs.copy(from, tmp) else {
+        _ = Fs.remove(tmp)
+        return false
+    }
+    return rename_or_remove(tmp, load.join(dir, str.format("{}.o", stem)!)) is not null
 }
 
 /// Sets the modification time of the cached file `p` to now, so the cache cleaner keeps it.
@@ -160,6 +180,7 @@ KEPT_UNITS :: 4000
 /// cache, `jobs` at a time. With `line_paths`, each source is first given the name of its
 /// cached file for its `#line` directives (see `cgen.resolve_lines`). `.NoCache` if there
 /// is no cache or no compiler version; `.Failed` (reported) if a unit does not compile.
+/// An object made ahead (`adopt_object`) is taken instead of compiling its unit.
 unit_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, sources: []const string, compiler: ?string, jobs: usize, line_paths: bool) -> UnitObjects needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
     dir := pkg.cache_dir() else return .NoCache
     version := compiler else return .NoCache
@@ -182,6 +203,8 @@ unit_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, sources: []c
             if info.modified < day { touch(obj) }
             continue
         }
+        // With `line_paths` the text compiled names its place in the cache: never made ahead.
+        if not line_paths and adopt_object(src, dir, str.format("unit-{}", key)!) { continue }
         c_file := str.format("{}.c", stem)!
         text: string = if line_paths { cgen.resolve_lines(src, c_file) } else { src }
         tmp_c := private_name(dir, str.format("unit-{}", key)!, "c")

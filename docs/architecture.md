@@ -720,10 +720,18 @@ How the runtime is linked depends on the build mode:
   definitions move between units. The data is dealt into 16 units by a hash of
   each item's name, so a new string literal compiles one of them again.
 
-  `gamma build --emit-c` with `GAMMA_C_UNITS=<n>` writes the older form of a
-  split, the form of the bootstrap seed: a header that every unit includes
-  (`prog.h`), the runtime (`prog.rt.c`) and `n` units that deal the function
-  definitions out by size.
+  `gamma build --emit-c` with `GAMMA_C_UNITS=<n>` (`n` > 1) writes the split
+  instead of one file: the runtime (`prog.rt.c`) and the units by source file
+  (`prog.c`, `prog.1.c`, …), each a translation unit of its own with exactly
+  the text a build compiles. Objects compiled from these texts ahead of a build
+  can be handed to it: `$GAMMA_UNIT_OBJECTS` names a directory in which `<h>.o`
+  is the object of the text whose SHA-256 starts with the 16 hex digits `<h>`,
+  and a build that does not find a unit (or the runtime) in the cache takes the
+  object from there instead of compiling it. They must be compiled with the
+  compiler and the flags of that build; like the cache, the directory is used
+  without any check. This is how `bootstrap/build.sh` compiles the compiler only
+  once: the seed is these units of the compiler, and the script compiles them
+  itself before the seed's compiler builds the current sources.
 - Safe builds are compiled at `-O2` like Checked builds but link the cached
   runtime object as Debug builds do (compiled with Fil-C, at `-O2`). Fil-C
   compiles slowly, and the runtime code a program reaches was half the time of

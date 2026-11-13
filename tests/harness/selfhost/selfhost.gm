@@ -1,10 +1,11 @@
 //! How the compiler in `compiler/` builds itself: `gamma`, the compiler under test
 //! (`GAMMA_TEST_COMPILER`), compiles its own sources to a fixed point, its unit tests pass,
 //! its sources and those of the harness are formatted, the split C form of the bootstrap
-//! seed builds, and a packaged release runs from its installed layout.
+//! seed builds and its objects are taken by a build, and a packaged release runs from its installed layout.
 
 driver :: import "gammac/driver"
 load :: import "gammac/load"
+pkg :: import "gammac/pkg"
 fs :: import "std/fs"
 kit :: import "../kit"
 str :: import "std/str"
@@ -118,24 +119,33 @@ fixed_point :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     return ()
 }
 
-/// With `GAMMA_C_UNITS`, `gamma build --emit-c` writes a program as a header, the runtime and
-/// units that include the header (the form of the bootstrap seed): compiled one by one with
-/// the flags of a build and linked, they make the program.
+/// With `GAMMA_C_UNITS`, `gamma build --emit-c` writes a program as the runtime and the units
+/// that a split build compiles (the form of the bootstrap seed): compiled one by one with
+/// the flags of a build and linked, they make the program. And a build that is given their
+/// objects (`GAMMA_UNIT_OBJECTS`, each named after the hash of its unit's text) compiles
+/// nothing again.
 split_emitted_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     dir := try t.scratch("selfhost-split-emit")
     c := t.gamma([_]string("build", "--emit-c", "-o", kit.join(dir, "life"), "examples/life.gm"))
     c.set("GAMMA_C_UNITS", "3")
     emitted := try t.run(c)
     try t.check(emitted.success(), "gamma build --emit-c failed:\n{}", emitted.err)
-    sources := [_]string("life.rt.c", "life.c", "life.1.c", "life.2.c")
-    for name in sources {
-        try t.check(fs.exists(kit.join(dir, name)), "{} was not written", name)
+    sources := list(string)
+    for r in fs.entries(dir) {
+        e := r else break
+        // The entry's name lasts until the next one is read.
+        if e.name.ends_with(".c") { sources.push(str.format("{}", e.name)!)! }
     }
-    try t.check(fs.exists(kit.join(dir, "life.h")), "life.h was not written")
+    try t.check(fs.exists(kit.join(dir, "life.rt.c")), "life.rt.c was not written")
+    try t.check(fs.exists(kit.join(dir, "life.c")), "life.c was not written")
+    try t.check(sources.items.len >= 4, "expected the runtime and a unit per source file, found {}", sources.items)
+    ahead := kit.join(dir, "ahead")
+    fs.make_dir_all(ahead) else e => return !t.fail("cannot make {}: {}", ahead, e)
     tc := driver.from_env() else e => return !t.fail("{}", e)
     objects := list(string)
-    for name in sources {
-        object := str.format("{}.o", kit.join(dir, name))!
+    for name in sources.items {
+        text := try t.read(kit.join(dir, name))
+        object := kit.join(ahead, str.format("{}.o", pkg.sha256_hex(text)[0..16])!)
         cc := cc_command(&tc)
         cc.args(driver.base_cflags(load.host_target()).items)
         cc.args([_]string("-O1", "-c", kit.join(dir, name), "-o", object))
@@ -150,8 +160,27 @@ split_emitted_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     link.arg("-lm")
     out := try t.run(link)
     try t.check(out.success(), "the units do not link:\n{}", out.err)
+    expected := try t.read(t.repo("tests/examples/life.stdout"))
     run := try t.run(kit.command(program))
-    try t.expect_text("the output", try t.read(t.repo("tests/examples/life.stdout")), run.out)
+    try t.expect_text("the output", expected, run.out)
+    // The same program built with the objects at hand: every one is taken, none compiled
+    // (a unit that is compiled leaves its C text in the cache).
+    cache := kit.join(dir, "cache")
+    built := kit.join(dir, "life2")
+    b := t.gamma([_]string("build", "-o", built, "examples/life.gm"))
+    b.set("GAMMA_C_UNITS", "3")
+    b.set("GAMMA_CACHE_DIR", cache)
+    b.set("GAMMA_UNIT_OBJECTS", ahead)
+    _ = try t.run_ok(b)
+    taken: usize = 0
+    for r in fs.entries(cache) {
+        e := r else break
+        try t.check(not e.name.ends_with(".c"), "the build compiled {} though its object was at hand", e.name)
+        if e.name.ends_with(".o") { taken += 1 }
+    }
+    try t.check(taken is sources.items.len, "the build took {} of {} objects", taken, sources.items.len)
+    again := try t.run(kit.command(built))
+    try t.expect_text("the output of the build", expected, again.out)
     return ()
 }
 

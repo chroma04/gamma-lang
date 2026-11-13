@@ -26,8 +26,16 @@ Versions and what each kind of change means are described in
   compiler itself takes about 40 s from an empty cache (about a minute before) and 4 to 6 s
   after an edit in one file. The generated C names
   functions after their Gamma names (`gm_f_<name>_<hash>`), which also makes profiles and C
-  backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` still writes the shared
-  header and `n` units of the bootstrap seed.
+  backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` above 1 writes these
+  units and the runtime, each a translation unit of its own (before: a shared header and
+  `n` units).
+- **A faster build from the seed.** `bootstrap/build.sh` takes under a minute on four
+  cores (about two and a half before). The seed is now the units a build of the compiler
+  compiles, the script compiles them as that build would, and the seed's compiler takes
+  those objects for every unit that is unchanged in the current sources
+  (`GAMMA_UNIT_OBJECTS`, a directory of objects compiled ahead and named after the hash of
+  their unit's text) instead of compiling the compiler a second time. `JOBS` defaults to
+  the number of processors, and `CFLAGS` apply to the seed too.
 - **A faster interpreter.** `gamma run --backend=interp`, `gamma repl` and the web
   playground run programs two to four times faster. The register machine now dispatches on
   compact instructions specialized for their operand types, makes every call of a compiled

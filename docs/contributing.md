@@ -9,7 +9,7 @@ problems are reported privately, as [`SECURITY.md`](../SECURITY.md) describes.
 a C compiler (`cc`, gcc or clang):
 
 ```sh
-bootstrap/build.sh               # writes target/bootstrap/gamma (a few minutes)
+bootstrap/build.sh               # writes target/bootstrap/gamma (about a minute)
 ```
 
 The script compiles the C seed in `bootstrap/seed/` and builds the compiler of the
@@ -369,11 +369,14 @@ seed is not exactly what the compiler of those trees generates for them
 (`bootstrap/verify.sh [GAMMA0]`), if it no longer builds the current compiler, or if that
 build is not a fixed point.
 
-Refresh the seed when the compiler's sources stop building with it: commit the change to
+Refresh the seed when the compiler's sources stop building with it, or when the build
+from it has become slow (the seed's objects are reused for the source files that have not
+changed since, so an old seed means compiling much of the compiler twice): commit the change to
 `compiler/`, `lib/` or `runtime/`, then run `tools/refresh-seed.sh [GAMMA]` and commit
 `bootstrap/seed/`. The script builds the compiler from the current seed (or with the
 `gamma` given as its argument, such as one built by `gamma build compiler`), has it build
-itself, and writes the C that compiler generates for itself. Because a refreshed seed has
+itself, and writes the units that compiler generates for itself, each named after the
+hash of its text. Because a refreshed seed has
 to be built by the previous one, a change that has the compiler's own sources use a new
 language feature comes in two steps: first teach the compiler the feature and refresh the
 seed, then use the feature in `compiler/`. The core library counts as the compiler's own source
@@ -382,7 +385,7 @@ here: a new intrinsic that `lib/core/prelude.gm` calls (for a new operation of `
 stages locally: first a compiler from a tree that has the intrinsic in `compiler/` and
 `runtime/` but leaves the prelude as it was, then, with that compiler, the full change;
 refresh the seed with the second compiler (`tools/refresh-seed.sh path/to/it`) in the same
-change. Changes that do not need a refresh leave the
+change. Other changes leave the
 seed alone, which keeps the repository from growing with every change. Each seed is
 exactly what the previous seed's compiler generates, which ties the chain to the last
 compiler built by the Rust reference implementation (see
