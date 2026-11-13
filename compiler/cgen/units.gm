@@ -484,6 +484,9 @@ declared_name :: fn(item: string) -> string {
     return name
 }
 
+/// How many units the data of a split by file is dealt into, by name.
+DATA_GROUPS :: 16
+
 /// The ranks of declarations (see `Decl`).
 RANK_TYPE: u8 : 0
 RANK_FRAME: u8 : 1
@@ -491,9 +494,9 @@ RANK_PROTO: u8 : 2
 RANK_DATA: u8 : 3
 RANK_INLINE: u8 : 4
 
-/// `parts` split into units by the source files of the functions: unit 0 holds the data
-/// and the entry code; then one unit per source file, which also makes the external
-/// definitions of its inline functions, and one for the code of no file. Each unit declares only what it uses, in
+/// `parts` split into units by the source files of the functions: unit 0 holds the entry
+/// code; then up to `DATA_GROUPS` units of data, one unit per source file, which also makes
+/// the external definitions of its inline functions, and one for the code of no file. Each unit declares only what it uses, in
 /// an order that does not depend on the rest of the program, so that an edit changes only
 /// the units it concerns. `null` if the code has a shape the split does not handle.
 pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
@@ -538,7 +541,10 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
         d := external(line) else line
         decls.push(Decl(text: str.format("{}\n", d)!, name: declared_name(d), refs: gm_names(d), rank: RANK_PROTO))!
     }
-    defs := list(u8)
+    // The definitions of the data, dealt into `DATA_GROUPS` units by name, so that new
+    // data (a string literal) changes one of them.
+    groups := list(List(string))
+    for _ in 0..DATA_GROUPS { groups.push(list(string))! }
     for line in str.lines(parts.data) {
         if line.len is 0 { continue }
         if line.starts_with("#") or line.starts_with("extern ") or line.starts_with("static inline ") {
@@ -548,9 +554,9 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
         def := str.strip_prefix(line, "static ") else return null
         head: string = if eq := str.split_once(def, " = ") { eq.before } else { str.strip_suffix(def, ";") else return null }
         d := str.format("extern {};", head)!
-        decls.push(Decl(text: str.format("{}\n", d)!, name: declared_name(d), refs: gm_names(d), rank: RANK_DATA))!
-        defs.extend(def)!
-        defs.push('\n')!
+        name := declared_name(d)
+        decls.push(Decl(text: str.format("{}\n", d)!, name: name, refs: gm_names(d), rank: RANK_DATA))!
+        groups.items[(hash64(name) % u64(DATA_GROUPS)).trunc(usize)].push(def)!
     }
     by_name := hash_map.hash_map(string, List(usize))
     defer by_name.deinit()
@@ -570,8 +576,16 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
     }
     set_depths(decls.items, &by_name)
     units := list(string)
-    first := str.format("{}{}{}", parts.once, defs.items, parts.tail)!
+    first := str.format("{}{}", parts.once, parts.tail)!
     units.push(unit_text(decls.items, &by_name, nameless.items, first, parts.members))!
+    for g in groups.items {
+        if g.items.len is 0 { continue }
+        // A tentative definition and the definition of a name may come in either order.
+        g.items.sort()
+        text := list(u8)
+        for def in g.items { text.write("{}\n", def)! }
+        units.push(unit_text(decls.items, &by_name, nameless.items, text.items, parts.members))!
+    }
     for k, fns in enumerate(bodies.items) {
         ext := externs.items[k]
         if fns.items.len is 0 and ext.items.len is 0 { continue }
@@ -878,15 +892,17 @@ test "a split by file declares in each unit what it uses" {
             return
         }
         expect_eq(s.shared, p.support)
-        expect_eq(s.units.len, 3)
-        // Unit 0: the data and the entry code.
+        // Unit 0 (the entry code), the data, `a.gm` and `b.gm`.
         u0 := s.units[0]
-        expect(str.contains(u0, "\nconst uint8_t gm_sa[4] = \"a{;\";\n"))
-        expect(not str.contains(u0, "gm_f_i_z"))
         expect(u0.ends_with("int main(void) { gm_f_f_x((gm_ta){0}); return 0; }\n"))
+        expect(not str.contains(u0, "gm_f_i_z") and not str.contains(u0, "gm_tyb"))
+        data := list(u8)
+        for u in s.units[1..s.units.len - 2] { data.extend(u)! }
+        expect(str.contains(data.items, "\nconst uint8_t gm_sa[4] = \"a{;\";\n"))
+        expect(str.contains(data.items, "\nconst gm_type gm_tyb = {.size = 4};\n"))
         expect(not str.contains(u0, "gm_tb"))
         // `a.gm`: its type and assertion, its frame, the string and the inline function.
-        ua := s.units[1]
+        ua := s.units[s.units.len - 2]
         expect(str.contains(ua, "typedef struct { uint8_t b[8]; } gm_b8_8;\ntypedef struct { gm_b8_8 f0; } gm_ta;\n_Static_assert(sizeof(gm_ta) == 8"))
         expect(str.contains(ua, "struct gm_fr_f_x {\n    gm_frame h;\n    gm_ta l0;\n};\n"))
         expect(str.contains(ua, "extern const uint8_t gm_sa[4];\n"))
@@ -895,7 +911,7 @@ test "a split by file declares in each unit what it uses" {
         expect(str.contains(ua, "\nvoid gm_f_f_x(gm_ta a) {\n"))
         expect(not str.contains(ua, "gm_tb") and not str.contains(ua, "main"))
         // `b.gm`: only what it uses, and the external definition of its inline function.
-        ub := s.units[2]
+        ub := s.units[s.units.len - 1]
         expect(str.contains(ub, "extern __attribute__((aligned(4))) int gm_f_i_z(int a);\n"))
         expect(str.contains(ub, "__attribute__((aligned(4))) __attribute__((always_inline)) inline int gm_f_i_z(int a) {\n"))
         expect(str.contains(ub, "typedef struct { int32_t f0; } gm_tb;\n"))
@@ -921,10 +937,14 @@ test "the units of a split by file do not depend on the order of the declaration
             expect(false)
             return
         }
-        // Only unit 0, which defines all the data, changes.
-        expect(s.units[0] is not t.units[0])
-        expect_eq(s.units[1], t.units[1])
-        expect_eq(s.units[2], t.units[2])
+        // Only the unit of the new string's data changes (or is added).
+        changed: usize = 0
+        for u in t.units {
+            found := false
+            for v in s.units { if u is v { found = true } }
+            if not found { changed += 1 }
+        }
+        expect_eq(changed, 1)
     }
 }
 
