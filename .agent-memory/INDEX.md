@@ -1,11 +1,12 @@
 # Gamma implementation — agent memory INDEX (read first)
 
-## State (2026-11-13) — PRs #1–#121 merged, v0.1.0 + rust-reference-final tagged
-- s68 (branch claude/magical-dirac-tgheox): INCREMENTAL NATIVE BUILDS (decisions/065):
+## State (2026-11-13) — PRs #1–#122 merged, v0.1.0 + rust-reference-final tagged
+- s68 (#122): INCREMENTAL NATIVE BUILDS (decisions/065):
   stable C names (cgen/names.gm: gm_f_<name>_<hash>, content/key-named data and types),
   split by source file with per-unit pruned headers (units.gm split_by_file), unit
   objects cached by text (driver/rtcache.gm unit_objects; pooled compile_objects).
-  Compiler debug build: cold 41 s, one-file body edit 4 s. Follow-ups in 065.
+  Compiler (Checked) build: cold 42 s, one-file edit 4–5 s; data in 16 units; -g
+  prunes views; WASI too. Open: wasi/fibers fails under forced split (also on main).
 - s67 (branch claude/optimistic-curie-kxu2yf): INTERPRETER REDESIGN (decisions/064): 16-byte
   specialized `Bc` per instruction (bc.gm), every compiled call made inside the vm_run loop
   with a CallRec per body (no host recursion, no Frame for frameless bodies), page-table
@@ -53,7 +54,6 @@
    harness Watch thread → Proc.try_wait, pain-points.md "Open", Windows CI of the harness.
 2. roadmap/todo.md: the prioritized list agreed with the user (P0 → nice). P1 done (s18);
    next P2: fuzz sema/differential, perf, Windows, Emacs.
-2b. Incremental builds follow-ups (decisions/065 "Not done"): data of unit 0 by owner, -g.
 3. VM follow-ups: decisions/064 "Not done" (push cost, dispatch, builtins, stack-local
    allocations, lazy frames); `with … on`, value loops, u128 ops still tree; bugs-open.md.
    C size follow-ups: decisions/058 "Not done" (map growth, sort per T, seed refresh).
