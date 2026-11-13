@@ -319,7 +319,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     // The units of a split build are compiled through the cache of unit objects when there
     // is one: only those whose text changed since a build that made them are compiled.
     cached: ?[]const string = null
-    if runtime is not null and n > 1 and not wasi_target(opts.target) {
+    if runtime is not null and n > 1 {
         if split := cgen.split_by_file(&generated.parts) {
             prelude := str.format("{}{}\n{}", PROGRAM_PRELUDE, b.rt_h, split.shared)!
             for u in split.units { sources.push(str.format("{}{}", prelude, u)!)! }

@@ -62,9 +62,18 @@ D. Measure: edit one compiler file → count recompiled units / wall; docs (arch
   → "clang: no such file …unit-….o". Fix: `units_to_prune` never removes objects used in
   the last day (hits older than a day are touched). Verified seeds 3200..3400 locally.
 
+- Follow-ups (local commits after #122): data dealt into DATA_GROUPS=16 units by name
+  hash (string-literal edit 6.0 → 4.3 s); -g: views named gm_dv<decimal hash>_<kind>
+  (printers' regex `gm_dv\d+_`), pruned like types, `line_reset` after every moved
+  definition (else lldb put breakpoints in other functions); debug_info C-reading tests
+  pin GAMMA_C_UNITS=1 (`build_one_file`). -g compiler build: cold 69 s, body edit 7.4 s.
+  WASI now uses split_by_file too.
+- PRE-EXISTING (also on main): forced split (GAMMA_C_UNITS=3) fast WASI build of
+  harness wasi/fibers exhausts wasmtime's call stack (below(2000) recursion); unsplit
+  passes. CI's wasi lane doesn't force units. Local WASI setup: apt wasi-libc
+  libclang-rt-18-dev-wasm32 binaryen clang-18 lld-18 + wasmtime v25.0.1 tarball, clang→clang-18.
+- std_process "core module complex" flake hit twice at -j 4 this session.
+
 ## Not done / ideas
-- Unit 0 (all data) recompiles on every new string literal (~2 s): split data by owner.
 - Cold build is CPU-bound (370 cc processes); merging tiny units would cut process
   overhead but costs stability. Not measured.
-- -g: types+views go to every unit (views name no gm_ deps), so -g builds prune less.
-- WASI keeps the old path (asyncify links objects itself).
