@@ -133,3 +133,10 @@
 - Timing loops over `gamma run` of a program that reads stdin hang: redirect `</dev/null`.
 - s390x locally: `apt-get update && apt-get install -y gcc-s390x-linux-gnu qemu-user`, then
   `GAMMA_TEST_LANE=s390x target/bootstrap/harness -j 4 lanes/` (495 tests, 48 s).
+- AArch64 GCC keeps the frame record at the BOTTOM of the frame without a stack protector
+  (at the top with one; x86-64 and Clang: always top), so `__builtin_frame_address(0)` is
+  not "above the locals" there. s72: -fno-stack-protector made GM_STACK_CHECK count the
+  frame twice → fibers of exactly @stack_size overflowed (aarch64 lane only). The macro
+  now compares the frame address with &F. Run the aarch64 lane locally for anything that
+  touches frames or C flags: `apt-get install gcc-aarch64-linux-gnu`,
+  `GAMMA_TEST_LANE=aarch64 target/bootstrap/harness -j 4 lanes/` (56 s).

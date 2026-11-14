@@ -728,7 +728,14 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #if defined(GM_FREESTANDING) || defined(GM_WASI)
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
 #else
-#define GM_STACK_CHECK(p, n) do { if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit + (uintptr_t)(n) + sizeof(*(p))) gm_stack_overflow(); } while (0)
+/* The frame address is above the function's locals where the C compiler keeps the frame
+   record at the top of the frame (x86-64, Clang on AArch64), and below them where it
+   keeps it at the bottom (GCC on AArch64 without a stack protector): there the frame is
+   above it already. The comparison with the frame `p` tells which, and folds away. */
+#define GM_STACK_CHECK(p, n) do { \
+    uintptr_t gm_fa = (uintptr_t)__builtin_frame_address(0); \
+    if (gm_fa < gm_stack_limit + (gm_fa > (uintptr_t)(p) ? (uintptr_t)(n) + sizeof(*(p)) : 0)) gm_stack_overflow(); \
+} while (0)
 #endif
 #endif
 /* The probe of a function whose calls nest at most three deep, all of them direct calls of
