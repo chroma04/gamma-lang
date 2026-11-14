@@ -1,0 +1,37 @@
+//! exit: 134
+// Small functions whose calls go only a few levels deep need no stack check of their own
+// (the frames of a few of them fit in the space kept below a stack's limit). The check of
+// the function around them still catches the overflow of a fiber's stack (§14.1), however
+// close to the limit they run.
+Gen :: effect {
+    emit: ctl(x: i64)
+}
+
+P :: struct { x, y: i64 }
+
+leaf :: fn(p: ^const P) -> i64 => p.x + p.y
+
+mid :: fn(p: ^const P) -> i64 => leaf(p) * 2
+
+top :: fn(p: ^const P, n: i64) -> i64 => mid(p) + leaf(p) + n
+
+deep :: fn(n: i64) -> i64 needs Gen {
+    p := P(x: n, y: 1)
+    t := top(&p, n)
+    if n is 0 {
+        Gen.emit(t)
+        return t
+    }
+    return deep(n - 1) + t
+}
+
+main :: fn() needs Out {
+    big: [200000]u8 = ---
+    with (handler Gen { emit(x, k) => resume k() }) on big[..] {
+        print("{}\n", deep(100))
+    }
+    stack: [20000]u8 = ---
+    with (handler Gen { emit(x, k) => resume k() }) on stack[..] {
+        print("{}\n", deep(100000))
+    }
+}

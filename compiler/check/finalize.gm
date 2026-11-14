@@ -156,7 +156,7 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
                 cx.error(e.span, str.format("a float literal cannot have the integer type `{}`", cx.show(e.ty))!)
                 e.kind = .Int(bigint.zero())
             } else {
-                cx.fin_float(e, r, false)
+                cx.fin_float(e, r^, false)
             }
         }
         // An untyped complex constant: the struct of its parts (§5.3.1).
@@ -169,7 +169,7 @@ fin_expr :: fn(cx: ^FnCx, e: ^Expr) needs Load {
             span := e.span
             fields := list(Expr)
             for r in [2]ratio.Rat(c.re, c.im) {
-                x := tir.mk(elem, .UntypedFloat(r), span)
+                x := tir.mk(elem, tir.untyped_float(r), span)
                 if tys.kind(elem) is not .Param(_) { cx.fin_float(x, r, false) }
                 fields.push(x^)!
             }

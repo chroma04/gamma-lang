@@ -728,9 +728,24 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #if defined(GM_FREESTANDING) || defined(GM_WASI)
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
 #else
+/* The frame address is above the function's locals where the C compiler keeps the frame
+   record at the top of the frame (x86-64, s390x, Clang on AArch64): the frame and the
+   temporaries must fit below it. GCC on AArch64 keeps the record at the bottom of the
+   frame unless the function has a stack protector: without one, the frame is above the
+   frame address already. */
+#if defined(__aarch64__) && defined(__GNUC__) && !defined(__clang__) && !defined(__SSP__) && !defined(__SSP_STRONG__) && !defined(__SSP_ALL__)
+#define GM_STACK_CHECK(p, n) do { (void)(p); if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit) gm_stack_overflow(); } while (0)
+#else
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit + (uintptr_t)(n) + sizeof(*(p))) gm_stack_overflow(); } while (0)
 #endif
 #endif
+#endif
+/* The probe of a function whose calls nest at most three deep, all of them direct calls of
+   functions of the same kind (the code generator decides which are): none if its frame is
+   small. At most four such frames, 1 KiB, then lie below the frame of the function that
+   probed last, in the space kept below the limit (GM_STACK_RESERVE on a fiber). */
+#define GM_SHALLOW_FRAME 256
+#define GM_STACK_CHECK_SHALLOW(p, n) do { if (sizeof(*(p)) + (n) > GM_SHALLOW_FRAME) GM_STACK_CHECK(p, n); } while (0)
 GM_API_VAR GM_TLS gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
 GM_API_VAR GM_TLS uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
 GM_API_VAR GM_TLS uintptr_t gm_thread_stack_limit; /* of the thread's own stack */

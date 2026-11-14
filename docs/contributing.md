@@ -343,6 +343,14 @@ compiler's passes are: compare the totals of two builds instead. A change to the
 generator shows in the compiler's own speed only one generation later, in a compiler built
 by a compiler that has the change.
 
+A build without `-g` can be profiled too, and it is the code that is shipped: a build as
+large as the compiler is split into a unit per source file, which gives every function an
+external symbol named after it (`gm_f_<name>_<hash>`), so the profile is readable without
+debug information. The number of calls of each function is in the profile as well
+(`callgrind_annotate --tree=caller`, or the `calls=` lines of the output file): cost per
+call tells a function that is slow from one that is called too often, and a single call
+with a large cost of its own is usually a loop over all pairs of something.
+
 ## Generated files
 
 `lib/std/text/tables.gm` and the conformance test `tests/conformance/run/std_text_ucd.gm`

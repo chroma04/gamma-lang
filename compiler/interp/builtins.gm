@@ -400,25 +400,31 @@ apply_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0,
 // Hashing
 // ---------------------------------------------------------------------------------
 
-/// Mixes `bytes` into the hash `h` (FNV-1a).
-hash_mix :: fn(h: ^u64, bytes: []const u8) {
-    for x in bytes { h^ = (h^ ~ u64(x)) *% 0x100000001b3 }
-}
-
-/// Mixes the little-endian bytes of `x` into `h`.
+/// Mixes the word `x` into the hash `h`: the step of the structural hash (§16.8), which
+/// the C back end's `gm_mix64` (`cgen/helpers.gm`) computes the same way.
 hash_u64 :: fn(h: ^u64, x: u64) {
-    for i in 0..8 { h^ = (h^ ~ ((x >> u64(i * 8)) & 0xff)) *% 0x100000001b3 }
+    m := u128(h^ ~ x) *% 0x9E3779B97F4A7C15
+    h^ = m.trunc(u64) ~ (m >> 64).trunc(u64)
 }
 
-/// Mixes the shortest two's-complement little-endian bytes of the integer `x` into `h`.
-hash_int :: fn(h: ^u64, x: NumVal) {
-    buf: [17]u8 = ---
+/// Mixes `bytes` into `h` as little-endian words of eight, the last one of the bytes that
+/// are left.
+hash_bytes :: fn(h: ^u64, bytes: []const u8) {
+    i: usize = 0
+    while i < bytes.len {
+        w: u64 = 0
+        for k in 0..(bytes.len - i).min(8) { w |= u64(bytes[i + k]) << u64(k * 8) }
+        hash_u64(h, w)
+        i += 8
+    }
+}
+
+/// Mixes the integer `x` of a type of `bits` bits into `h`: its value extended to 64
+/// bits, or the two words of a wider one, low first.
+hash_int :: fn(h: ^u64, x: NumVal, bits: u32) {
     low := num_bits(x)
-    for i in 0..16 { buf[i] = (low >> u128(i * 8)).trunc(u8) }
-    buf[16] = if x.neg { 0xff } else { 0 }
-    n: usize = 17
-    while n > 1 and buf[n - 1] is buf[16] and ((buf[n - 2] >> 7) is 1) is x.neg { n -= 1 }
-    hash_mix(h, buf[0..n])
+    hash_u64(h, low.trunc(u64))
+    if bits > 64 { hash_u64(h, (low >> 64).trunc(u64)) }
 }
 
 /// Mixes the value `b` of type `t` into `h`, consistently with `equal`.
@@ -426,14 +432,14 @@ hash_val :: fn(m: ^Machine, span: source.Span, t: Ty, b: []u8, h: ^u64) -> Flow!
     match m.kind(t) {
         .Int(_, _), .Usize, .Isize => {
             info := m.int_info(t)?
-            hash_int(h, num_val(info.signed, m.get_int(t, b)))
+            hash_int(h, num_val(info.signed, m.get_int(t, b)), info.bits)
         }
         .Float(_) => {
             x := m.get_float(t, b)
             if x is 0.0 { x = 0.0 }
             hash_u64(h, x.bits(u64))
         }
-        .Bool => hash_u64_byte(h, if b[0] is 0 { 0 } else { 1 })
+        .Bool => hash_u64(h, if b[0] is 0 { 0 } else { 1 })
         .Ptr(_, _), .ManyPtr(_, _), .Rawptr, .FnPtr(_) => hash_u64(h, m.ptr_of(b))
         .Never => {}
         .Tuple(elems, _) => {
@@ -441,26 +447,34 @@ hash_val :: fn(m: ^Machine, span: source.Span, t: Ty, b: []u8, h: ^u64) -> Flow!
         }
         .Array(n, elem, _) => {
             esz := us(m.size(elem))
+            if m.kind(elem) is .Int(false, 8) {
+                hash_bytes(h, b[0..us(n)])
+                return ()
+            }
             for i in 0..us(n) { try m.hash_val(span, elem, b[i * esz..(i + 1) * esz], h) }
         }
         .Slice(_, _) => {
             s := try m.seq_of(span, t, b)
             hash_u64(h, s.n)
+            if m.kind(s.elem) is .Int(false, 8) {
+                hash_bytes(h, s.data[0..us(s.n)])
+                return ()
+            }
             for i in 0..us(s.n) { try m.hash_val(span, s.elem, s.data[i * s.esz..(i + 1) * s.esz], h) }
         }
         .Optional(inner) => {
             if cgen.nullable_pointer(m.s, inner) {
                 hash_u64(h, m.ptr_of(b))
             } else if m.opt_present(t, b) {
-                hash_u64_byte(h, 1)
+                hash_u64(h, 1)
                 try m.hash_val(span, inner, m.opt_payload(t, b), h)
             } else {
-                hash_u64_byte(h, 0)
+                hash_u64(h, 0)
             }
         }
         .Result(err, ok) => {
             is_err := m.res_is_err(t, b)
-            hash_u64_byte(h, if is_err { 1 } else { 0 })
+            hash_u64(h, if is_err { 1 } else { 0 })
             try m.hash_val(span, if is_err { err } else { ok }, m.res_payload(t, b), h)
         }
         .Adt(_, _) => {
@@ -487,9 +501,4 @@ hash_val :: fn(m: ^Machine, span: source.Span, t: Ty, b: []u8, h: ^u64) -> Flow!
         }
         _ => return !m.trap(span, str.format("{} cannot be hashed", m.s.show(t))!)
     }
-}
-
-/// Mixes the single byte `x` into `h`.
-hash_u64_byte :: fn(h: ^u64, x: u8) {
-    h^ = (h^ ~ u64(x)) *% 0x100000001b3
 }

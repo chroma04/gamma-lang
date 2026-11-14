@@ -132,10 +132,10 @@ lex_number :: fn(lx: ^Lexer) needs Alloc {
     }
     if is_float {
         value := lx.float_value(radix, int_part, frac_part, exp else 0)
-        lx.emit(.Float(FloatLit(value: value, suffix: float_sfx, imag: imag)), lo, lx.pos)
+        lx.emit(.Float(new(FloatLit(value: value, suffix: float_sfx, imag: imag))!), lo, lx.pos)
     } else {
         value := lx.int_value(int_part, radix)
-        lx.emit(.Int(IntLit(value: value, suffix: int_sfx, is_char: false)), lo, lx.pos)
+        lx.emit(.Int(new(IntLit(value: value, suffix: int_sfx, is_char: false))!), lo, lx.pos)
     }
 }
 
@@ -156,7 +156,7 @@ lex_field_index :: fn(lx: ^Lexer, lo: usize) needs Alloc {
         lx.error(lo, lx.pos, "numeric field names may not have a leading zero")
     }
     value := lx.int_value(Digits(lo: lo, hi: lx.pos), 10)
-    lx.emit(.Int(IntLit(value: value, suffix: null, is_char: false)), lo, lx.pos)
+    lx.emit(.Int(new(IntLit(value: value, suffix: null, is_char: false))!), lo, lx.pos)
 }
 
 /// Consumes digits of `radix` and `_` separators and returns their range. Binary and
@@ -318,7 +318,7 @@ skip_to_closing_quote :: fn(lx: ^Lexer) -> bool {
 
 emit_char :: fn(lx: ^Lexer, value: u32, lo: usize) needs Alloc {
     lit := IntLit(value: bigint.from_u64(u64(value)), suffix: null, is_char: true)
-    lx.emit(.Int(lit), lo, lx.pos)
+    lx.emit(.Int(new(lit)!), lo, lx.pos)
 }
 
 // ----- escapes -----

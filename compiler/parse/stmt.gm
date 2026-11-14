@@ -110,6 +110,7 @@ parse_name_stmt :: fn(p: ^Parser) -> Abort!ast.StmtKind needs Alloc {
 /// `pattern := value else fallback` with a pattern that is not a plain name (§4.5), or
 /// `null` (consuming nothing) if no such binding starts here.
 parse_let_else :: fn(p: ^Parser) -> Abort!?ast.StmtKind needs Alloc {
+    if not p.binds_ahead() { return null }
     pat := p.speculate(fn() -> Abort!ast.Pattern needs Alloc {
         pat := try p.parse_pattern()
         if p.at(.ColonEq) and not (pat.kind is .Bind(_) or pat.kind is .Wildcard) { return pat }
@@ -249,11 +250,14 @@ parse_cond_parts :: fn(p: ^Parser, parts: ^List(ast.CondPart)) -> Abort!() needs
 }
 
 parse_cond_part :: fn(p: ^Parser) -> Abort!ast.CondPart needs Alloc {
-    bind := p.speculate(fn() -> Abort!ast.Pattern needs Alloc {
-        pat := try p.parse_pattern()
-        if p.at(.ColonEq) { return pat }
-        return !Abort()
-    })
+    bind: ?ast.Pattern = null
+    if p.binds_ahead() {
+        bind = p.speculate(fn() -> Abort!ast.Pattern needs Alloc {
+            pat := try p.parse_pattern()
+            if p.at(.ColonEq) { return pat }
+            return !Abort()
+        })
+    }
     if pat := bind {
         _ = p.bump()
         return ast.CondPart.Bind(pat: pat, value: box(try p.parse_expr()))

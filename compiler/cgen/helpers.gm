@@ -37,9 +37,11 @@ declare_helper :: fn(h: ^Helpers, ty: ^CTypes, memo: ^hash_map.HashMap(u32, stri
     return name
 }
 
-/// Defines the helper `name` declared by `declare_helper`, with the statements `body`.
+/// Defines the helper `name` declared by `declare_helper`, with the statements `body`. It
+/// is `inline`, as the small functions of an optimized build are: comparing two strings or
+/// hashing a key is less work than a call.
 define_helper :: fn(h: ^Helpers, name: string, ret: string, params: string, body: []const u8) needs Alloc {
-    h.bodies.write("static {} {}({}) {{\n", ret, name, params)!
+    h.bodies.write("static inline {} {}({}) {{\n", ret, name, params)!
     h.bodies.extend(body)!
     h.bodies.extend("}\n")!
 }
@@ -219,97 +221,107 @@ less_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     return name
 }
 
-/// `uint64_t f(const uint8_t *v, uint64_t h)`: mixes the value into the FNV-1a state `h`.
+/// The hash state after mixing in the scalar of type `t` at C address `at`, as a C
+/// expression of the state `h`; `null` if `t` is not a scalar. The structural hash
+/// (§16.8) mixes one 64-bit word at a time (`gm_mix64`): an integer as its value extended
+/// to 64 bits (a 128-bit one as two words, low first), a float as the bits of its `f64`
+/// value with `-0.0` as `0.0`, a `bool` as 0 or 1, a pointer as its address. The
+/// interpreter computes the same (`interp/builtins.gm`).
+hash_scalar :: fn(ty: ^CTypes, t: Ty, at: string) -> ?string needs Alloc {
+    match ty.repr(t) {
+        .Int(signed, _, storage) => {
+            c := ty.cty(t)
+            if storage > 8 { return str.format("gm_mix128(h, (unsigned __int128)GM_LD({}, {}))", c, at)! }
+            wide := if signed { "(uint64_t)(int64_t)" } else { "(uint64_t)" }
+            return str.format("gm_mix64(h, {}GM_LD({}, {}))", wide, c, at)!
+        }
+        .Float(_) => return str.format("gm_mix_float(h, (double)GM_LD({}, {}))", ty.cty(t), at)!
+        .Bool => return str.format("gm_mix64(h, ({})[0] != 0)", at)!
+        .Ptr => return str.format("gm_mix64(h, (uint64_t)(uintptr_t)GM_LD(void *, {}))", at)!
+        _ => return null
+    }
+}
+
+/// The statement that mixes the value of type `t` at C address `at` into `h`.
+hash_step :: fn(h: ^Helpers, ty: ^CTypes, t: Ty, at: string) -> string needs Alloc {
+    if e := hash_scalar(ty, t, at) { return str.format("h = {};", e)! }
+    return str.format("h = {}({}, h);", h.hash_fn(ty, t), at)!
+}
+
+/// The statements that mix the `count` (a C expression) elements of type `elem` at C
+/// address `data` into `h`: bytes eight at a time, others one by one.
+hash_elems :: fn(h: ^Helpers, ty: ^CTypes, elem: Ty, data: string, count: string) -> string needs Alloc {
+    if .Int(signed, bits, _) := ty.repr(elem) and not signed and bits is 8 {
+        return str.format("    h = gm_mix_bytes(h, {}, {});\n", data, count)!
+    }
+    step := h.hash_step(ty, elem, str.format("{} + i * {}", data, ty.size(elem))!)
+    return str.format("    for (uint64_t i = 0; i < {}; i++) {}\n", count, step)!
+}
+
+/// `uint64_t f(const uint8_t *v, uint64_t h)`: mixes the value into the hash state `h`.
 hash_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
     if n := h.hash.get(t.id) { return n }
     name := h.declare_helper(ty, &h.hash, "hash", t, "uint64_t", "const uint8_t *v, uint64_t h")
     b := list(u8)
     p := ty.lay.target.ptr_bytes
-    match ty.repr(t) {
-        .Int(signed, _, _) => {
-            c := ty.cty(t)
-            f := if signed { "gm_hash_int" } else { "gm_hash_uint" }
-            b.write("    return {}(h, GM_LD({}, v));\n", f, c)!
-        }
-        .Float(_) => {
-            c := ty.cty(t)
-            b.write("    double x = (double)GM_LD({}, v); if (x == 0) x = 0; uint64_t bits; memcpy(&bits, &x, 8);\n", c)!
-            b.extend("    return gm_mix64(h, bits);\n")!
-        }
-        .Bool => b.extend("    uint8_t x = v[0] != 0; return gm_mix(h, &x, 1);\n")!
-        .Ptr => b.extend("    uint64_t x = (uint64_t)(uintptr_t)GM_LD(void *, v); return gm_mix64(h, x);\n")!
-        _ => match ty.kind(t) {
-            .Tuple(elems, _) => {
-                offs := ty.offsets(t)
-                for i, et in enumerate(elems) {
-                    f := h.hash_fn(ty, et)
-                    b.write("    h = {}(v + {}, h);\n", f, offs[i])!
-                }
-                b.extend("    return h;\n")!
-            }
-            .Array(len, elem, _) => {
-                f := h.hash_fn(ty, elem)
-                esz := ty.size(elem)
-                b.write("    for (uint64_t i = 0; i < {}; i++) h = {}(v + i * {}, h);\n    return h;\n", len, f, esz)!
-            }
-            .Slice(_, elem) => {
-                f := h.hash_fn(ty, elem)
-                esz := ty.size(elem)
-                b.write("    uint64_t n = GM_LD(uintptr_t, v + {}); const uint8_t *d = GM_LD(void *, v);\n", p)!
-                b.extend("    h = gm_mix64(h, n);\n")!
-                b.write("    for (uint64_t i = 0; i < n; i++) h = {}(d + i * {}, h);\n    return h;\n", f, esz)!
-            }
-            .Optional(inner) => {
-                if nullable_pointer(ty.s, inner) {
-                    b.extend("    return h;\n")!
-                } else {
-                    f := h.hash_fn(ty, inner)
-                    flag := ty.offsets(t)[1]
-                    b.write("    uint8_t s = v[{}] != 0; h = gm_mix(h, &s, 1);\n", flag)!
-                    b.write("    return s ? {}(v, h) : h;\n", f)!
-                }
-            }
-            .Result(err, ok) => {
-                fe := h.hash_fn(ty, err)
-                fo := h.hash_fn(ty, ok)
-                offs := ty.offsets(t)
-                b.write("    uint8_t e = v[{}] != 0; h = gm_mix(h, &e, 1);\n", offs[0])!
-                b.write("    return e ? {}(v + {}, h) : {}(v + {}, h);\n", fe, offs[1], fo, offs[1])!
-            }
-            .Adt(_, _) => match ty.adt_of(t).kind {
-                .Struct(sd) => {
-                    if u := sd.bits {
-                        f := h.hash_fn(ty, u)
-                        b.write("    return {}(v, h);\n", f)!
-                    } else {
-                        offs := ty.offsets(t)
-                        for i, fd in enumerate(sd.fields) {
-                            f := h.hash_fn(ty, fd.ty)
-                            b.write("    h = {}(v + {}, h);\n", f, offs[i])!
-                        }
-                        b.extend("    return h;\n")!
-                    }
-                }
-                .Union(tag, variants) => {
-                    offs := ty.offsets(t)
-                    tc := ty.cty(tag)
-                    b.write("    {} tg = GM_LD({}, v + {});\n", tc, tc, offs[0])!
-                    for i, var in enumerate(variants) {
-                        b.write("    if (tg == ({}){}) {{\n", tc, string(var.tag.to_decimal()))!
-                        b.write("        uint64_t k = {}; h = gm_mix64(h, k);\n", i)!
-                        if pt := var.payload {
-                            f := h.hash_fn(ty, pt)
-                            b.write("        h = {}(v + {}, h);\n", f, offs[1])!
-                        }
-                        b.extend("        return h;\n    }\n")!
-                    }
-                    b.extend("    return h;\n")!
-                }
-                .CUnion(_) => b.extend("    return h;\n")!
-            }
-            _ => b.extend("    return h;\n")!
-        }
+    if e := hash_scalar(ty, t, "v") {
+        b.write("    return {};\n", e)!
+        h.define_helper(name, "uint64_t", "const uint8_t *v, uint64_t h", b.items)
+        return name
     }
+    match ty.kind(t) {
+        .Tuple(elems, _) => {
+            offs := ty.offsets(t)
+            for i, et in enumerate(elems) {
+                b.write("    {}\n", h.hash_step(ty, et, str.format("v + {}", offs[i])!))!
+            }
+        }
+        .Array(len, elem, _) => b.extend(h.hash_elems(ty, elem, "v", str.format("{}", len)!))!
+        .Slice(_, elem) => {
+            b.write("    uint64_t n = GM_LD(uintptr_t, v + {}); const uint8_t *d = GM_LD(void *, v);\n", p)!
+            b.extend("    h = gm_mix64(h, n);\n")!
+            b.extend(h.hash_elems(ty, elem, "d", "n"))!
+        }
+        .Optional(inner) => {
+            flag := ty.offsets(t)[1]
+            b.write("    uint8_t s = v[{}] != 0; h = gm_mix64(h, s);\n", flag)!
+            b.write("    if (s) {}\n", h.hash_step(ty, inner, "v"))!
+        }
+        .Result(err, ok) => {
+            offs := ty.offsets(t)
+            b.write("    uint8_t e = v[{}] != 0; h = gm_mix64(h, e);\n", offs[0])!
+            at := str.format("v + {}", offs[1])!
+            b.write("    if (e) {} else {}\n", h.hash_step(ty, err, at), h.hash_step(ty, ok, at))!
+        }
+        .Adt(_, _) => match ty.adt_of(t).kind {
+            .Struct(sd) => {
+                if u := sd.bits {
+                    b.write("    {}\n", h.hash_step(ty, u, "v"))!
+                } else {
+                    offs := ty.offsets(t)
+                    for i, fd in enumerate(sd.fields) {
+                        b.write("    {}\n", h.hash_step(ty, fd.ty, str.format("v + {}", offs[i])!))!
+                    }
+                }
+            }
+            .Union(tag, variants) => {
+                offs := ty.offsets(t)
+                tc := ty.cty(tag)
+                b.write("    {} tg = GM_LD({}, v + {});\n", tc, tc, offs[0])!
+                for i, var in enumerate(variants) {
+                    b.write("    if (tg == ({}){}) {{\n", tc, string(var.tag.to_decimal()))!
+                    b.write("        h = gm_mix64(h, {});\n", i)!
+                    if pt := var.payload {
+                        b.write("        {}\n", h.hash_step(ty, pt, str.format("v + {}", offs[1])!))!
+                    }
+                    b.extend("        return h;\n    }\n")!
+                }
+            }
+            .CUnion(_) => {}
+        }
+        _ => {}
+    }
+    b.extend("    return h;\n")!
     h.define_helper(name, "uint64_t", "const uint8_t *v, uint64_t h", b.items)
     return name
 }
@@ -318,31 +330,36 @@ hash_fn :: fn(h: ^Helpers, ty: ^CTypes, t: Ty) -> string needs Alloc {
 SUPPORT :: ``
 
 #define GM_NOINLINE __attribute__((noinline))
-static uint64_t gm_mix(uint64_t h, const void *p, size_t n) {
-    const uint8_t *b = p;
-    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ULL; }
-    return h;
+/* The step of the structural hash: the state and the word, multiplied by an odd constant
+   to 128 bits, whose halves are folded together, so that every bit of the result depends
+   on every bit of both. */
+static inline uint64_t gm_mix64(uint64_t h, uint64_t x) {
+    unsigned __int128 m = (unsigned __int128)(h ^ x) * 0x9E3779B97F4A7C15ULL;
+    return (uint64_t)m ^ (uint64_t)(m >> 64);
 }
-/* Mixes the eight little-endian bytes of x, whatever the byte order of the machine. */
-static uint64_t gm_mix64(uint64_t h, uint64_t x) {
-    for (int i = 0; i < 8; i++) { h ^= (uint8_t)(x >> (8 * i)); h *= 0x100000001b3ULL; }
-    return h;
+static inline uint64_t gm_mix128(uint64_t h, unsigned __int128 x) {
+    return gm_mix64(gm_mix64(h, (uint64_t)x), (uint64_t)(x >> 64));
 }
-/* Mixes the minimal two's-complement little-endian bytes of v (as BigInt::to_signed_bytes_le). */
-static uint64_t gm_hash_int(uint64_t h, __int128 v) {
-    for (;;) {
-        uint8_t byte = (uint8_t)v; v >>= 8;
-        h ^= byte; h *= 0x100000001b3ULL;
-        if ((v == 0 && !(byte & 0x80)) || (v == -1 && (byte & 0x80))) break;
+static inline uint64_t gm_mix_float(uint64_t h, double x) {
+    uint64_t bits;
+    if (x == 0) x = 0;
+    memcpy(&bits, &x, 8);
+    return gm_mix64(h, bits);
+}
+/* Mixes n bytes as little-endian words of eight, the last one of the bytes that are left. */
+static uint64_t gm_mix_bytes(uint64_t h, const uint8_t *p, uint64_t n) {
+    for (; n >= 8; p += 8, n -= 8) {
+        uint64_t w;
+        memcpy(&w, p, 8);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        w = __builtin_bswap64(w);
+#endif
+        h = gm_mix64(h, w);
     }
-    return h;
-}
-static uint64_t gm_hash_uint(uint64_t h, unsigned __int128 v) {
-    for (;;) {
-        uint8_t byte = (uint8_t)v; v >>= 8;
-        h ^= byte; h *= 0x100000001b3ULL;
-        if (v == 0 && !(byte & 0x80)) break;
-        if (v == 0) { h *= 0x100000001b3ULL; break; }
+    if (n > 0) {
+        uint64_t w = 0;
+        for (uint64_t i = 0; i < n; i++) w |= (uint64_t)p[i] << (8 * i);
+        h = gm_mix64(h, w);
     }
     return h;
 }

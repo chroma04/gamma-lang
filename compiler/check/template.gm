@@ -305,7 +305,7 @@ build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template: ^const ast.Expr, res
             ta.values[k] = cx.soa_columns_tuple(value, "formatting")^
         }
     }
-    write := tir.mk(cx.s.tys.unit(), .Write(tir.WriteExpr(sink: sink, pieces: ta.pieces, specs: ta.specs, args: ta.values)), span)
+    write := tir.mk(cx.s.tys.unit(), .Write(new(tir.WriteExpr(sink: sink, pieces: ta.pieces, specs: ta.specs, args: ta.values))!), span)
     if ta.stmts.len is 0 { return write }
     stmts := list(tir.Stmt)
     for st in ta.stmts { stmts.push(st)! }
@@ -471,7 +471,7 @@ write_deferred :: fn(cx: ^FnCx, sink: tir.WriteSink, t: ^Expr, rest: []const ast
     }
     ty := if a := args { cx.infer.resolve(cx.s, a.ty) } else { tys.unit() }
     tmp := cx.temp(ty, span)
-    return tir.mk(tys.unit(), .WriteDeferred(tir.WriteDeferredExpr(sink: sink, template: t, args: args, tmp: tmp)), span)
+    return tir.mk(tys.unit(), .WriteDeferred(new(tir.WriteDeferredExpr(sink: sink, template: t, args: args, tmp: tmp))!), span)
 }
 
 /// Splits the template of the `WriteDeferred` `e`, now a string, and its arguments
@@ -523,7 +523,7 @@ resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
         }
     }
     a := w.args else {
-        e.kind = .Write(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: empty_slice(Expr)))
+        e.kind = .Write(new(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: empty_slice(Expr)))!)
         return
     }
     stmts := list(tir.Stmt)
@@ -534,7 +534,7 @@ resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
         base := tir.mk(a.ty, .Local(w.tmp), e.span)
         fields.push(tir.mk(es[at], .Field(base, at.trunc(u32)), e.span)^)!
     }
-    write := tir.mk(s.tys.unit(), .Write(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: fields.items)), e.span)
+    write := tir.mk(s.tys.unit(), .Write(new(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: fields.items))!), e.span)
     stmts.push(.Expr(write))!
     e.kind = .Block(new(tir.Block(stmts: stmts.items, tail: null, span: e.span))!)
 }

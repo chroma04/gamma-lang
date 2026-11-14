@@ -80,6 +80,21 @@ mul_op :: fn(k: syntax.TokenKind) -> ?ast.BinOp => match k {
     _ => null
 }
 
+/// True for a binary operator of the levels from comparison to multiplication (8 to 3).
+/// An operand that none of them follows, as most are, is the whole expression of each of
+/// those levels (`operand`).
+binary_follows :: fn(k: syntax.TokenKind) -> bool => match k {
+    .Keyword(kw) => kw in (syntax.Keyword.Is, syntax.Keyword.In)
+    .Punct(x) => match x {
+        .IsNot, .NotIn, .Lt, .Le, .Gt, .Ge, .DotDot, .DotDotEq, .Amp, .Pipe, .Tilde => true
+        .Shl, .ShlWrap, .ShlSat, .ShlOpt, .Shr => true
+        .Plus, .PlusWrap, .PlusSat, .PlusOpt, .Minus, .MinusWrap, .MinusSat, .MinusOpt => true
+        .Star, .StarWrap, .StarSat, .StarOpt, .Slash, .Percent => true
+        _ => false
+    }
+    _ => false
+}
+
 /// True for an unparenthesized arithmetic expression (levels 3 and 4).
 is_arith :: fn(e: ^const ast.Expr) -> bool => match e.kind {
     .Binary(op, _, _) => op is .Add(_) or op is .Sub(_) or op is .Mul(_) or op in (ast.BinOp.Div, ast.BinOp.Rem)
@@ -193,9 +208,15 @@ parse_not :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 
 // ----- level 8: comparison -----
 
+// The levels 8 to 3 each have two entries: `parse_L` parses an operand (a prefix
+// expression) and, if a binary operator follows, goes on as `L_from` with it; `L_from`
+// is the level given the first operand of its leftmost operation.
+
 parse_cmp :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
     start_pos := p.pos
-    lhs := try p.parse_range()
+    first := try p.parse_prefix()
+    if not binary_follows(p.kind()) { return first }
+    lhs := try p.range_from(first)
     op := cmp_op(p.kind()) else return lhs
     first_rel := is_relational(p.kind())
     _ = p.bump()
@@ -237,7 +258,13 @@ op_text :: fn(k: syntax.TokenKind) -> string => match k {
 // ----- level 7: ranges -----
 
 parse_range :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
-    lhs := try p.parse_bit()
+    first := try p.parse_prefix()
+    if not binary_follows(p.kind()) { return first }
+    return p.range_from(first)
+}
+
+range_from :: fn(p: ^Parser, first: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.bit_from(first)
     op: ast.BinOp = .Range
     if p.at(.DotDotEq) {
         op = .RangeIncl
@@ -263,7 +290,13 @@ parse_range :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 // ----- level 6: bitwise -----
 
 parse_bit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
-    lhs := try p.parse_shift()
+    first := try p.parse_prefix()
+    if not binary_follows(p.kind()) { return first }
+    return p.bit_from(first)
+}
+
+bit_from :: fn(p: ^Parser, first: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.shift_from(first)
     chain: ?ast.BinOp = null
     while op := bit_op(p.kind()) {
         if chain is null {
@@ -294,7 +327,13 @@ parse_bit :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 // ----- level 5: shifts -----
 
 parse_shift :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
-    lhs := try p.parse_add()
+    first := try p.parse_prefix()
+    if not binary_follows(p.kind()) { return first }
+    return p.shift_from(first)
+}
+
+shift_from :: fn(p: ^Parser, first: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.add_from(first)
     op := shift_op(p.kind()) else return lhs
     _ = p.bump()
     rhs := try p.parse_add()
@@ -317,7 +356,13 @@ parse_shift :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 // ----- levels 4 and 3: additive and multiplicative -----
 
 parse_add :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
-    lhs := try p.parse_mul()
+    first := try p.parse_prefix()
+    if not binary_follows(p.kind()) { return first }
+    return p.add_from(first)
+}
+
+add_from :: fn(p: ^Parser, first: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    lhs := try p.mul_from(first)
     while op := add_op(p.kind()) {
         _ = p.bump()
         rhs := try p.parse_mul()
@@ -327,7 +372,12 @@ parse_add :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
 }
 
 parse_mul :: fn(p: ^Parser) -> Abort!ast.Expr needs Alloc {
-    lhs := try p.parse_prefix()
+    first := try p.parse_prefix()
+    return p.mul_from(first)
+}
+
+mul_from :: fn(p: ^Parser, first: ast.Expr) -> Abort!ast.Expr needs Alloc {
+    lhs := first
     while op := mul_op(p.kind()) {
         _ = p.bump()
         rhs := try p.parse_prefix()

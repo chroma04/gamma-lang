@@ -44,7 +44,7 @@ expr_kind :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load 
             return tir.mk(ty, .Int(lit.value), span)
         }
         .Float(lit) => {
-            if lit.imag { return cx.imaginary_literal(&lit, span) }
+            if lit.imag { return cx.imaginary_literal(lit, span) }
             ty: Ty = cx.infer.new_var(tys, .Float)
             if suffix := lit.suffix {
                 ty = tys.intern(.Float(match suffix {
@@ -53,7 +53,7 @@ expr_kind :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load 
                     .F64 => 64
                 }))
             }
-            return tir.mk(ty, .UntypedFloat(lit.value), span)
+            return tir.mk(ty, tir.untyped_float(lit.value), span)
         }
         .Str(lit) => {
             if lit.kind is .C { return tir.mk(tys.many_ptr(true, tys.u8_ty()), .CStr(lit.bytes), span) }
@@ -412,13 +412,13 @@ untyped_literal :: fn(cx: ^FnCx, v: ^const sema.Untyped, span: source.Span) -> ^
     tys := &cx.s.tys
     match v^ {
         .Int(i) => return tir.mk(cx.infer.new_var(tys, .Int), .Int(i), span)
-        .Float(r) => return tir.mk(cx.infer.new_var(tys, .Float), .UntypedFloat(r), span)
+        .Float(r) => return tir.mk(cx.infer.new_var(tys, .Float), tir.untyped_float(r), span)
         .NegZero => {
-            zero := tir.mk(cx.infer.new_var(tys, .Float), .UntypedFloat(ratio.zero()), span)
+            zero := tir.mk(cx.infer.new_var(tys, .Float), tir.untyped_float(ratio.zero()), span)
             return tir.mk(zero.ty, .Unary(.Neg, zero), span)
         }
         .Bool(b) => return tir.mk(tys.bool_ty(), .Bool(b), span)
-        .Complex(c) => return tir.mk(cx.literal_var(.Complex), .UntypedComplex(re: c.re, im: c.im), span)
+        .Complex(c) => return tir.mk(cx.literal_var(.Complex), tir.untyped_complex(c.re, c.im), span)
     }
 }
 
@@ -649,7 +649,7 @@ neg_expr :: fn(cx: ^FnCx, operand: ^const ast.Expr, expect: ?Ty, span: source.Sp
         }
         // Not for zero: exact rationals have no negative zero, and `-0.0` keeps its sign.
         .UntypedFloat(r) => if literal and not r.is_zero() {
-            v.kind = .UntypedFloat(r.neg())
+            v.kind = tir.untyped_float(r.neg())
             v.span = span
             return v
         }

@@ -543,7 +543,12 @@ every translation unit of a split build.
 `gamma build` and `gamma run` translate the checked program to C (`compiler/cgen/`) and
 compile it, with the runtime (`runtime/gm_rt.h`, `runtime/gm_rt.c`), using the system C
 compiler (`$CC`, default `cc`, plus `$CFLAGS` and `$LDFLAGS`; `driver/toolchain.gm`) in GNU
-C11 mode, with `-fwrapv` and `-fno-strict-aliasing` (Gamma memory is untyped bytes). The
+C11 mode, with `-fwrapv` and `-fno-strict-aliasing` (Gamma memory is untyped bytes), and
+with `-fno-stack-protector`: where the system's compiler adds a stack canary to every
+function with an array by default, nearly every generated function would get one, since
+every value that is not a scalar is an array of bytes in C. `$CFLAGS` come after these
+options and can turn the protector on again; C sources of a package are compiled with the
+compiler's defaults. The
 compilation target is decided before semantic analysis, because layouts and the `target`
 module depend on it: the default compiler means the host, and any other toolchain is asked
 for its predefined macros (`$CC $CFLAGS -dM -E`). `--target=<triple>` chooses the compiler for
@@ -726,8 +731,12 @@ How the runtime is linked depends on the build mode:
   it can be inlined only within its unit. An `#inline` function keeps its hint:
   its definition goes, as a C99 inline definition, to every unit that calls it,
   and the unit of its own file declares it `extern`, which makes that copy the one
-  external definition, so its address is the same in all of them. (Sharing the thousands
-  of small functions this way would make every unit compile them all.) With
+  external definition, so its address is the same in all of them. The smallest of
+  the other functions (up to `SHARED_SMALL_BYTES` of C, 1,600) are shared the same
+  way: these are the accessors and predicates that every file of a program calls,
+  and a call of one costs more than its body. Sharing all of the small functions
+  would make every unit compile thousands of them; at this size the units of the
+  compiler grow by a tenth and the compiler runs 6% fewer instructions. With
   `-g`, the debugger views (`views.gm`) are declarations like the types, named
   `gm_dv<number>_<kind>` with a number hashed from the type's text, and every
   function definition ends by mapping the lines after it back to the C file, since
@@ -795,8 +804,8 @@ significant byte) instead of indexing, and `gm_load_u128` /
 compile-time values are laid out for the target (`store_int` in
 `cgen/consts.gm`; a `ConstKey` keeps an integer's bytes little-endian, whatever the
 target), and the interpreter's memory is in target order, so constants emitted into
-C are exactly what the generated code would store. Hashes mix the little-endian
-bytes of every value, so they agree across targets, and printed output is the same
+C are exactly what the generated code would store. Hashes mix the value of every
+scalar, and bytes as little-endian words, so they agree across targets, and printed output is the same
 everywhere except where a program looks at its own memory (`bits`, `#c_union`,
 `target.endian`). Fibers switch stacks in assembly for x86-64, AArch64 and s390x;
 other architectures trap on the first fiber switch. `f16` is C's `_Float16`; where
@@ -970,13 +979,25 @@ consumed is always detected. In Debug and Checked builds every function entry
 compares its frame's address with the lowest address the running stack may use:
 the fiber's limit, or, on a thread's own stack, the bottom of that stack (found
 with `pthread_getattr_np` or `pthread_get_stackaddr_np` at the start of `main`
-and of each thread) plus a reserve for reporting the overflow. The check also counts the bytes of the C temporaries the function declares, since they may lie below its frame. A frame too large for what is left can still fault in the C compiler's prologue (which probes each page before the check runs), so each thread also has a `SIGSEGV` handler on an alternate signal stack that reports a fault just below the stack's limit as the same stack overflow trap. (On Windows the stack's bounds come from `GetCurrentThreadStackLimits`, each thread keeps 64 KiB of guaranteed stack with `SetThreadStackGuarantee`, and a vectored exception handler reports `EXCEPTION_STACK_OVERFLOW` and the same faults.) Large values read from a place are copied with `memmove` rather than through a C temporary.
+and of each thread) plus a reserve for reporting the overflow. The check also counts the bytes of the C temporaries the function declares, since they may lie below its frame. Two kinds of function make no check of their own: an `#inline` function of an optimized build that calls only functions that check, and a function whose calls are all direct calls, nest at most three deep (`call_depth` in `cgen/func.gm`; anything that performs, calls a function value or enters a `with` has no known depth) and whose frame and temporaries take at most 256 bytes (`GM_STACK_CHECK_SHALLOW`, which the C compiler decides from the size of the frame). These are the accessors and predicates that are called everywhere and inlined into their callers with their checks; at most four such frames, 1 KiB, lie below the frame of the function that checked last, inside the reserve. Recursion always passes through a function that checks. A frame too large for what is left can still fault in the C compiler's prologue (which probes each page before the check runs), so each thread also has a `SIGSEGV` handler on an alternate signal stack that reports a fault just below the stack's limit as the same stack overflow trap. (On Windows the stack's bounds come from `GetCurrentThreadStackLimits`, each thread keeps 64 KiB of guaranteed stack with `SetThreadStackGuarantee`, and a vectored exception handler reports `EXCEPTION_STACK_OVERFLOW` and the same faults.) Large values read from a place are copied with `memmove` rather than through a C temporary.
 
 **Formatting and comparison.** `@write` formats through the runtime's
 `gm_format`, driven by type descriptors generated for each formatted type.
 Structural `is`, ordering and `@hash` use C functions generated per type
 (`cgen/helpers.gm`) that agree with the interpreter, including the hash
-values, so hash maps iterate in the same order.
+values, so hash maps iterate in the same order. The hash (§16.8 leaves the
+algorithm to the implementation) keeps 64 bits of state and mixes in one 64-bit
+word at a time: the state and the word are combined with exclusive or and
+multiplied by an odd constant to 128 bits, whose two halves are then combined
+(`gm_mix64`; `hash_u64` in `interp/builtins.gm`). The words of a value are its
+scalars in the order of the type's structure: an integer's value extended to 64
+bits (two words for a wider one), a float's bits as `f64`, a pointer's address,
+0 or 1 for a `bool`, the number of a union's variant, the state of an optional
+or result, the length of a slice. Arrays and slices of `u8`, strings above all,
+go in eight bytes per word. A table can use the low bits of the result: the
+test `tests/conformance/run/hash_structure.gm` checks that near keys spread
+over them, and pins the values, which both back ends must compute on every
+target.
 
 **Calling conventions and foreign code.** A function whose effects are at most
 `Sys` takes no hidden parameters: it has the plain C calling convention, so it

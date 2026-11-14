@@ -1,0 +1,71 @@
+// The structural hash (§16.8). The algorithm is the implementation's own: the values
+// printed here are those of this one, which the C back end and the interpreter must both
+// compute, on every target. Keys that differ little spread over the low bits that a hash
+// table uses.
+str :: import "std/str"
+
+S :: struct { a: u8, b: i64, name: string }
+
+U :: union {
+    A
+    B: i32
+    C: string
+}
+
+h :: fn(T: type, x: T) -> u64 where Eq(T) => @hash(@black_box(x), 7)
+
+/// How many of the `2^bits` values of the low `bits` bits the `hashes` take.
+spread :: fn(hashes: []const u64, bits: u6) -> usize needs Alloc {
+    seen := list(bool)
+    defer seen.deinit()
+    for _ in 0..usize(1) << bits { seen.push(false)! }
+    count: usize = 0
+    for x in hashes {
+        i := (x & ((u64(1) << bits) - 1)).trunc(usize)
+        if not seen.items[i] {
+            seen.items[i] = true
+            count += 1
+        }
+    }
+    return count
+}
+
+main :: fn() needs Alloc + Out {
+    print("{:x} {:x} {:x} {:x}\n", h(u8(200)), h(i8(-3)), h(u32(0xDEAD_BEEF)), h(i64(-1234567890123)))
+    print("{:x} {:x}\n", h(u128(1) << 100 | 5), h(i128(-1) << 70))
+    print("{:x} {:x} {} {:x}\n", h(f32(1.5)), h(f64(-0.0)), h(f64(0.0)) is h(f64(-0.0)), h(true))
+    empty: string = ""
+    short: string = "abc"
+    eight: string = "12345678"
+    long: string = "the quick brown fox jumps"
+    print("{:x} {:x} {:x} {:x}\n", h(empty), h(short), h(eight), h(long))
+    print("{:x} {:x}\n", h([11]u8(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)), h([3]i16(-1, 0, 1)))
+    print("{:x} {:x}\n", h((u8(1), short, -2.5)), h(S(a: 9, b: -9, name: "nine")))
+    print("{:x} {:x} {:x}\n", h(U.A), h(U.B(-5)), h(U.C("payload")))
+    none: ?u16 = null
+    some: ?u16 = 77
+    fine: u8!string = "fine"
+    bad: u8!string = !3
+    print("{:x} {:x} {:x} {:x}\n", h(none), h(some), h(fine), h(bad))
+    // Values that are equal hash equally wherever their bytes are; unequal ones differ.
+    a := [4]u8('a', 'b', 'c', 'd')
+    print("{} {} {}\n", h(string(a[0..3])) is h(short), h(short) is h(eight), h(u32(1)) is h(u32(2)))
+    // A seed changes the hash.
+    print("{}\n", @hash(short, 1) is @hash(short, 2))
+    // 1024 keys take most of 1024 slots, as random values would (about 647 of them).
+    ints := list(u64)
+    defer ints.deinit()
+    names := list(u64)
+    defer names.deinit()
+    pairs := list(u64)
+    defer pairs.deinit()
+    for i in 0..1024 {
+        ints.push(h(u32(i)))!
+        name := str.format("name{}", i)!
+        defer free(name)
+        names.push(h(string(name)))!
+        pairs.push(h(((i / 32).trunc(u16), (i % 32).trunc(u16))))!
+    }
+    print("{} {} {}\n", spread(ints.items, 10), spread(names.items, 10), spread(pairs.items, 10))
+    print("{} {} {}\n", spread(ints.items, 4), spread(names.items, 4), spread(pairs.items, 4))
+}

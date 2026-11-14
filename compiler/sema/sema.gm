@@ -1161,17 +1161,12 @@ declare_method_candidate :: fn(s: ^Sema, module: usize, name: ast.Ident, first: 
 
 /// Reports a type with two method candidates of one name (§7.10).
 check_method_candidates :: fn(s: ^Sema) needs Alloc {
-    seen := list(MethodCandidate)
+    // The first candidate of each type and name.
+    seen := hash_map.hash_map((u32, string), source.Span)
+    defer seen.deinit()
     for c in s.method_candidates.items {
-        first: ?source.Span = null
-        for x in seen.items {
-            if x.adt is c.adt and x.name is c.name {
-                first = x.span
-                break
-            }
-        }
-        f := first else {
-            seen.push(c)!
+        f := seen.get((c.adt, c.name)) else {
+            seen.put((c.adt, c.name), c.span)!
             continue
         }
         // Report at the later declaration.

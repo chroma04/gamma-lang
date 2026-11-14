@@ -123,6 +123,21 @@
 - s64: eight sonnet audit workers used the whole 5-hour quota in ~10 min of parallel work
   (reset ~15 h later). Audit reports were good; have them write reports to files, and
   implement with ≤2–3 workers or yourself.
-- 16 GB / 4 cores: three parallel worktree agents each running tools/test.sh exhaust memory;
-  selfhost tests then fail spuriously ("core module `complex` does not declare `Complex`",
-  killed `gamma test`). Re-run alone before debugging. Max ~2 building agents at once.
+- 16 GB / 4 cores: three parallel worktree agents each running tools/test.sh exhaust memory
+  (killed `gamma test`). Max ~2 building agents at once.
+- "core module `complex` does not declare `Complex`" (seen s50–s71, blamed on memory) was a
+  TEST BUG, fixed in s72: the fmt corpus test rewrote every file of lib/ and
+  tests/conformance in place, and a compiler starting at that moment read an empty file.
+  A spurious failure that names a source file: check whether a test WRITES into the tree
+  (`find lib tests -newermt …`, `strace -f -e trace=openat harness SUITE | grep O_WRONLY`).
+- Timing loops over `gamma run` of a program that reads stdin hang: redirect `</dev/null`.
+- s390x locally: `apt-get update && apt-get install -y gcc-s390x-linux-gnu qemu-user`, then
+  `GAMMA_TEST_LANE=s390x target/bootstrap/harness -j 4 lanes/` (495 tests, 48 s).
+- AArch64 GCC keeps the frame record at the BOTTOM of the frame without a stack protector
+  (at the top with one; x86-64 and Clang: always top), so `__builtin_frame_address(0)` is
+  not "above the locals" there. s72: -fno-stack-protector made GM_STACK_CHECK count the
+  frame twice → fibers of exactly @stack_size overflowed (aarch64 lane only). The macro
+  is now chosen by #if (aarch64 GCC without __SSP*__: `fa < limit`); a run-time
+  comparison of fa with &F cost +7% Ir on x86-64 (not folded). Run the aarch64 lane for anything that
+  touches frames or C flags: `apt-get install gcc-aarch64-linux-gnu`,
+  `GAMMA_TEST_LANE=aarch64 target/bootstrap/harness -j 4 lanes/` (56 s).

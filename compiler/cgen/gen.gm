@@ -110,6 +110,10 @@ pub Gen :: struct {
     /// its clones.
     pub frame_memo: List(?[]bool)
     pub long_memo: List(?bool)
+    /// How deep the calls of each function nest (`call_depth` in `func.gm`): 0 for not
+    /// computed yet, 1 while it is being computed, else the depth plus 2, `DEPTH_UNKNOWN`
+    /// for one that has no bound.
+    pub depth_memo: List(u8)
     pub handler_tables: List(u8)
     /// The names `t1`, `t2`, … of temporaries, made once for all functions (index 0 is `t1`).
     pub tmp_names: List(string)
@@ -209,6 +213,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         local_names: list(string),
         frame_memo: list(?[]bool),
         long_memo: list(?bool),
+        depth_memo: list(u8),
         libs: list(string),
         handler_done: hash_map.hash_map(u32, bool),
         decl_done: hash_map.hash_map(u32, bool),

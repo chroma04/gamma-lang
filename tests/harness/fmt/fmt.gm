@@ -65,8 +65,15 @@ format_ok :: fn(t: ^kit.T, src: string) -> kit.Fail!string needs kit.Run {
 }
 
 /// The tokens of `src`, as `gamma lex` prints them without positions: one per line.
+/// `src` is written to `file`, a file of the test's own.
 tokens :: fn(t: ^kit.T, file: string, src: string) -> kit.Fail!string needs kit.Run {
     try t.write(file, src)
+    return tokens_of_file(t, file)
+}
+
+/// The tokens of the text in `file`, which is only read: the files of the corpus are in
+/// use by the tests that run at the same time.
+tokens_of_file :: fn(t: ^kit.T, file: string) -> kit.Fail!string needs kit.Run {
     out := try t.run(t.gamma([_]string("lex", file)))
     text := list(u8)
     for line in str.lines(out.out) {
@@ -118,7 +125,7 @@ corpus_keeps_tokens_and_is_idempotent :: fn(t: ^kit.T) -> kit.Fail!() needs kit.
             continue
         }
         formatted += 1
-        before := try tokens(t, path, src)
+        before := try tokens_of_file(t, path)
         after := try tokens(t, work_file(t, "out.gm"), f.text)
         try t.expect_text(str.format("{}: tokens", path)!, before, after)
         again := try format_ok(t, f.text)

@@ -54,8 +54,6 @@ D. Measure: edit one compiler file → count recompiled units / wall; docs (arch
   compiler` is a CHECKED build (compiler/gamma.toml mode). Checked numbers (4 cpus): cold
   42 s (was ~62), no-op 4.2, body edit 4.3 (1 unit), new fn+string 6.0 (2), new List
   instance 5.2 (5 units). 370 units, largest 1.3 MB.
-- Flake seen once at -j 4: conformance/run/std_process "core module `complex` does not
-  declare" (known memory-pressure flake, gotchas/environment.md); passes alone.
 
 - CI difftest failure (PR #122): concurrent builds sharing one cache (difftest: 200
   programs × gcc,clang > KEPT_UNITS) — prune deleted objects another build had just found
@@ -72,7 +70,6 @@ D. Measure: edit one compiler file → count recompiled units / wall; docs (arch
   harness wasi/fibers exhausts wasmtime's call stack (below(2000) recursion); unsplit
   passes. CI's wasi lane doesn't force units. Local WASI setup: apt wasi-libc
   libclang-rt-18-dev-wasm32 binaryen clang-18 lld-18 + wasmtime v25.0.1 tarball, clang→clang-18.
-- std_process "core module complex" flake hit twice at -j 4 this session.
 
 ## Not done / ideas
 - Cold build is CPU-bound (370 cc processes); merging tiny units would cut process
