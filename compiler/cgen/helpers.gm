@@ -37,9 +37,11 @@ declare_helper :: fn(h: ^Helpers, ty: ^CTypes, memo: ^hash_map.HashMap(u32, stri
     return name
 }
 
-/// Defines the helper `name` declared by `declare_helper`, with the statements `body`.
+/// Defines the helper `name` declared by `declare_helper`, with the statements `body`. It
+/// is `inline`, as the small functions of an optimized build are: comparing two strings or
+/// hashing a key is less work than a call.
 define_helper :: fn(h: ^Helpers, name: string, ret: string, params: string, body: []const u8) needs Alloc {
-    h.bodies.write("static {} {}({}) {{\n", ret, name, params)!
+    h.bodies.write("static inline {} {}({}) {{\n", ret, name, params)!
     h.bodies.extend(body)!
     h.bodies.extend("}\n")!
 }

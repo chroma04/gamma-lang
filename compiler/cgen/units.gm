@@ -189,15 +189,16 @@ c_fn_name :: fn(line: string) -> ?string {
 /// Whether the first line of a function definition is of an `#inline` function.
 is_inline :: fn(line: string) -> bool => line.starts_with("static ") and str.contains(line, "__attribute__((always_inline)) inline ")
 
-/// How the definition of a small function of an optimized build starts (`func.gm`).
-SMALL_FN :: "static inline __attribute__((aligned(4))) "
+/// How the definition of a small function of an optimized build (`func.gm`) and of a
+/// helper for one type (`helpers.gm`) starts.
+SMALL_FN :: "static inline "
 
 /// The most C text (in bytes, without `#line` directives) of a small function that a split
 /// by file shares with the units that call it, as it shares the `#inline` functions: the
-/// accessors and predicates that are called from every file of a program, which cost more
-/// to call than to run. Sharing every small function would multiply the work of each unit;
-/// at this size a build of the compiler takes a tenth longer and the compiler it makes
-/// runs 6% fewer instructions.
+/// accessors and predicates that are called from every file of a program and the
+/// comparisons of small types, which cost more to call than to run. Sharing every small
+/// function would multiply the work of each unit; at this size a build of the compiler
+/// takes a tenth longer and the compiler it makes runs 6% fewer instructions.
 SHARED_SMALL_BYTES :: 1600
 
 /// The bytes of `item` outside its `#line` directives.
@@ -227,13 +228,12 @@ inline_definition :: fn(item: string, small_bytes: usize) -> ?(def: string, name
     return (def: str.format("{}{}", item[0..start], text["static ".len..text.len])!, name: name)
 }
 
-/// `line` as an external declaration, if it is a `static` one (not `static inline`, except
-/// for a generated function that an optimized build marks `inline` because it is small).
-/// An `#inline` hint is dropped: a function cannot be inlined into another unit, and an
-/// `inline` definition without `static` would define no symbol for the others to call.
+/// `line` as an external declaration, if it is a `static` one. An `inline` or `#inline`
+/// hint is dropped: an `inline` definition without `static` would define no symbol for
+/// the other units to call (`function` gives the definition of a small function its hint
+/// back, and the functions that the units share are `inline_definition`s).
 external :: fn(line: string) -> ?string needs Alloc {
-    if r := str.strip_prefix(line, "static inline __attribute__((aligned(4))) ") { return str.format("__attribute__((aligned(4))) {}", r)! }
-    if line.starts_with("static inline ") { return null }
+    if r := str.strip_prefix(line, SMALL_FN) { return r }
     rest: string = ""
     if r := str.strip_prefix(line, "static ") {
         rest = r
@@ -285,7 +285,7 @@ function :: fn(item: string) -> ?(decl: string, def: string) needs Alloc {
     // A small function keeps its `inline` hint on the definition, which stays external
     // because the shared header declares it without the hint (C11 6.7.4): without the hint
     // the C compiler would not inline it even into the callers of its own unit.
-    if first.starts_with("static inline __attribute__((aligned(4))) ") {
+    if first.starts_with(SMALL_FN) {
         def = str.format("{}inline {}", pre, def[pre.len..def.len])!
     }
     return (decl: str.format("{};", header)!, def: def)
@@ -800,7 +800,8 @@ test "an inline hint is dropped from external declarations" {
         expect_eq(external("static __attribute__((noinline)) void gm_f3(void);") else "", "__attribute__((noinline)) void gm_f3(void);")
         // A small function of an optimized build.
         expect_eq(external("static inline __attribute__((aligned(4))) int gm_f4(int a) {") else "", "__attribute__((aligned(4))) int gm_f4(int a) {")
-        expect(external("static inline int gm_ga0(void) { return 0; }") is null)
+        // A helper for one type.
+        expect_eq(external("static inline bool gm_eq0(const uint8_t *a, const uint8_t *b) {") else "", "bool gm_eq0(const uint8_t *a, const uint8_t *b) {")
     }
 }
 
@@ -831,9 +832,6 @@ test "other shapes are not split" {
     with a.allocator() {
         p := test_parts()
         p.funcs = str.format("{}static int gm_x;\n", p.funcs)!
-        expect(split(&p, 2) is null)
-        p = test_parts()
-        p.funcs = str.format("{}static inline int gm_y(void) {{ return 1; }}\n", p.funcs)!
         expect(split(&p, 2) is null)
         p = test_parts()
         p.data = str.format("{}int gm_z;\n", p.data)!
