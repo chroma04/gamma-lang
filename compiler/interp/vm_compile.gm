@@ -793,8 +793,9 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
             if op in (tir.Builtin.Cast, .Addr, .ToPtr, .BlackBox) and args.len is 1 and args[0].size is n.size {
                 c.vc_word(args[0])
                 if op is .Cast and not c.m.fast() {
+                    // A pointer to something at least as aligned is aligned already.
                     al := c.m.ptr_align(n.ty)
-                    if al > 1 { c.vc_emit(.AlignCheck(save, al, n)) }
+                    if al > 1 and c.m.ptr_align(args[0].ty) < al { c.vc_emit(.AlignCheck(save, al, n)) }
                 }
             } else if vc_builtin_ok(op, args) {
                 c.vc_builtin(args, .Reg(save), n)
@@ -1120,6 +1121,28 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             c.vc_emit(.StrSlot(at, n))
             return ()
         }
+        .Upvar(levels, l) => if n.size is c.m.size(n.ty) and levels > 0 {
+            c.vc_emit(.UpvarSlot(at, levels, l, n.size.trunc(u32), n))
+            return ()
+        }
+        .Closure(f) => {
+            c.vc_emit(.ClosureSlot(at, f))
+            return ()
+        }
+        .Binary(op, l, r) => {
+            slots := c.slot_top
+            la := c.vc_slot_at(c.vc_alloc_slot(l.size))
+            c.vc_to_slot(l, la)
+            lb := c.vc_slot_at(c.vc_alloc_slot(r.size))
+            c.vc_to_slot(r, lb)
+            wide: u8 = 0
+            if c.m.word_locals and n.size is 16 {
+                if t := c.m.int_info(n.ty) and t.bits is 128 and c.m.int_info(l.ty) is t and c.m.int_info(r.ty) is t { wide = if t.signed { 2 } else { 1 } }
+            }
+            c.vc_emit(.BinSlot(op, wide, at, la, lb, n, l, r))
+            c.slot_top = slots
+            return ()
+        }
         .Aggregate(items, offs) => {
             total: u64 = 0
             for x in items { total += x.size }
@@ -1127,7 +1150,12 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             for i in 0..items.len { c.vc_to_slot(items[i], at + offs[i].trunc(u32)) }
             return ()
         }
-        .Coerce(kind, x) => if c.vc_coerce_builds(kind, n) {
+        .Coerce(kind, x) => if kind is .IntWiden and is_word(x) and n.size > 8 {
+            r := c.vc_operand(x, true)
+            c.vc_emit(.WidenSlot(at, r, x, n))
+            c.vc_set_top(save)
+            return ()
+        } else if c.vc_coerce_builds(kind, n) {
             m := c.m
             match kind {
                 .WrapOptional => {
@@ -1208,9 +1236,10 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
 /// Whether `vc_to_slot` builds the value of `n` itself rather than having the tree
 /// evaluate it (its parts may still be the tree's).
 vc_builds :: fn(c: ^Vc, n: ^const Node) -> bool needs Alloc => match n.op {
-    .Call(_), .CallValue(_), .Perform(_), .Bytes(_), .Aggregate(_), .Block(_), .If(_), .Match(_) => true
+    .Call(_), .CallValue(_), .Perform(_), .Bytes(_), .Aggregate(_), .Block(_), .If(_), .Match(_), .Binary(_), .Closure(_) => true
+    .Upvar(levels, _) => levels > 0
     .Else(lhs, _, _) => c.vc_else_shape(n, lhs) is not null
-    .Coerce(kind, _) => c.vc_coerce_builds(kind, n)
+    .Coerce(kind, x) => c.vc_coerce_builds(kind, n) or (kind is .IntWiden and is_word(x) and n.size > 8)
     .MakeErr(_) => c.m.kind(n.ty) is .Result(_, _)
     .Variant(_) => c.vc_variant_builds(n.ty)
     .Slice(x) => c.vc_slice_builds(x)
@@ -1547,21 +1576,7 @@ vc_conds :: fn(c: ^Vc, parts: []Cond) -> List(u32) needs Alloc {
     for p in parts {
         save := c.top
         match p {
-            .Bool(e) => {
-                match e.op {
-                    .Cmp(x) => {
-                        a := c.vc_operand(x.l, c.vc_reads_only(x.r))
-                        b := c.vc_operand(x.r, true)
-                        fails.push(c.vc_jump(.JCmp(x.op, x.how, a, b, 0)))!
-                    }
-                    .EqW(x) => {
-                        a := c.vc_operand(x.l, c.vc_reads_only(x.r))
-                        b := c.vc_operand(x.r, true)
-                        fails.push(c.vc_jump(.JEq(x.how, x.negated, a, b, 0)))!
-                    }
-                    _ => fails.push(c.vc_jump(.Jz(c.vc_operand(e, true), 0)))!
-                }
-            }
+            .Bool(e) => c.vc_branch(e, false, &fails)
             .Match(pat, value) => {
                 at := c.vc_slot_at(c.vc_alloc_slot(value.size))
                 c.vc_to_slot(value, at)
@@ -1571,6 +1586,59 @@ vc_conds :: fn(c: ^Vc, parts: []Cond) -> List(u32) needs Alloc {
         c.top = save
     }
     return fails
+}
+
+/// Compiles the condition `e` as jumps: to where the jumps added to `to` are patched if
+/// `e` is `if_true`, else on to the next instruction. `and`, `or` and `not` become jumps, so
+/// no boolean is made for them.
+vc_branch :: fn(c: ^Vc, e: ^Node, if_true: bool, to: ^List(u32)) needs Alloc {
+    save := c.top
+    match e.op {
+        .Cmp(x) => {
+            // `JCmp` jumps unless the comparison holds; the opposite comparison of two
+            // integers is another comparison (not of floats, which may be unordered).
+            if not if_true or x.how in (WordCmp.Unsigned, .Signed(_)) {
+                a := c.vc_operand(x.l, c.vc_reads_only(x.r))
+                b := c.vc_operand(x.r, true)
+                op := if if_true { cmp_opposite(x.op) } else { x.op }
+                to.push(c.vc_jump(.JCmp(op, x.how, a, b, 0)))!
+            } else {
+                to.push(c.vc_jump(.Jnz(c.vc_operand(e, true), 0)))!
+            }
+        }
+        .EqW(x) => {
+            a := c.vc_operand(x.l, c.vc_reads_only(x.r))
+            b := c.vc_operand(x.r, true)
+            to.push(c.vc_jump(.JEq(x.how, x.negated is not if_true, a, b, 0)))!
+        }
+        .Not(x) => c.vc_branch(x, not if_true, to)
+        .Logic(is_and, l, r) => {
+            if is_and is if_true {
+                // `a and b` is true (`a or b` false) if both parts are.
+                skip := list(u32)
+                c.vc_branch(l, not if_true, &skip)
+                c.vc_branch(r, if_true, to)
+                for j in skip.items { c.vc_patch(j, c.vc_here()) }
+                skip.deinit()
+            } else {
+                c.vc_branch(l, if_true, to)
+                c.vc_branch(r, if_true, to)
+            }
+        }
+        _ => {
+            r := c.vc_operand(e, true)
+            to.push(c.vc_jump(if if_true { .Jnz(r, 0) } else { .Jz(r, 0) }))!
+        }
+    }
+    c.top = save
+}
+
+/// The comparison that holds exactly when integer comparison `op` does not.
+cmp_opposite :: fn(op: tir.BinOp) -> tir.BinOp => match op {
+    .Lt => .Ge
+    .Le => .Gt
+    .Gt => .Le
+    _ => .Lt
 }
 
 /// Tests the value of `size` bytes in the slot at `at` against `pat`, binding its locals;
@@ -1751,11 +1819,17 @@ vc_with :: fn(c: ^Vc, n: ^Node, w: With, want: Want) needs Alloc {
     for hd in w.handlers {
         match hd {
             .Literal(x) => {
-                at := c.vc_slot_at(c.vc_alloc_slot(x.size))
-                c.vc_to_slot(x, at)
-                id: u32 = 0
-                if .HandlerRef(i) := x.op { id = i } else if .Handler(i) := c.m.kind(x.ty) { id = i }
-                c.vc_emit(.WithLit(id, at, w.label))
+                // A handler literal written in the `with` captures this frame and context:
+                // no value is made for it.
+                if .HandlerRef(i) := x.op {
+                    c.vc_emit(.WithLit(i, NO_REG, w.label))
+                } else {
+                    at := c.vc_slot_at(c.vc_alloc_slot(x.size))
+                    c.vc_to_slot(x, at)
+                    id: u32 = 0
+                    if .Handler(i) := c.m.kind(x.ty) { id = i }
+                    c.vc_emit(.WithLit(id, at, w.label))
+                }
             }
             .Decl(decls, value) => {
                 // The value stays in its slot while the handlers are installed.

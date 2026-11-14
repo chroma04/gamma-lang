@@ -164,6 +164,9 @@ CtxNode :: struct {
     with_label: u32
     /// The frame of that `with`, for `break`s from its clauses.
     with_fr: ?^Frame
+    /// Different for every context made, so that an index with its `gen` names one
+    /// context even after the index is reused (`CallSite`).
+    gen: u64 = 0
 }
 
 Installed :: union {
@@ -228,6 +231,8 @@ pub Machine :: struct {
     /// The handler contexts, by handle (0: the empty context).
     ctxs: List(CtxNode)
     free_ctxs: List(u32)
+    /// The `CtxNode.gen` of the last context made.
+    ctx_gen: u64 = 0
     infos: List(?^FnInfo)
     next_frame: u64
     depth: u32

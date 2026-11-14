@@ -45,7 +45,13 @@ Versions and what each kind of change means are described in
   the language itself: copies of structs, `try`, unwraps, assertions, slices, division,
   shifts, pointer casts and most builtins. Finding the allocation of an address takes
   constant time. Checked builds of every program also drop the repeated stack probe of
-  `#inline` functions.
+  `#inline` functions. Later: performs and calls of function values reuse what their
+  first run worked out (an iterator's `yield` costs about half as much as before), `and`,
+  `or` and `not` in conditions compile to jumps, closures and 128-bit arithmetic run in
+  the register machine (a program that multiplies modulo 64-bit numbers through `u128`
+  runs about 30% faster), and the loop dispatches through a pointer to the next
+  instruction. A pointer cast from a pointer at least as aligned as the target type
+  needs no alignment check, in generated C and in the interpreter.
 - **One wording for operating-system errors.** Every command describes a failed file,
   directory or process operation with the same table; errors it does not name get the
   system's own message (on Windows its native text) instead of a generic "input/output

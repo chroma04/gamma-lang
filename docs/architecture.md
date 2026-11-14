@@ -459,10 +459,18 @@ every checked operation checked.
     indices, so jump targets are shared.
   - *Scratch memory* that the tree's buffers come from is marked and released only
     around statements and loops that contain the tree's instructions.
+  - *Conditions* built with `and`, `or` and `not` compile to chains of jumps, so no
+    boolean is made for them.
+  - *Values that are not words* are built in slots by the machine when it can: the
+    operands of a binary operator on 128-bit integers or vectors go to slots and one
+    instruction applies the operator (on 128-bit integers, in little-endian words, the
+    common cases are computed directly), and a closure value, a captured local copied
+    out, or an integer widened to 128 bits is an instruction of its own.
   - *Size.* The loop's C must stay below the size at which the C back end has Clang
     compile a function without optimization (`GM_LONG_FN`): its arms are a few
-    operations each, and the loop keeps only the registers, the instructions and the
-    index of the current one in variables of its own, so that the C compiler holds them
+    operations each, and the loop keeps only the registers, the code and a pointer to the
+    next instruction in variables of its own (an index is computed only for the general
+    path and calls), so that the C compiler holds them
     in machine registers. Everything else about the body that is running is in its
     record (`CallRec`).
 
@@ -477,9 +485,15 @@ every checked operation checked.
     frame (no deferred statement, no handler installed, no closure made, nothing left to
     the tree evaluator) runs without a frame object: a local whose address is taken
     keeps the address of its memory in a register of its own, and the frame a nested
-    function captures is reached through another. A direct call of such a body uses a
-    *site* worked out when the call first runs (where each argument goes, the size of
-    the storage, where the result goes). A body that needs a frame gets one from the
+    function captures is reached through another. A call of such a body uses a *site*
+    worked out when the call first runs (where each argument goes, the size of the
+    storage, where the result goes). For a direct call the site never changes. For an
+    operation it is worked out again when the handler context changes (each context has a
+    generation number, so a reused context index is not mistaken for the old context),
+    and most often only the captured frame, the clause's context and the handler value
+    are new, the clause being the same. For a function value it is worked out per called
+    function, and a second one is kept for sites that alternate between two functions. A
+    body that needs a frame gets one from the
     pool when it is called, and its deferred statements, handlers and temporaries end
     when it returns or a flow leaves it (`vm_ret`, `vm_raise`), exactly as for a call
     made the general way (`enter`): through fibers, with several threads, or from the

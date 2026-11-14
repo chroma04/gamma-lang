@@ -97,8 +97,9 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
             return r
         }
         .Cast => {
+            // A pointer to something at least as aligned is aligned already.
             al := arith_pointee_align(fg, t)
-            if al > 1 and fg.g.opts.checks {
+            if al > 1 and fg.g.opts.checks and arith_pointee_align(fg, at) < al {
                 fg.linef("if ((uintptr_t){} % {} != 0) gm_trap_misaligned((uintptr_t){}, {}, {});", v0, al, v0, al, loc)
             }
             return fg.tmp(t, v0)

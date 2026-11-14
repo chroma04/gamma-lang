@@ -1,7 +1,8 @@
 // Handler contexts: the persistent list of installed handlers.
 
 push_ctx :: fn(m: ^Machine, parent: u32, effect_: types.EffectRef, installed: Installed, with_frame: u64, with_label: u32, with_fr: ?^Frame) -> u32 needs Alloc {
-    node := CtxNode(parent: parent, effect_: effect_, installed: installed, with_frame: with_frame, with_label: with_label, with_fr: with_fr)
+    m.ctx_gen +%= 1
+    node := CtxNode(parent: parent, effect_: effect_, installed: installed, with_frame: with_frame, with_label: with_label, with_fr: with_fr, gen: m.ctx_gen)
     if h := m.free_ctxs.pop() {
         m.ctxs.items[us(h)] = node
         return h

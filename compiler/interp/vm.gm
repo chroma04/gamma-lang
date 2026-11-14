@@ -109,6 +109,17 @@ Ins :: union {
     /// decides).
     Shl: (t: IntW, shift: IntW, wrap: bool, r: u32, a: u32, b: u32, n: ^Node)
     SetUpvarAt: (levels: u32, local: u32, rel: u32, size: u32, align: u32, v: u32, n: ^Node)
+    /// Copies the local `local` of the frame `levels` out (`n`, of `size` bytes) to the
+    /// slot at `at`.
+    UpvarSlot: (at: u32, levels: u32, local: u32, size: u32, n: ^Node)
+    /// The binary operator of `n` on its operands in the slots at `la` and `lb`, to the
+    /// slot at `at`: for values that are not words (128-bit integers, vectors).
+    /// `wide` is 1 (2) for unsigned (signed) 128-bit integers in little-endian words,
+    /// which most operators compute directly.
+    BinSlot: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node)
+    /// The integer word in register `r` (the value of `x`) widened to `n`, a value that
+    /// is not a word (a 128-bit integer), in the slot at `at`.
+    WidenSlot: (at: u32, r: u32, x: ^Node, n: ^Node)
     /// A word at the address in register `base` plus `off`.
     Load: (r: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
     Store: (base: u32, off: u32, size: u32, align: u32, v: u32, n: ^Node)
@@ -235,11 +246,15 @@ Ins :: union {
     /// uninstalling the handlers installed since.
     CxSave: u32
     CxRestore: u32
-    /// Installs the handler literal `id` whose value is in the slot at `at`, or the
+    /// Installs the handler literal `id` whose value is in the slot at `at` (written in
+    /// the `with` if `at` is `NO_REG`: it captures this frame and context), or the
     /// handler declarations `decls` for the value of `size` bytes there, for the `with` of
     /// `label` (`vc_with`).
     WithLit: (id: u32, at: u32, label: u32)
     WithDecl: (decls: []const u32, at: u32, size: u32, label: u32)
+    /// The value of the function literal `f` (it captures this frame and context) to the
+    /// slot at `at`.
+    ClosureSlot: (at: u32, f: u32)
 }
 
 /// An argument of a call: a word in a register, or the bytes in a slot.
@@ -286,6 +301,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     regs := cur.regs
     bc := body.bc.ptr
     pc: usize = 0
+    ip := bc
     vm_consts(body, regs)
     if body.env_reg is not NO_REG {
         if e := a.fr.env { regs[usize(body.env_reg)] = u64(e.addr()) }
@@ -293,7 +309,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     while true {
         done := false
         while true {
-            i := &bc[pc]
+            i := &ip[0]
             match i.op {
                 .Mov => { regs[usize(i.a)] = regs[usize(i.b)] }
                 .K => { regs[usize(i.a)] = u64(i.b) | (u64(i.c) <<% 32) }
@@ -348,61 +364,61 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 .Eq => { regs[usize(i.a)] = if regs[usize(i.b)] is regs[usize(i.c)] { 1 } else { 0 } }
                 .Ne => { regs[usize(i.a)] = if regs[usize(i.b)] is regs[usize(i.c)] { 0 } else { 1 } }
                 .JLtU => if not (regs[usize(i.a)] < regs[usize(i.b)]) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeU => if not (regs[usize(i.a)] <= regs[usize(i.b)]) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLtI => if not (regs[usize(i.a)].bits(i64) < regs[usize(i.b)].bits(i64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeI => if not (regs[usize(i.a)].bits(i64) <= regs[usize(i.b)].bits(i64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLtS => if not (sext(regs[usize(i.a)], u32(i.w)) < sext(regs[usize(i.b)], u32(i.w))) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeS => if not (sext(regs[usize(i.a)], u32(i.w)) <= sext(regs[usize(i.b)], u32(i.w))) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLtF => if not (regs[usize(i.a)].bits(f64) < regs[usize(i.b)].bits(f64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JLeF => if not (regs[usize(i.a)].bits(f64) <= regs[usize(i.b)].bits(f64)) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JEq => if regs[usize(i.a)] is regs[usize(i.b)] {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JNe => if regs[usize(i.a)] is not regs[usize(i.b)] {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Jmp => {
-                    pc = usize(i.a)
+                    ip = bc_at(bc, usize(i.a))
                     continue
                 }
                 .Jz => if regs[usize(i.a)] is 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Jnz => if regs[usize(i.a)] is not 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Loop => {
                     // Other threads run first (`vm_free`).
                     if m.threads.list.items.len > 1 { break }
-                    pc = usize(i.a)
+                    ip = bc_at(bc, usize(i.a))
                     continue
                 }
                 .Fr1 => { regs[usize(i.a)] = ld1(fat(regs, usize(i.b))) }
@@ -416,15 +432,15 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 .FrD => { regs[usize(i.a)] = ldn(fat(regs, usize(i.b) + us(regs[usize(i.c)])), i.f) }
                 .FrSetD => stn(fat(regs, usize(i.a) + us(regs[usize(i.b)])), i.f, regs[usize(i.c)])
                 .JFrZ => if ldn(fat(regs, usize(i.a)), i.f) is 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JFrNz => if ldn(fat(regs, usize(i.a)), i.f) is not 0 {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .JTag => if ldn(fat(regs, usize(i.a)), i.f) is not u64(i.b) {
-                    pc = usize(i.c)
+                    ip = bc_at(bc, usize(i.c))
                     continue
                 }
                 .Ld1 => {
@@ -580,10 +596,10 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 }
                 .Release => m.vm_release(regs, i.a)
                 .Call => {
-                    cur = m.vm_push(cur, pc, i.a) else break
+                    cur = m.vm_push(cur, bc_pc(bc, ip), i.a) else break
                     regs = cur.regs
                     bc = cur.code.bc.ptr
-                    pc = 0
+                    ip = bc
                     continue
                 }
                 .RetW => {
@@ -603,9 +619,9 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     } else {
                         cur = try m.vm_ret(cur, true, v)
                     }
-                    pc = cur.pc
                     regs = cur.regs
                     bc = cur.code.bc.ptr
+                    ip = bc_at(bc, cur.pc)
                     continue
                 }
                 .Ret, .RetSlot => {
@@ -616,16 +632,17 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                         break
                     }
                     cur = try m.vm_ret(cur, false, 0)
-                    pc = cur.pc
                     regs = cur.regs
                     bc = cur.code.bc.ptr
+                    ip = bc_at(bc, cur.pc)
                     continue
                 }
                 .Free, .Framed => break
             }
-            pc +%= 1
+            ip = bc_at(ip, 1)
         }
         if done { break }
+        pc = bc_pc(bc, ip)
         // The instruction as compiled: every case of it, traps included. A flow it raises
         // goes to the loop it targets or leaves bodies (`vm_raise`).
         next: usize = 0
@@ -651,7 +668,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
         }
         regs = cur.regs
         bc = cur.code.bc.ptr
-        pc = next
+        ip = bc_at(bc, next)
     }
     // The body returns, its result in `ret`.
     if a.fr.defers.items.len is 0 and base.cx is a.cx { return () }
@@ -774,39 +791,175 @@ vm_push :: fn(m: ^Machine, cur: ^CallRec, pc: usize, site: u32) -> ?^CallRec nee
         s := &cur.code.sites.ptr[usize(site)]
         if s.state is 0 { m.vm_site(cur.code, pc, s) }
         if s.state is 1 {
-            if n := m.vm_push_site(cur, pc, s) { return n }
+            if n := m.vm_push_site(cur, pc, s, cur.cx) { return n }
+        } else if s.state is 4 {
+            if m.vm_value_site(cur, pc, s) {
+                if n := m.vm_push_site(cur, pc, s, s.callee_cx) { return n }
+            }
+        } else if s.state is 3 {
+            cx := cur.cx
+            if s.cx is not cx or s.gen is not m.ctxs.items.ptr[us(cx)].gen { m.vm_perform_site(cur.code, pc, s, cx) }
+            if s.callee is not null {
+                if n := m.vm_push_site(cur, pc, s, s.callee_cx) { return n }
+            }
         }
     }
     return m.vm_push_rec(cur, pc)
 }
 
-/// Works out the site `s` of the direct call at `pc` of `code`.
+/// Works out the site `s` of the direct call or perform at `pc` of `code`.
 vm_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite) needs Alloc {
     s.state = 2
-    .Call(x) := code.ins.ptr[pc] else return ()
-    info := m.fn_info(x.f)
-    callee := info.vm else return ()
-    if not callee.frameless or callee.env_reg is not NO_REG or x.args.len is not info.params.len or info.cost > sema.MAX_FRAME { return () }
-    match x.dst {
+    match code.ins.ptr[pc] {
+        .Call(x) => {
+            info := m.fn_info(x.f)
+            callee := info.vm else return ()
+            if callee.env_reg is not NO_REG or not m.site_fill(s, x.f, info, callee, 0, x.args, x.dst, x.node) { return () }
+            s.state = 1
+        }
+        .Perform(_) => {
+            // Worked out for each context it runs in.
+            s.state = 3
+            s.callee = null
+            s.gen = 0
+        }
+        // A function value whose type lists no effect to handle at the call: worked out
+        // for each function it calls.
+        .CallValue(x) => if .Fn(sig) := m.kind(x.callee.ty) and sig.effects.effects.len is 0 {
+            s.state = 4
+            s.callee = null
+        } else if m.kind(x.callee.ty) is not .Fn(_) {
+            s.state = 4
+            s.callee = null
+        }
+        _ => {}
+    }
+}
+
+/// Works out the site `s` of the perform at `pc` of `code` for context `cx`: the common
+/// call (`s.callee` not `null`) if the clause of the handler runs without a frame. The
+/// clause is most often the same as before, in a new context. A perform whose handler is
+/// of another kind is made the general way from then on (`vm_push_rec`).
+vm_perform_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite, cx: u32) needs Alloc {
+    s.cx = cx
+    s.gen = m.ctxs.items[us(cx)].gen
+    .Perform(x) := code.ins.ptr[pc] else return ()
+    .Perform(p) := x.node.op else return ()
+    k := m.find_ctx(cx, &p.effect_)
+    f := NO_REG
+    if k is not 0 and not m.p.is_ctl(p.effect_.eff, p.op) {
+        node := &m.ctxs.items[us(k)]
+        match node.installed {
+            .Lit(h, ?env, lcx) => {
+                f = m.p.handler_lit(h).clauses[us(p.op)]
+                s.env = env
+                s.callee_cx = lcx
+                s.self_ = null
+            }
+            .Decl(decls, value, outer) => for d in decls {
+                info := m.p.handler_decl(d)
+                if info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0 { continue }
+                f = info.clauses[us(p.op)]
+                s.env = null
+                s.callee_cx = outer
+                s.self_ = value
+                break
+            }
+            .Native(_) => {}
+        }
+    }
+    if f is not NO_REG {
+        if s.callee is not null and s.f is f { return () }
+        info := m.fn_info(f)
+        if callee := info.vm and m.site_fill(s, f, info, callee, if s.self_ is null { 0 } else { 1 }, x.args, x.dst, x.node) { return () }
+    }
+    s.callee = null
+    s.state = 2
+}
+
+/// Works out the site `s` of the call of a function value at `pc` for the function it
+/// calls now: whether it is the common call. The function is most often the same as
+/// before, with another captured frame.
+vm_value_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^CallSite) -> bool needs Alloc {
+    .CallValue(x) := cur.code.ins.ptr[pc] else return false
+    cv := fat(cur.regs, usize(x.at))[0..us(x.callee.size)]
+    f: u32 = 0
+    env: ?^Frame = null
+    cx := cur.cx
+    if .Fn(_) := m.kind(x.callee.ty) {
+        f = m.fn_from_addr(m.word(cv, 0)) else return false
+        env = m.frame_of(m.word(cv, 1))
+        cx = m.word(cv, 2).trunc(u32)
+    } else {
+        f = m.fn_from_addr(m.ptr_of(cv)) else return false
+    }
+    // A second function called from here is kept in `alt`: the two are swapped when the
+    // other one is called.
+    if s.f is not f and (s.callee is not null or s.gen is 1) {
+        if a := s.alt {
+            t := a^
+            a^ = s^
+            a.alt = null
+            s^ = t
+            s.alt = a
+        } else {
+            a := new(s^)!
+            a.alt = null
+            s.moves = empty_slice(Move)
+            s.callee = null
+            s.gen = 0
+            s.alt = a
+        }
+    }
+    s.env = env
+    s.callee_cx = cx
+    if s.f is f {
+        // `gen` 1: the call of `f` is not the common one.
+        if s.callee is not null { return true }
+        if s.gen is 1 { return false }
+    }
+    info := m.fn_info(f)
+    if callee := info.vm and m.site_fill(s, f, info, callee, 0, x.args, x.dst, x.node) {
+        s.gen = 0
+        return true
+    }
+    s.callee = null
+    s.f = f
+    s.gen = 1
+    return false
+}
+
+/// Fills in the site `s` for a call of `f` (`info`, compiled to `callee`) with arguments
+/// `args` after `first` (0 or 1) for the handler value, whose result goes to `dst`: false if the call is not the common one (its body
+/// needs a frame or one too big, or the result is too big for the record).
+site_fill :: fn(m: ^Machine, s: ^CallSite, f: u32, info: ^FnInfo, callee: ^Code, first: usize, args: []Arg, dst: Dest, n: ^Node) -> bool needs Alloc {
+    if not callee.frameless or args.len + first is not info.params.len or info.cost > sema.MAX_FRAME { return false }
+    match dst {
         .Reg(rr) => {
             s.out_kind = 0
             s.ret_reg = rr
         }
         .None => {
-            if x.node.size > 8 { return () }
+            if n.size > 8 { return false }
             s.out_kind = 0
+            s.ret_reg = NO_REG
         }
         .Slot(at) => {
             s.out_kind = 1
             s.out_at = at
+            s.ret_reg = NO_REG
         }
-        .Ret => { s.out_kind = 2 }
+        .Ret => {
+            s.out_kind = 2
+            s.ret_reg = NO_REG
+        }
     }
+    if first is 1 { s.self_off = info.offsets[us(info.params[0])].trunc(u32) }
     moves := list(Move)
-    for i in 0..x.args.len {
-        p := usize(info.params[i])
+    for i in 0..args.len {
+        p := usize(info.params[i + first])
         off := info.offsets[p].trunc(u32)
-        match x.args[i] {
+        match args[i] {
             .Reg(r) => {
                 // A word parameter kept in the frame's storage is a register there.
                 if m.word_locals and not info.addressed[p] and info.sizes[p] > 0 {
@@ -818,18 +971,20 @@ vm_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite) needs All
             .Slot(at, size) => moves.push(Move(kind: 1, src: at, dst: off, size: size))!
         }
     }
+    if s.moves.len > 0 { free(s.moves) }
     s.moves = moves.items
-    s.f = x.f
-    s.out_size = x.node.size.trunc(u32)
+    s.f = f
+    s.out_size = n.size.trunc(u32)
     s.callee = callee
     s.frame_size = us(info.frame_size)
-    s.state = 1
+    return true
 }
 
-/// `vm_push` for the common call that `s` describes: `null` if it cannot be made now (on
-/// a fiber, with other threads, too deep, or without room in the scratch chunk).
+/// `vm_push` for the common call that `s` describes, its body running in context `cx`:
+/// `null` if it cannot be made now (on a fiber, with other threads, too deep, or without
+/// room in the scratch chunk).
 #inline
-vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) -> ?^CallRec {
+vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite, cx: u32) -> ?^CallRec {
     if m.depth >= MAX_DEPTH or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 { return null }
     callee := s.callee else return null
     sc := &m.scratch
@@ -842,6 +997,7 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) ->
     n := b.cast(^CallRec)
     frame := (&b[head]).cast([^]u64)
     fat(frame, 0)[0..s.frame_size].fill(0)
+    if v := s.self_ { fat(frame, usize(s.self_off))[0..v.len].copy_from(v) }
     regs := cur.regs
     k: usize = 0
     while k < s.moves.len {
@@ -859,8 +1015,8 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) ->
     n.code = callee
     n.regs = frame
     n.fr = null
-    n.cx = cur.cx
-    n.base_cx = cur.cx
+    n.cx = cx
+    n.base_cx = cx
     n.pc = 0
     n.f = s.f
     n.ret_reg = s.ret_reg
@@ -870,6 +1026,7 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) ->
     n.dst = if s.out_kind is 0 { n.buf[0..usize(s.out_size)] } else if s.out_kind is 1 { fat(regs, usize(s.out_at))[0..usize(s.out_size)] } else { cur.dst }
     sc.top = top +% head +% s.frame_size
     vm_consts(callee, frame)
+    if e := s.env and callee.env_reg is not NO_REG { frame[usize(callee.env_reg)] = u64(e.addr()) }
     m.depth +%= 1
     cur.pc = pc
     return n
@@ -1164,6 +1321,24 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
         }
         .UpvarAt(x) => { regs[usize(x.r)] = try m.vm_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, x.n) }
         .SetUpvarAt(x) => try m.vm_set_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n)
+        .BinSlot(x) => if v := wide_op(x, regs) {
+            d := fat(regs, usize(x.at))
+            st8(d, v.trunc(u64))
+            st8(fat(regs, usize(x.at) + 8), (v >> 64).trunc(u64))
+        } else {
+            try m.binop(x.n.span, x.op, x.l.ty, x.r.ty, x.n.ty, fat(regs, usize(x.la))[0..us(x.l.size)], fat(regs, usize(x.lb))[0..us(x.r.size)], fat(regs, usize(x.at))[0..us(x.n.size)])
+        }
+        .WidenSlot(x) => {
+            b: [8]u8 = ---
+            w := b[0..us(x.x.size)]
+            m.wr_word(w, regs[usize(x.r)])
+            try m.coerce_bytes(x.n.span, .IntWiden, x.x.ty, x.n.ty, w, fat(regs, usize(x.at))[0..us(x.n.size)])
+        }
+        .UpvarSlot(x) => {
+            e := us(regs[usize(code.env_reg)]).to_ptr(^Frame) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
+            up := frame_up(e, x.levels - 1) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
+            try m.read_local(x.n.span, up, x.local, fat(regs, usize(x.at))[0..usize(x.size)])
+        }
         // The locals in memory of a body without a frame (`Code.hidden`).
         .LocalAddr(r, local, n) => { regs[usize(r)] = try m.vm_hidden_addr(code, regs, local, n.span) }
         .Local(r, local, _, size) => {
@@ -1276,10 +1451,19 @@ vm_framed :: fn(m: ^Machine, act: ^Act, code: ^Code, regs: [^]u64, pc: usize, ds
         .CxSave(r) => { regs[usize(r)] = u64(act.cx) }
         .CxRestore(r) => m.vm_cx_restore(act, regs, r)
         .WithDecl(x) => { act.cx = m.vm_with_decl(fr, act.cx, x.decls, x.at, x.size, x.label) }
+        .ClosureSlot(at, f) => {
+            d := fat(regs, usize(at))[0..us(3 * m.ptr_bytes)]
+            m.put_word(d, 0, m.fn_addr(f))
+            m.put_word(d, 1, u64(m.frame_handle(fr)))
+            m.put_word(d, 2, u64(a.cx))
+        }
         .WithLit(id, at, label) => {
-            o := usize(at)
-            hb := fr.store[o..o + us(2 * m.ptr_bytes)]
-            inst := Installed.Lit(id, m.frame_of(m.word(hb, 0)), m.word(hb, 1).trunc(u32))
+            inst := Installed.Lit(id, fr, a.cx)
+            if at is not NO_REG {
+                o := usize(at)
+                hb := fr.store[o..o + us(2 * m.ptr_bytes)]
+                inst = .Lit(id, m.frame_of(m.word(hb, 0)), m.word(hb, 1).trunc(u32))
+            }
             act.cx = m.push_ctx(a.cx, m.p.handler_lit(id).effect_, inst, fr.id, label, fr)
         }
         _ => {}
@@ -1696,6 +1880,37 @@ vm_invoke :: fn(m: ^Machine, caller: ^const Code, f: u32, env: ?^Frame, cx: u32,
     m.release(mk)
     try res
     if .Reg(r) := dst and not direct { regs[usize(r)] = m.rd_word(d) }
+}
+
+/// The result of the `BinSlot` `x` on 128-bit integers, computed directly: `null` if it
+/// is not such an operation or its common case does not apply (an overflow, a division
+/// by zero), which `binop` then reports.
+wide_op :: fn(x: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node), regs: [^]u64) -> ?u128 {
+    if x.wide is 0 { return null }
+    p := u128(ld8(fat(regs, usize(x.la)))) | (u128(ld8(fat(regs, usize(x.la) + 8))) << 64)
+    q := u128(ld8(fat(regs, usize(x.lb)))) | (u128(ld8(fat(regs, usize(x.lb) + 8))) << 64)
+    signed := x.wide is 2
+    match x.op {
+        .Add(f) => {
+            if f is .Wrap { return p +% q }
+            if f is .Checked { return if signed { ((p.bits(i128) +? q.bits(i128)) else return null).bits(u128) } else { p +? q } }
+        }
+        .Sub(f) => {
+            if f is .Wrap { return p -% q }
+            if f is .Checked { return if signed { ((p.bits(i128) -? q.bits(i128)) else return null).bits(u128) } else { p -? q } }
+        }
+        .Mul(f) => {
+            if f is .Wrap { return p *% q }
+            if f is .Checked { return if signed { ((p.bits(i128) *? q.bits(i128)) else return null).bits(u128) } else { p *? q } }
+        }
+        .Div => if q is not 0 and not signed { return p / q }
+        .Rem => if q is not 0 and not signed { return p % q }
+        .BitAnd => return p & q
+        .BitOr => return p | q
+        .BitXor => return p ~ q
+        _ => {}
+    }
+    return null
 }
 
 /// The word at offset `rel` of local `l` of the frame `levels` capture links up from `fr`.

@@ -213,10 +213,13 @@ CallRec :: struct {
 }
 
 /// What the call of an instruction needs, worked out when it first runs (`vm_site`), for
-/// the common call: of a function whose body runs without a frame and captures none.
+/// the common call: of a function whose body runs without a frame and captures none, or
+/// of the clause of a handler literal whose body runs without a frame.
 CallSite :: struct {
     /// 0: not worked out yet; 1: the common call, described below; 2: any other, which
-    /// `vm_push_rec` makes.
+    /// `vm_push_rec` makes; 3: a perform, whose handler is worked out for each context it
+    /// runs in (`vm_perform_site`): the common call while `callee` is not `null`; 4: a
+    /// call of a function value, worked out for each function it calls (`vm_value_site`).
     state: u8
     /// Where the result goes: 0 the record's buffer (then to register `ret_reg`, if any),
     /// 1 the caller's slot at `out_at`, 2 the caller's own result.
@@ -228,6 +231,18 @@ CallSite :: struct {
     callee: ?^Code
     frame_size: usize
     moves: []Move
+    /// For a perform: the context the handler was worked out for (`cx`, with its `gen`),
+    /// the frame its clause captures, the context the clause runs in and the value of a
+    /// handler declaration, which goes to the parameter at offset `self_off`.
+    cx: u32 = 0
+    gen: u64 = 0
+    env: ?^Frame = null
+    callee_cx: u32 = 0
+    self_: ?[]u8 = null
+    self_off: u32 = 0
+    /// For a call of a function value: the site as worked out for the function called
+    /// before this one.
+    alt: ?^CallSite = null
 }
 
 /// How an argument reaches the callee's storage: `kind` 0 copies the caller's register
@@ -514,7 +529,7 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
         .RetSlot(at, size) => return bc3(.RetSlot, at, size, 0)
         // These need the frame: its locals in memory, its deferred statements, the frames
         // it captures or its handler context, or they run the tree evaluator in it.
-        .Local(_), .SetLocal(_), .LocalAddr(_), .SetLocalSlot(_), .EvalW(_), .EvalSlot(_), .Discard(_), .Stmt(_), .AssignW(_), .Pat(_), .RetEval(_), .DeferHeight(_), .Defer(_), .Unwind(_), .CxSave(_), .CxRestore(_), .WithLit(_), .WithDecl(_) => return Bc(op: .Framed, f: 0, w: 0, a: 0, b: 0, c: 0)
+        .Local(_), .SetLocal(_), .LocalAddr(_), .SetLocalSlot(_), .EvalW(_), .EvalSlot(_), .Discard(_), .Stmt(_), .AssignW(_), .Pat(_), .RetEval(_), .DeferHeight(_), .Defer(_), .Unwind(_), .CxSave(_), .CxRestore(_), .WithLit(_), .WithDecl(_), .ClosureSlot(_) => return Bc(op: .Framed, f: 0, w: 0, a: 0, b: 0, c: 0)
         _ => return bc_free()
     }
 }
@@ -536,10 +551,10 @@ vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs All
         out[k] = bc_of(&code.ins[k], m.word_locals)
         if out[k].op is .Framed and not in_memory(&code.ins[k]) { frameless = false }
     }
-    // Each direct call has a site (`Bc.a` is its index).
+    // Each call and each perform has a site (`Bc.a` is its index).
     nsites: u32 = 0
     for k in 0..code.ins.len {
-        if code.ins[k] is .Call(_) {
+        if code.ins[k] is .Call(_) or code.ins[k] is .Perform(_) or code.ins[k] is .CallValue(_) {
             out[k].a = nsites
             nsites += 1
         }
@@ -549,7 +564,7 @@ vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs All
     code.frameless = frameless
     // The frame a body captures is reached through a register after the others.
     for k in 0..code.ins.len {
-        if code.ins[k] is .UpvarAt(_) or code.ins[k] is .SetUpvarAt(_) {
+        if code.ins[k] is .UpvarAt(_) or code.ins[k] is .SetUpvarAt(_) or code.ins[k] is .UpvarSlot(_) {
             code.env_reg = (code.size / 8).trunc(u32)
             code.size += 8
             break
@@ -578,3 +593,11 @@ vm_assemble :: fn(m: ^const Machine, info: ^const FnInfo, code: ^Code) needs All
         }
     }
 }
+
+/// The instruction `k` places after `p`.
+#inline
+bc_at :: fn(p: [^]Bc, k: usize) -> [^]Bc => (&p[k]).cast([^]Bc)
+
+/// The index of the instruction at `p` in the code that starts at `start`.
+#inline
+bc_pc :: fn(start: [^]Bc, p: [^]Bc) -> usize => (p.addr() - start.addr()) / @size_of(Bc)
