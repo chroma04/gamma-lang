@@ -29,14 +29,15 @@ Versions and what each kind of change means are described in
   backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` above 1 writes these
   units and the runtime, each a translation unit of its own (before: a shared header and
   `n` units).
-- **A faster compiler.** `gamma check` of a large program runs about a third fewer
-  instructions, `gamma fmt` and the C back end a quarter fewer, and the front end's share
-  of a small build is nearly halved. A build split by source file now lets the C compiler
-  inline the smallest functions (accessors, predicates) into the other files that call
-  them, which every large optimized program gains from; tokens and syntax-tree nodes are
-  less than half their former size; and the parser no longer walks every level of
-  operator precedence for an operand that no operator follows, nor tries a pattern where
-  no `:=` follows on the line.
+- **A faster compiler.** On its own sources `gamma check` runs 41% fewer instructions
+  (1.2 s to 0.76 s), `gamma fmt --check` 39% fewer (0.46 s to 0.22 s), `gamma lint` 37%
+  and the C back end 27%; the front end's share of a small build is halved. A build split
+  by source file now lets the C compiler inline the smallest functions (accessors,
+  predicates, the comparisons of small types) into the other files that call them, which
+  every large optimized program gains from; tokens and syntax-tree nodes are less than
+  half their former size; and the parser no longer walks every level of operator
+  precedence for an operand that no operator follows, nor tries a pattern where no `:=`
+  follows on the line.
 - **Faster generated code.** Generated C is compiled with `-fno-stack-protector`: where
   the system's C compiler adds a stack canary to every function that has an array, nearly
   every generated function carried one, because values that are not scalars are byte

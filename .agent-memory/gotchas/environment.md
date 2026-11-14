@@ -123,6 +123,13 @@
 - s64: eight sonnet audit workers used the whole 5-hour quota in ~10 min of parallel work
   (reset ~15 h later). Audit reports were good; have them write reports to files, and
   implement with ≤2–3 workers or yourself.
-- 16 GB / 4 cores: three parallel worktree agents each running tools/test.sh exhaust memory;
-  selfhost tests then fail spuriously ("core module `complex` does not declare `Complex`",
-  killed `gamma test`). Re-run alone before debugging. Max ~2 building agents at once.
+- 16 GB / 4 cores: three parallel worktree agents each running tools/test.sh exhaust memory
+  (killed `gamma test`). Max ~2 building agents at once.
+- "core module `complex` does not declare `Complex`" (seen s50–s71, blamed on memory) was a
+  TEST BUG, fixed in s72: the fmt corpus test rewrote every file of lib/ and
+  tests/conformance in place, and a compiler starting at that moment read an empty file.
+  A spurious failure that names a source file: check whether a test WRITES into the tree
+  (`find lib tests -newermt …`, `strace -f -e trace=openat harness SUITE | grep O_WRONLY`).
+- Timing loops over `gamma run` of a program that reads stdin hang: redirect `</dev/null`.
+- s390x locally: `apt-get update && apt-get install -y gcc-s390x-linux-gnu qemu-user`, then
+  `GAMMA_TEST_LANE=s390x target/bootstrap/harness -j 4 lanes/` (495 tests, 48 s).
