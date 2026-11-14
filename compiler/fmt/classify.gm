@@ -199,9 +199,10 @@ classify :: fn(src: string, toks: []const Token) -> List(Info) needs Alloc {
                     // The line break before it may not be a token (after `{`, say), so look at the text.
                     starts_line := prev is null or all_white(last_line(src[0..lo]))
                     if p is .Dot and starts_line and not starts_with_non_white(src[hi..]) { ta = false }
-                    // Between two integers (`t.0.1`, `1. 5`) keep the source spacing:
-                    // writing `1.` next to `5` would read as a float.
-                    if p is .Dot and prev_kind is .Int(_) and kind_at(toks, i + 1) is .Int(_) {
+                    // After an integer (`t.0.1`, `1. 5`, `0x1. p`, `1. e5`) keep the source
+                    // spacing: `1.` written next to `5`, or to a name that reads as an
+                    // exponent or as hexadecimal digits, would be a float.
+                    if p is .Dot and prev_kind is .Int(_) {
                         tb = infos.items.len > 0 and infos.items[infos.items.len - 1].hi is lo
                         ta = usize(toks[i + 1].span.lo) is hi
                     }

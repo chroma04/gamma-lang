@@ -224,3 +224,7 @@ test "characters outside ASCII count as one column" {
     check("a   :: \"é\"\nbcd :: 2\n", "a   :: \"é\"\nbcd :: 2\n")
     check("x := 1 // c\u{a0}\u{3000}\n", "x := 1 // c\n")
 }
+
+test "a dot after an integer keeps its spacing, so that it does not become a float" {
+    check("f :: fn() {\n    a := 0x1. p\n    b := 1. e5\n    c := t.0.1\n    d := 1 .max(2)\n    e := 0xFF.abs()\n}\n", "f :: fn() {\n    a := 0x1. p\n    b := 1. e5\n    c := t.0.1\n    d := 1 .max(2)\n    e := 0xFF.abs()\n}\n")
+}
