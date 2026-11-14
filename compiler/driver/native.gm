@@ -243,8 +243,13 @@ unit_sources :: fn(b: ^const Built, split: ^const cgen.Split) -> List(string) ne
 PROGRAM_PRELUDE :: "#define GM_RT_SEPARATE 1\n#define GM_RT_PROGRAM 1\n"
 
 /// The flags every build uses: `-std=gnu11`, no warnings, wrapping signed arithmetic and no
-/// type-based alias analysis (Gamma memory is untyped bytes), no floating-point contraction.
-BASE_CFLAGS :: [6]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off")
+/// type-based alias analysis (Gamma memory is untyped bytes), no floating-point contraction,
+/// and no stack protector. Many systems configure their C compiler to guard every function
+/// that has an array with a canary; every value of generated code that is not a scalar is
+/// an array of bytes, so nearly every function would pay for one (6% of the compiler's
+/// instructions), for code whose indexing Checked builds check themselves. `CFLAGS` come
+/// after these flags and can ask for the protector again.
+BASE_CFLAGS :: [7]string("-std=gnu11", "-w", "-Wno-free-nonheap-object", "-fwrapv", "-fno-strict-aliasing", "-ffp-contract=off", "-fno-stack-protector")
 
 /// The flags every build uses on `target`: `BASE_CFLAGS`, and `-pthread` except on Windows,
 /// where the runtime uses the Win32 API and programs need no thread library, and on WASI,

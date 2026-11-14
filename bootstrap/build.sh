@@ -24,7 +24,7 @@ out=$(cd "$out" && pwd)
 # The flags the compiler compiles the units of itself with (BASE_CFLAGS, the optimization
 # of a Checked build and the check of split units in compiler/driver/native.gm), so that
 # the objects are the ones its build would make.
-flags="-std=gnu11 -w -Wno-free-nonheap-object -fwrapv -fno-strict-aliasing -ffp-contract=off -pthread -O2 -Werror=implicit-function-declaration"
+flags="-std=gnu11 -w -Wno-free-nonheap-object -fwrapv -fno-strict-aliasing -ffp-contract=off -fno-stack-protector -pthread -O2 -Werror=implicit-function-declaration"
 
 echo "bootstrap: compiling the seed with $cc"
 # Every unit, the largest first, $jobs at a time; a failure stops the build. Objects of

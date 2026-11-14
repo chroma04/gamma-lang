@@ -29,12 +29,23 @@ Versions and what each kind of change means are described in
   backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` above 1 writes these
   units and the runtime, each a translation unit of its own (before: a shared header and
   `n` units).
-- **A faster compiler.** `gamma check` of a large program runs about a sixth fewer
-  instructions, `gamma fmt` a fifth, and the front end's share of a small build a
-  quarter. A build split by source file now lets the C compiler inline the smallest
-  functions (accessors, predicates) into the other files that call them, which every
-  large optimized program gains from, and tokens and syntax-tree nodes are less than
-  half their former size.
+- **A faster compiler.** `gamma check` of a large program runs about a third fewer
+  instructions, `gamma fmt` and the C back end a quarter fewer, and the front end's share
+  of a small build is nearly halved. A build split by source file now lets the C compiler
+  inline the smallest functions (accessors, predicates) into the other files that call
+  them, which every large optimized program gains from; tokens and syntax-tree nodes are
+  less than half their former size; and the parser no longer walks every level of
+  operator precedence for an operand that no operator follows, nor tries a pattern where
+  no `:=` follows on the line.
+- **Faster generated code.** Generated C is compiled with `-fno-stack-protector`: where
+  the system's C compiler adds a stack canary to every function that has an array, nearly
+  every generated function carried one, because values that are not scalars are byte
+  arrays in C (6% of the compiler's own instructions). `CFLAGS=-fstack-protector-strong`
+  restores it; the C sources of packages are compiled with the compiler's defaults as
+  before. In Debug and Checked builds, small functions whose calls go at most three
+  levels deep (accessors, predicates, small helpers) no longer check the stack
+  themselves: the check of the function that calls them covers them, within the space
+  kept free below every stack's limit (another 6%).
 - **A faster `@hash`.** The structural hash mixes a 64-bit word per step instead of a
   byte: a short string key hashes in about a tenth of the instructions, an integer key in
   a few. Hash maps with the default hashing gain accordingly (the compiler's own type

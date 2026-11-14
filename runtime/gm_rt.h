@@ -731,6 +731,12 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit + (uintptr_t)(n) + sizeof(*(p))) gm_stack_overflow(); } while (0)
 #endif
 #endif
+/* The probe of a function whose calls nest at most three deep, all of them direct calls of
+   functions of the same kind (the code generator decides which are): none if its frame is
+   small. At most four such frames, 1 KiB, then lie below the frame of the function that
+   probed last, in the space kept below the limit (GM_STACK_RESERVE on a fiber). */
+#define GM_SHALLOW_FRAME 256
+#define GM_STACK_CHECK_SHALLOW(p, n) do { if (sizeof(*(p)) + (n) > GM_SHALLOW_FRAME) GM_STACK_CHECK(p, n); } while (0)
 GM_API_VAR GM_TLS gm_fiber *gm_cur_fiber;   /* the running fiber, or NULL on the thread's stack */
 GM_API_VAR GM_TLS uintptr_t gm_stack_limit;        /* of the running stack; 0 if unknown */
 GM_API_VAR GM_TLS uintptr_t gm_thread_stack_limit; /* of the thread's own stack */

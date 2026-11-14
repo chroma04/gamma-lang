@@ -543,7 +543,12 @@ every translation unit of a split build.
 `gamma build` and `gamma run` translate the checked program to C (`compiler/cgen/`) and
 compile it, with the runtime (`runtime/gm_rt.h`, `runtime/gm_rt.c`), using the system C
 compiler (`$CC`, default `cc`, plus `$CFLAGS` and `$LDFLAGS`; `driver/toolchain.gm`) in GNU
-C11 mode, with `-fwrapv` and `-fno-strict-aliasing` (Gamma memory is untyped bytes). The
+C11 mode, with `-fwrapv` and `-fno-strict-aliasing` (Gamma memory is untyped bytes), and
+with `-fno-stack-protector`: where the system's compiler adds a stack canary to every
+function with an array by default, nearly every generated function would get one, since
+every value that is not a scalar is an array of bytes in C. `$CFLAGS` come after these
+options and can turn the protector on again; C sources of a package are compiled with the
+compiler's defaults. The
 compilation target is decided before semantic analysis, because layouts and the `target`
 module depend on it: the default compiler means the host, and any other toolchain is asked
 for its predefined macros (`$CC $CFLAGS -dM -E`). `--target=<triple>` chooses the compiler for

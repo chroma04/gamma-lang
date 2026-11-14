@@ -168,7 +168,13 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         }
     }
     // Running out of stack is checked (§14.1, §18): the thread's or the fiber's.
-    if fg.g.opts.checks and not probe_free(fg.g, def) { fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);") }
+    if fg.g.opts.checks and not probe_free(fg.g, def) {
+        if call_depth(fg.g, f) <= SHALLOW_DEPTH {
+            fg.line("GM_STACK_CHECK_SHALLOW(&F, GM_TEMP_BYTES);")
+        } else {
+            fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);")
+        }
+    }
     // Debug builds keep a backtrace chain (see gm_bt in the runtime).
     pop := ""
     if fg.g.opts.debug {
@@ -261,6 +267,55 @@ probe_free :: fn(g: ^Gen, def: ^const Func) -> bool needs Alloc {
         return calls_probe(g, b)
     }
     return false
+}
+
+/// The deepest nesting of calls (`call_depth`) of a function that needs no stack probe if
+/// its frame is small (`GM_STACK_CHECK_SHALLOW` in the runtime's header): such a function
+/// and what it calls put at most four small frames below the frame of the function that
+/// probed last, which the space kept below the stack's limit has room for. The accessors
+/// and predicates that are called everywhere, and inlined into their callers with their
+/// probes, are of this kind.
+SHALLOW_DEPTH: u32 : 3
+
+/// The mark in `Gen.depth_memo` of a function whose calls have no known depth.
+DEPTH_UNKNOWN: u8 : 255
+
+/// How deep the calls of function `f` nest: 0 if it calls no function, one more than the
+/// deepest of the functions it calls if all its calls are direct calls of functions of a
+/// known depth, and a number above `SHALLOW_DEPTH` otherwise (a recursive function, a
+/// foreign one, one that performs an operation, calls a function value, writes to a sink
+/// or enters a `with`: what runs then is not known here).
+call_depth :: fn(g: ^Gen, f: u32) -> u32 needs Alloc {
+    i := usize(f)
+    while g.depth_memo.items.len <= i { g.depth_memo.push(0)! }
+    known := g.depth_memo.items[i]
+    // A function that is being computed calls itself.
+    if known is 1 { return u32(DEPTH_UNKNOWN) }
+    if known > 1 { return u32(known) - 2 }
+    g.depth_memo.items[i] = 1
+    depth := u32(DEPTH_UNKNOWN)
+    def := g.prog.func(f)
+    if b := def.body and def.kind is not .Foreign(_) { depth = expr_call_depth(g, b) }
+    g.depth_memo.items[i] = if depth > SHALLOW_DEPTH { DEPTH_UNKNOWN } else { depth.trunc(u8) + 2 }
+    return depth
+}
+
+/// The depth of the calls in `e` (see `call_depth`).
+expr_call_depth :: fn(g: ^Gen, e: ^Expr) -> u32 needs Alloc {
+    depth: u32 = 0
+    match e.kind {
+        .Call(callee, _) => match callee {
+            .Fn(c) => { depth = call_depth(g, c) +| 1 }
+            _ => return u32(DEPTH_UNKNOWN)
+        }
+        .Write(_), .WriteDeferred(_), .SoaDeferred(_), .Resume(_), .Cancel(_), .With(_) => return u32(DEPTH_UNKNOWN)
+        .Builtin(op, _) => if op in (.Fiber, .Asm(_), .Sys(_)) { return u32(DEPTH_UNKNOWN) }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) {
+        if depth <= SHALLOW_DEPTH { depth = depth.max(expr_call_depth(g, x)) }
+    })
+    return depth
 }
 
 /// Whether every call in `e` is a direct call of a function that is not `#inline`.
