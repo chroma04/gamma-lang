@@ -777,39 +777,110 @@ vm_push :: fn(m: ^Machine, cur: ^CallRec, pc: usize, site: u32) -> ?^CallRec nee
         s := &cur.code.sites.ptr[usize(site)]
         if s.state is 0 { m.vm_site(cur.code, pc, s) }
         if s.state is 1 {
-            if n := m.vm_push_site(cur, pc, s) { return n }
+            if n := m.vm_push_site(cur, pc, s, cur.cx) { return n }
+        } else if s.state is 3 {
+            cx := cur.cx
+            if s.cx is not cx or s.gen is not m.ctxs.items.ptr[us(cx)].gen { m.vm_perform_site(cur.code, pc, s, cx) }
+            if s.callee is not null {
+                if n := m.vm_push_site(cur, pc, s, s.callee_cx) { return n }
+            }
         }
     }
     return m.vm_push_rec(cur, pc)
 }
 
-/// Works out the site `s` of the direct call at `pc` of `code`.
+/// Works out the site `s` of the direct call or perform at `pc` of `code`.
 vm_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite) needs Alloc {
     s.state = 2
-    .Call(x) := code.ins.ptr[pc] else return ()
-    info := m.fn_info(x.f)
-    callee := info.vm else return ()
-    if not callee.frameless or callee.env_reg is not NO_REG or x.args.len is not info.params.len or info.cost > sema.MAX_FRAME { return () }
-    match x.dst {
+    match code.ins.ptr[pc] {
+        .Call(x) => {
+            info := m.fn_info(x.f)
+            callee := info.vm else return ()
+            if callee.env_reg is not NO_REG or not m.site_fill(s, x.f, info, callee, 0, x.args, x.dst, x.node) { return () }
+            s.state = 1
+        }
+        .Perform(_) => {
+            // Worked out for each context it runs in.
+            s.state = 3
+            s.callee = null
+            s.gen = 0
+        }
+        _ => {}
+    }
+}
+
+/// Works out the site `s` of the perform at `pc` of `code` for context `cx`: the common
+/// call (`s.callee` not `null`) if the clause of the handler runs without a frame. The
+/// clause is most often the same as before, in a new context. A perform whose handler is
+/// of another kind is made the general way from then on (`vm_push_rec`).
+vm_perform_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite, cx: u32) needs Alloc {
+    s.cx = cx
+    s.gen = m.ctxs.items[us(cx)].gen
+    .Perform(x) := code.ins.ptr[pc] else return ()
+    .Perform(p) := x.node.op else return ()
+    k := m.find_ctx(cx, &p.effect_)
+    f := NO_REG
+    if k is not 0 and not m.p.is_ctl(p.effect_.eff, p.op) {
+        node := &m.ctxs.items[us(k)]
+        match node.installed {
+            .Lit(h, ?env, lcx) => {
+                f = m.p.handler_lit(h).clauses[us(p.op)]
+                s.env = env
+                s.callee_cx = lcx
+                s.self_ = null
+            }
+            .Decl(decls, value, outer) => for d in decls {
+                info := m.p.handler_decl(d)
+                if info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0 { continue }
+                f = info.clauses[us(p.op)]
+                s.env = null
+                s.callee_cx = outer
+                s.self_ = value
+                break
+            }
+            .Native(_) => {}
+        }
+    }
+    if f is not NO_REG {
+        if s.callee is not null and s.f is f { return () }
+        info := m.fn_info(f)
+        if callee := info.vm and m.site_fill(s, f, info, callee, if s.self_ is null { 0 } else { 1 }, x.args, x.dst, x.node) { return () }
+    }
+    s.callee = null
+    s.state = 2
+}
+
+/// Fills in the site `s` for a call of `f` (`info`, compiled to `callee`) with arguments
+/// `args` after `first` (0 or 1) for the handler value, whose result goes to `dst`: false if the call is not the common one (its body
+/// needs a frame or one too big, or the result is too big for the record).
+site_fill :: fn(m: ^Machine, s: ^CallSite, f: u32, info: ^FnInfo, callee: ^Code, first: usize, args: []Arg, dst: Dest, n: ^Node) -> bool needs Alloc {
+    if not callee.frameless or args.len + first is not info.params.len or info.cost > sema.MAX_FRAME { return false }
+    match dst {
         .Reg(rr) => {
             s.out_kind = 0
             s.ret_reg = rr
         }
         .None => {
-            if x.node.size > 8 { return () }
+            if n.size > 8 { return false }
             s.out_kind = 0
+            s.ret_reg = NO_REG
         }
         .Slot(at) => {
             s.out_kind = 1
             s.out_at = at
+            s.ret_reg = NO_REG
         }
-        .Ret => { s.out_kind = 2 }
+        .Ret => {
+            s.out_kind = 2
+            s.ret_reg = NO_REG
+        }
     }
+    if first is 1 { s.self_off = info.offsets[us(info.params[0])].trunc(u32) }
     moves := list(Move)
-    for i in 0..x.args.len {
-        p := usize(info.params[i])
+    for i in 0..args.len {
+        p := usize(info.params[i + first])
         off := info.offsets[p].trunc(u32)
-        match x.args[i] {
+        match args[i] {
             .Reg(r) => {
                 // A word parameter kept in the frame's storage is a register there.
                 if m.word_locals and not info.addressed[p] and info.sizes[p] > 0 {
@@ -821,18 +892,20 @@ vm_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite) needs All
             .Slot(at, size) => moves.push(Move(kind: 1, src: at, dst: off, size: size))!
         }
     }
+    if s.moves.len > 0 { free(s.moves) }
     s.moves = moves.items
-    s.f = x.f
-    s.out_size = x.node.size.trunc(u32)
+    s.f = f
+    s.out_size = n.size.trunc(u32)
     s.callee = callee
     s.frame_size = us(info.frame_size)
-    s.state = 1
+    return true
 }
 
-/// `vm_push` for the common call that `s` describes: `null` if it cannot be made now (on
-/// a fiber, with other threads, too deep, or without room in the scratch chunk).
+/// `vm_push` for the common call that `s` describes, its body running in context `cx`:
+/// `null` if it cannot be made now (on a fiber, with other threads, too deep, or without
+/// room in the scratch chunk).
 #inline
-vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) -> ?^CallRec {
+vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite, cx: u32) -> ?^CallRec {
     if m.depth >= MAX_DEPTH or m.fiber_stack is not ~u64(0) or m.threads.list.items.len > 1 { return null }
     callee := s.callee else return null
     sc := &m.scratch
@@ -845,6 +918,7 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) ->
     n := b.cast(^CallRec)
     frame := (&b[head]).cast([^]u64)
     fat(frame, 0)[0..s.frame_size].fill(0)
+    if v := s.self_ { fat(frame, usize(s.self_off))[0..v.len].copy_from(v) }
     regs := cur.regs
     k: usize = 0
     while k < s.moves.len {
@@ -862,8 +936,8 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) ->
     n.code = callee
     n.regs = frame
     n.fr = null
-    n.cx = cur.cx
-    n.base_cx = cur.cx
+    n.cx = cx
+    n.base_cx = cx
     n.pc = 0
     n.f = s.f
     n.ret_reg = s.ret_reg
@@ -873,6 +947,7 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite) ->
     n.dst = if s.out_kind is 0 { n.buf[0..usize(s.out_size)] } else if s.out_kind is 1 { fat(regs, usize(s.out_at))[0..usize(s.out_size)] } else { cur.dst }
     sc.top = top +% head +% s.frame_size
     vm_consts(callee, frame)
+    if e := s.env and callee.env_reg is not NO_REG { frame[usize(callee.env_reg)] = u64(e.addr()) }
     m.depth +%= 1
     cur.pc = pc
     return n
