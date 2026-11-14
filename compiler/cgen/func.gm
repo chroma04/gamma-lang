@@ -174,6 +174,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         } else {
             fg.line("GM_STACK_CHECK(&F, GM_TEMP_BYTES);")
         }
+        fg.probe_at = fg.out.items.len - "GM_TEMP_BYTES);\n".len
     }
     // Debug builds keep a backtrace chain (see gm_bt in the runtime).
     pop := ""
@@ -205,6 +206,11 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         // Built straight in the caller's destination: the body has no `defer`.
         ct := fg.g.ty.cty(def.ret)
         try fg.expr_into(body, str.format("(*({} *)gm_out)", ct)!, .Out)
+        fg.line("goto gm_fdone;")
+    } else if out_ret and body.ty is def.ret and fg.reads_place(body) {
+        // A large place (`=> p.toks[p.pos]`) is copied straight to the caller's destination.
+        a := try fg.place_addr(body)
+        fg.linef("memmove(gm_out, {}, {});", a, fg.g.ty.size(body.ty))
         fg.line("goto gm_fdone;")
     } else if not fg.g.ty.is_never(body.ty) {
         try fg.expr_into(body, "F.ret", .Fresh)
@@ -239,21 +245,30 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     // The epilogue copies the result (and a plain function converts it).
     if not out_ret { fg.temp_bytes += 2 * fg.g.ty.size(def.ret) }
     fg.end_lines()
-    text := replacen1(fg.out.items, "GM_TEMP_BYTES", str.format("{}u", fg.temp_bytes)!)
+    // The text goes to `g.bodies` in pieces: the header line with its attributes, and the
+    // body with the size of the temporaries in the stack check.
+    text := fg.out.items
+    nl := str.find(text, "\n") else text.len
+    header: string = text[0..nl]
     if not fg.g.opts.debug and fg.counter <= SMALL_FN_NAMES and def.hints.inline is null {
-        text = replacen1(text, "static __attribute__", "static inline __attribute__")
+        header = replacen1(header, "static __attribute__", "static inline __attribute__")
     }
     if fg.names > HUGE_FN_NAMES {
-        text = replacen1(text, "static __attribute__", "static GM_HUGE_FN __attribute__")
+        header = replacen1(header, "static __attribute__", "static GM_HUGE_FN __attribute__")
     }
     // `optnone` conflicts with `always_inline` (an `#inline` hint, which such a function
     // will hardly carry).
-    header := text
-    if nl := str.find(text, "\n") { header = text[0..nl] }
     if fg.names > LONG_FN_NAMES and header.starts_with("static ") and not str.contains(header, "always_inline") {
-        text = replacen1(text, "static ", "static GM_LONG_FN ")
+        header = replacen1(header, "static ", "static GM_LONG_FN ")
     }
-    g.bodies.extend(text)!
+    g.bodies.extend(header)!
+    if at := fg.probe_at {
+        g.bodies.extend(text[nl..at])!
+        g.bodies.write("{}u", fg.temp_bytes)!
+        g.bodies.extend(text[at + "GM_TEMP_BYTES".len..])!
+    } else {
+        g.bodies.extend(text[nl..])!
+    }
 }
 
 /// Whether `def` needs no stack probe of its own: an `#inline` function of an optimized
@@ -430,9 +445,22 @@ end_lines :: fn(fg: ^FnGen) needs Alloc {
     if fg.g.opts.debug_info { fg.out.write("{}\n", LINE_RESET)! }
 }
 
+/// Appends the indentation of the current line.
+indent_line :: fn(fg: ^FnGen) needs Alloc {
+    n := fg.indent * 4
+    while n > INDENT.len {
+        fg.out.extend(INDENT)!
+        n -= INDENT.len
+    }
+    fg.out.extend(INDENT[0..n])!
+}
+
+/// Spaces for `indent_line`, eight levels at a time.
+INDENT :: "                                "
+
 /// Emits `s` as a line at the current indentation.
 line :: fn(fg: ^FnGen, s: string) needs Alloc {
-    for _ in 0..fg.indent { fg.out.extend("    ")! }
+    fg.indent_line()
     fg.out.extend(s)!
     fg.out.push('\n')!
 }
@@ -440,7 +468,7 @@ line :: fn(fg: ^FnGen, s: string) needs Alloc {
 /// Emits the formatted text (as `str.format` builds it) as a line at the current
 /// indentation.
 linef :: fn(A: type, fg: ^FnGen, template :: string, args: ..A) needs Alloc {
-    for _ in 0..fg.indent { fg.out.extend("    ")! }
+    fg.indent_line()
     // As `List(u8).write`, written out: one function per template instead of two.
     out := &fg.out
     @write(fn(bytes) { out.extend(bytes)! }, template, ..args)
@@ -795,6 +823,8 @@ builds_in_place :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
     match e.kind {
         .Call(_), .Array(_) => return true
         .Aggregate(_) => return fg.g.ty.bits_layout(e.ty) is null
+        .Coerce(kind, _) => return kind is .WrapOptional or kind is .WrapOk
+        .MakeErr(_), .Variant(_) => return true
         .Block(b) => {
             for s in b.stmts {
                 if s is .Defer(_, _) { return false }
@@ -906,6 +936,9 @@ expr_into :: fn(fg: ^FnGen, e: ^Expr, dest: string, obs: Observed) -> Unsup!() n
                 }
             }
         }
+        .Coerce(kind, x) => try fg.wrap_into(e.ty, kind is .WrapOptional, false, x, dest, obs)
+        .MakeErr(x) => try fg.wrap_into(e.ty, false, true, x, dest, obs)
+        .Variant(vx) => try fg.variant_into(e.ty, &vx, dest, obs)
         .Block(b) => {
             scope := fg.block_scope()
             fg.scopes.push(scope)!
@@ -918,6 +951,69 @@ expr_into :: fn(fg: ^FnGen, e: ^Expr, dest: string, obs: Observed) -> Unsup!() n
         }
         _ => @unreachable()
     }
+}
+
+/// Stores in `dest` a value of the tagged type `t` (an optional, a result or a union):
+/// `tag` is the statement that writes the tag (of `tag_len` bytes at `tag_off`) and `x`
+/// the payload at `pay_off`. The payload goes straight to its place in `dest` (built there
+/// where `dest` is `Fresh`, copied once from a place, or stored once computed), then the
+/// tag and the zero padding.
+tagged_into :: fn(fg: ^FnGen, t: Ty, tag: string, tag_off: u64, tag_len: u64, x: ?^Expr, pay_off: u64, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
+    tag_part := BlobPart(off: tag_off, len: tag_len)
+    px := x else {
+        fg.clear_outside(t, dest, [1]BlobPart(tag_part)[..])
+        fg.line(tag)
+        return ()
+    }
+    parts := [2]BlobPart(BlobPart(off: pay_off, len: fg.g.ty.size(px.ty)), tag_part)
+    c := fg.g.ty.cty(px.ty)
+    if obs is .Fresh and fg.nests_in_place(px, obs) {
+        fg.clear_outside(t, dest, parts[..])
+        fg.line(tag)
+        try fg.expr_into(px, str.format("(*({} *)((uint8_t *)&{} + {}))", c, dest, pay_off)!, obs)
+        return ()
+    }
+    if fg.g.ty.by_ref(px.ty) and fg.reads_place(px) {
+        // The address is computed before `dest` is written.
+        a := try fg.place_addr(px)
+        fg.temp_bytes += 8
+        p := fg.fresh_tmp()
+        fg.linef("const uint8_t *{} = {};", p, a)
+        fg.clear_outside(t, dest, parts[..])
+        fg.line(tag)
+        fg.linef("memmove((uint8_t *)&{} + {}, {}, {});", dest, pay_off, p, fg.g.ty.size(px.ty))
+        return ()
+    }
+    v := try fg.expr(px)
+    fg.clear_outside(t, dest, parts[..])
+    fg.line(tag)
+    fg.linef("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, pay_off, v)
+    return ()
+}
+
+/// `tagged_into` for an optional (`some`) or a result: the tag is a byte.
+wrap_into :: fn(fg: ^FnGen, t: Ty, some: bool, err: bool, x: ^Expr, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
+    offs := fg.g.ty.offsets(t)
+    pay_off: u64 = if some { 0 } else { offs[1] }
+    tag_off := if some { offs[1] } else { offs[0] }
+    tag := str.format("((uint8_t *)&{})[{}] = {};", dest, tag_off, if some or err { 1 } else { 0 })!
+    return fg.tagged_into(t, tag, tag_off, 1, x, pay_off, dest, obs)
+}
+
+/// `tagged_into` for variant `vx` of the union type `t`.
+variant_into :: fn(fg: ^FnGen, t: Ty, vx: ^const tir.VariantExpr, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
+    def := fg.adt_def(t)
+    .Union(tag_ty, variants) := def.kind else @unreachable()
+    variant := variants[usize(vx.variant)]
+    offs := fg.g.ty.offsets(t)
+    tag_val := fg.int_lit(tag_ty, variant.tag)
+    tag := str.format("GM_ST({}, (uint8_t *)&{} + {}, {});", fg.g.ty.cty(tag_ty), dest, offs[0], tag_val)!
+    x: ?^Expr = vx.payload
+    if variant.payload is null {
+        if px := x { _ = try fg.expr(px) }
+        x = null
+    }
+    return fg.tagged_into(t, tag, offs[0], fg.g.ty.size(tag_ty), x, offs[1], dest, obs)
 }
 
 /// True if element `x` of an aggregate is built straight in its place in the aggregate

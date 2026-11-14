@@ -2,6 +2,7 @@
 
 arena :: import "std/arena"
 diag :: import "../diag"
+hash_map :: import "std/collections/hash_map"
 source :: import "../source"
 str :: import "std/str"
 syntax :: import "../syntax"
@@ -72,13 +73,25 @@ Prev :: union {
     Other
 }
 
+/// The answers of `would_merge` for the pairs of token texts seen so far: a file repeats
+/// few pairs many times, and each new answer lexes the pair.
+MergeCache :: hash_map.HashMap((string, string), bool)
+
 /// True if writing two tokens next to each other would lex differently.
-would_merge :: fn(a, b: string) -> bool needs Alloc {
+would_merge :: fn(a, b: string, cache: ^MergeCache) -> bool needs Alloc {
     if a.len is 0 or b.len is 0 { return false }
     x := a[a.len - 1]
     y := b[0]
     glue :: "()[]{},;\"'`"
     if glue.index_of(x) is not null or glue.index_of(y) is not null { return false }
+    if known := cache.get((a, b)) { return known }
+    merges := lexes_apart(a, b)
+    cache.put((a, b), merges)!
+    return merges
+}
+
+/// True unless `a` and `b`, written next to each other, lex as exactly these two tokens.
+lexes_apart :: fn(a, b: string) -> bool needs Alloc {
     scratch := arena.new()
     defer scratch.deinit()
     with scratch.allocator() {
@@ -238,6 +251,8 @@ layout :: fn(src: string, toks: []const Token) -> List(u8) needs Alloc {
     }
     scan_gap(src[prev_end..], &items)
 
+    merges: MergeCache = hash_map.hash_map((string, string), bool)
+    defer merges.deinit()
     out := list(u8)
     if bom { out.extend("\u{feff}")! }
     line_open := false
@@ -384,7 +399,7 @@ layout :: fn(src: string, toks: []const Token) -> List(u8) needs Alloc {
                         }
                         // Words that touch in the source (`t.1u8`) stay together.
                         glued := gap.len is 0 and is_word(pinfo.text[pinfo.text.len - 1]) and is_word(info.text[0])
-                        space = not glued and (not tight or would_merge(pinfo.text, info.text) or merges_with_tail(out.items, info.text))
+                        space = not glued and (not tight or would_merge(pinfo.text, info.text, &merges) or merges_with_tail(out.items, info.text))
                     }
                     .Other => { space = not info.tb }
                 }

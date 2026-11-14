@@ -632,9 +632,188 @@ builtin :: fn(m: ^Machine, op: tir.Builtin, args: []Expr, e: ^Expr) -> Flow!Valu
             }
             return .Int(m.wrap(r, at))
         }
+        .Hash => {
+            .Int(seed) := vals[1] else return !m.unsupported(span, "this hash seed")
+            h := 0xcbf29ce484222325 ~ seed.trunc(u64)
+            try m.hash_value(x, at, &h, span)
+            return .Int(u128(h))
+        }
         other => return !m.unsupported(span, str.format("the builtin `{}` at compile time", other)!)
     }
 }
+
+// ---------------------------------------------------------------------------------
+// Hashing
+// ---------------------------------------------------------------------------------
+
+// The structural hash (§16.8) computes what the C back end's helpers and the
+// interpreter (`interp/builtins.gm`) compute, value for value: 64-bit words mixed in
+// order. A pointer has no address at compile time, so only a null one is hashed.
+
+/// Mixes the word `x` into the hash `h`.
+hash_word :: fn(h: ^u64, x: u64) {
+    p := u128(h^ ~ x) *% 0x9E3779B97F4A7C15
+    h^ = p.trunc(u64) ~ (p >> 64).trunc(u64)
+}
+
+/// Mixes `bytes` into `h` as little-endian words of eight, the last one of the bytes that
+/// are left.
+hash_byte_words :: fn(h: ^u64, bytes: []const u8) {
+    i: usize = 0
+    while i < bytes.len {
+        w: u64 = 0
+        for k in 0..(bytes.len - i).min(8) { w |= u64(bytes[i + k]) << u64(k * 8) }
+        hash_word(h, w)
+        i += 8
+    }
+}
+
+/// The bytes of `n` elements of type `u8` read by `elem`, or `null` if the elements are
+/// of another type.
+u8_elems :: fn(m: ^Machine, et: Ty, n: u64, elem: fn(k: u64) -> Value) -> ?[]u8 needs Alloc {
+    if not (m.s.tys.kind(et) is .Int(false, 8)) { return null }
+    out := list(u8)
+    for k in 0..n {
+        .Int(b) := elem(k) else return null
+        out.push(b.trunc(u8))!
+    }
+    return out.items
+}
+
+/// The bits of `v`, a value of `t` that is a `#bits` struct or the type of one of its
+/// fields, as they are stored: fields from the least significant bit in declaration
+/// order, an enum field as its tag.
+bits_of :: fn(m: ^Machine, v: Value, t: Ty) -> ?u128 needs Load {
+    match v {
+        .Bool(b) => return if b { 1 } else { 0 }
+        .Int(raw) => return raw & mask(m.s.field_bits(t))
+        .Variant(index, _) => {
+            tag := m.variant_tag(t, index) else return null
+            return tag.bits128() & mask(m.s.field_bits(t))
+        }
+        .Agg(a) => {
+            bl := m.s.bits_layout(t) else return null
+            r: u128 = 0
+            for i, f in enumerate(bl.fields) {
+                x := m.bits_of(a.elems[i], f.ty) else return null
+                r |= (x & mask(f.width)) << u128(f.off)
+            }
+            return r
+        }
+        _ => return null
+    }
+}
+
+/// Mixes the value `v` of type `t` into `h`.
+hash_value :: fn(m: ^Machine, v: Value, t: Ty, h: ^u64, span: source.Span) -> Flow!() needs Load {
+    tys := &m.s.tys
+    match tys.kind(t) {
+        .Int(_, _), .Usize, .Isize => {
+            .Int(raw) := v else return !m.unsupported(span, "`@hash` of this value")
+            info := m.int_info(t)
+            // The value, sign-extended: the low word, and the high one of a wider type.
+            x := raw & mask(info.bits)
+            if info.signed and info.bits < 128 and (x >> u128(info.bits - 1)) & 1 is 1 { x |= ~mask(info.bits) }
+            hash_word(h, x.trunc(u64))
+            if info.bits > 64 { hash_word(h, (x >> 64).trunc(u64)) }
+            return ()
+        }
+        .Float(_) => {
+            .Float(f) := v else return !m.unsupported(span, "`@hash` of this value")
+            x := if f is 0.0 { 0.0 } else { f }
+            hash_word(h, x.bits(u64))
+            return ()
+        }
+        .Bool => {
+            .Bool(b) := v else return !m.unsupported(span, "`@hash` of this value")
+            hash_word(h, if b { 1 } else { 0 })
+            return ()
+        }
+        .Never => return ()
+        .Optional(inner) => {
+            if m.s.is_nullable_pointer(inner) {
+                if v is .Null {
+                    hash_word(h, 0)
+                    return ()
+                }
+                return !m.trap(span, NO_POINTER_HASH)
+            }
+            match v {
+                .Some(x) => {
+                    hash_word(h, 1)
+                    return m.hash_value(x^, inner, h, span)
+                }
+                .Null => {
+                    hash_word(h, 0)
+                    return ()
+                }
+                _ => return !m.unsupported(span, "`@hash` of this value")
+            }
+        }
+        .Result(err, ok) => match v {
+            .Ok(x) => {
+                hash_word(h, 0)
+                return m.hash_value(x^, ok, h, span)
+            }
+            .Err(x) => {
+                hash_word(h, 1)
+                return m.hash_value(x^, err, h, span)
+            }
+            _ => return !m.unsupported(span, "`@hash` of this value")
+        }
+        .Slice(_, et) => {
+            .Slice(sl) := v else return !m.unsupported(span, "`@hash` of this value")
+            hash_word(h, sl.len)
+            if bytes := m.u8_elems(et, sl.len, fn(k) => m.load(offset(sl.start, k))) {
+                hash_byte_words(h, bytes)
+                return ()
+            }
+            for k in 0..sl.len { try m.hash_value(m.load(offset(sl.start, k)), et, h, span) }
+            return ()
+        }
+        .Array(_, et, _) => {
+            .Agg(a) := v else return !m.unsupported(span, "`@hash` of this value")
+            if bytes := m.u8_elems(et, u64(a.elems.len), fn(k) => a.elems[k.trunc(usize)]) {
+                hash_byte_words(h, bytes)
+                return ()
+            }
+            for x in a.elems { try m.hash_value(x, et, h, span) }
+            return ()
+        }
+        .Tuple(elems, _) => {
+            .Agg(a) := v else return !m.unsupported(span, "`@hash` of this value")
+            for i, x in enumerate(a.elems) { try m.hash_value(x, elems[i], h, span) }
+            return ()
+        }
+        .Adt(id, _) => match m.s.adts.items[usize(id)].kind {
+            .Struct(def) => {
+                // A `#bits` struct is hashed as the integer that holds it.
+                if bt := def.bits {
+                    raw := m.bits_of(v, t) else return !m.unsupported(span, "`@hash` of this value")
+                    return m.hash_value(.Int(raw), bt, h, span)
+                }
+                .Agg(a) := v else return !m.unsupported(span, "`@hash` of this value")
+                for i, x in enumerate(a.elems) { try m.hash_value(x, def.fields[i].ty, h, span) }
+                return ()
+            }
+            .Union(_, variants) => {
+                .Variant(index, ?payload) := v else return !m.unsupported(span, "`@hash` of this value")
+                hash_word(h, u64(index))
+                if pt := variants[usize(index)].payload {
+                    p := payload else return !m.unsupported(span, "`@hash` of this value")
+                    return m.hash_value(p^, pt, h, span)
+                }
+                return ()
+            }
+            _ => return !m.unsupported(span, "`@hash` of this type at compile time")
+        }
+        .Ptr(_, _), .ManyPtr(_, _), .Rawptr, .FnPtr(_), .Fn(_) => return !m.trap(span, NO_POINTER_HASH)
+        _ => return !m.unsupported(span, "`@hash` of this type at compile time")
+    }
+}
+
+/// Why a constant cannot hash a pointer.
+NO_POINTER_HASH :: "a pointer has no address at compile time: `@hash` of a value that holds one is not a constant (§16.8)"
 
 /// The nearest `f64` to `i`.
 big_float :: fn(m: ^const Machine, i: bigint.Int) -> f64 needs Alloc => ratio.from_int(i).to_f64()

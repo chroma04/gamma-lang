@@ -97,6 +97,9 @@ pub FnGen :: struct {
     pub outlined: bool = false
     /// The bytes of the temporaries declared so far, for the stack check.
     pub temp_bytes: u64 = 0
+    /// Where in `out` the stack check's `GM_TEMP_BYTES` stands, which the size of the
+    /// temporaries replaces once the body is generated.
+    pub probe_at: ?usize = null
     /// For each parameter, by position: whether it is read in place, through its address
     /// `aN` (see `borrowed_params`).
     pub borrowed: []bool

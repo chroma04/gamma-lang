@@ -1,0 +1,67 @@
+// `@hash` is a constant expression (§16.8, §20.3): a hash computed at compile time is the
+// one the program computes when it runs.
+
+S :: struct { a: u8, b: i64, name: string }
+
+U :: union {
+    A
+    B: i32
+    C: string
+}
+
+Color :: union(u8) {
+    Red
+    Green
+    Blue
+}
+
+P :: #bits(u16) struct { lo: u4, mid: u8, hi: u4 }
+
+result :: fn(fine: bool) -> u8!string {
+    if fine { return "fine" }
+    return !3
+}
+
+h :: fn(T: type, x: T) -> u64 where Eq(T) => @hash(@black_box(x), 7)
+
+SMALL :: @hash(u8(200), 7)
+NEGATIVE :: @hash(i8(-3), 7)
+WIDE :: @hash(i128(-1) << 70, 7)
+HALF :: @hash(f32(1.5), 7)
+MINUS_ZERO :: @hash(f64(-0.0), 7)
+YES :: @hash(true, 7)
+EMPTY :: @hash("", 7)
+LONG :: @hash("the quick brown fox jumps", 7)
+BYTES :: @hash([11]u8(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11), 7)
+SHORTS :: @hash([3]i16(-1, 0, 1), 7)
+TUPLE :: @hash((u8(1), "abc", -2.5), 7)
+STRUCT :: @hash(S(a: 9, b: -9, name: "nine"), 7)
+UNIT_VARIANT :: @hash(U.A, 7)
+INT_VARIANT :: @hash(U.B(-5), 7)
+STRING_VARIANT :: @hash(U.C("payload"), 7)
+ENUM :: @hash(Color.Blue, 7)
+NONE :: @hash(?u16(null), 7)
+SOME :: @hash(?u16(77), 7)
+OK :: @hash(result(true), 7)
+ERR :: @hash(result(false), 7)
+NULL_POINTER :: @hash(?^const u8(null), 7)
+PACKED :: @hash(P(lo: 1, mid: 2, hi: 3), 7)
+SEEDED :: @hash(u32(5), 99)
+
+main :: fn() needs Out {
+    print("{} {} {}\n", SMALL is h(u8(200)), NEGATIVE is h(i8(-3)), WIDE is h(i128(-1) << 70))
+    print("{} {} {}\n", HALF is h(f32(1.5)), MINUS_ZERO is h(f64(0.0)), YES is h(true))
+    print("{} {}\n", EMPTY is h(""), LONG is h("the quick brown fox jumps"))
+    print("{} {}\n", BYTES is h([11]u8(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)), SHORTS is h([3]i16(-1, 0, 1)))
+    print("{} {}\n", TUPLE is h((u8(1), "abc", -2.5)), STRUCT is h(S(a: 9, b: -9, name: "nine")))
+    print("{} {} {}\n", UNIT_VARIANT is h(U.A), INT_VARIANT is h(U.B(-5)), STRING_VARIANT is h(U.C("payload")))
+    print("{}\n", ENUM is h(Color.Blue))
+    none: ?u16 = null
+    some: ?u16 = 77
+    fine: u8!string = "fine"
+    bad: u8!string = !3
+    print("{} {} {} {}\n", NONE is h(none), SOME is h(some), OK is h(fine), ERR is h(bad))
+    null_ptr: ?^const u8 = null
+    print("{} {}\n", NULL_POINTER is h(null_ptr), PACKED is h(P(lo: 1, mid: 2, hi: 3)))
+    print("{} {:x}\n", SEEDED is @hash(@black_box(u32(5)), 99), SMALL)
+}

@@ -190,13 +190,7 @@ plain_args :: fn(fg: ^FnGen, vals: []const string, tys: []const Ty) -> List(stri
 gamma_arg :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
     if not fg.g.ty.by_ref(t) { return v }
     // Temporaries and the places `call` passes are lvalues already.
-    is_temp := v.len > 1 and v[0] is 't'
-    if is_temp {
-        for b in v[1..] {
-            if b < '0' or b > '9' { is_temp = false }
-        }
-    }
-    n := if is_temp or v.starts_with("(*(") { v } else { fg.tmp(t, v) }
+    n := if is_temp(v) or v.starts_with("(*(") { v } else { fg.tmp(t, v) }
     return str.format("&{}", n)!
 }
 

@@ -47,6 +47,20 @@ Versions and what each kind of change means are described in
   levels deep (accessors, predicates, small helpers) no longer check the stack
   themselves: the check of the function that calls them covers them, within the space
   kept free below every stack's limit (another 6%).
+- **Fewer copies in generated code.** Large values (structs, optionals, results, unions
+  bigger than 16 bytes) are copied less: a value inside a temporary (the payload of a
+  `try`, a pattern binding, a field of a call's result) is used where it is instead of
+  copied out first; `some`, `ok`, errors and union variants are built straight in their
+  destination (a variable, the result slot, the caller's destination); and a function
+  whose body reads a large value from a place copies it straight to its caller. `@write`
+  and `print` pass a string argument to the sink without formatting it, and an `@write`
+  to a function literal calls it directly. `List.push` and `List.extend` are inlined
+  where they are called, and an arena allocation takes a short path. The compiler's own
+  `gamma check` runs 13% fewer instructions (0.82 s to 0.66 s) and its C back end 21%
+  fewer.
+- **A faster `gamma fmt`.** Whether two tokens written together would lex as one is
+  remembered per file instead of lexed anew at every place; with the faster lexer and
+  lists, `gamma fmt --check` runs 21% fewer instructions on the compiler's sources. `str.find` checks the first byte before comparing the rest.
 - **A faster `@hash`.** The structural hash mixes a 64-bit word per step instead of a
   byte: a short string key hashes in about a tenth of the instructions, an integer key in
   a few. Hash maps with the default hashing gain accordingly (the compiler's own type
@@ -106,6 +120,11 @@ Versions and what each kind of change means are described in
   recent block), and allocates and copies only if that fails.
 
 ### Fixed
+
+- **`@hash` in constants.** `@hash` is a constant expression, as §16.8 says: a hash computed
+  at compile time is the one the program computes for the same value when it runs, so a
+  table built at compile time can be searched at run time. A value that holds a pointer
+  cannot be hashed at compile time (a null optional pointer can) and is reported as such.
 
 - **The language server reports a message header without a valid `Content-Length`** as a
   parse error and goes on reading. A header block that lacked the field was taken for a

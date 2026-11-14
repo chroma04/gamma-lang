@@ -20,15 +20,80 @@ BlobPart :: struct {
 
 ptr_bytes :: fn(fg: ^FnGen) -> u64 => fg.g.ty.lay.target.ptr_bytes
 
-/// An addressable copy of `v` (of type `t`); returns its `uint8_t *` address.
+/// Whether `v` names a temporary (`t` and a number). A temporary holds the value of one
+/// expression and is not assigned once that value is computed, so it can stand for the
+/// value wherever the value is read: its address needs no copy.
+is_temp :: fn(v: string) -> bool {
+    if v.len < 2 or v[0] is not 't' { return false }
+    for b in v[1..] {
+        if b < '0' or b > '9' { return false }
+    }
+    return true
+}
+
+/// The `uint8_t *` address of value `v` (of type `t`): of `v` itself if it is a
+/// temporary or a view of one (see `load`), else of a copy.
 addr_of :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs sema.Load {
+    if is_temp(v) { return str.format("((uint8_t *)&{})", v)! }
+    if a := view_addr(v) { return a }
     n := fg.tmp(t, v)
     return str.format("((uint8_t *)&{})", n)!
 }
 
+/// A piece of a temporary: its name and the offset of the piece.
+TempPiece :: struct {
+    name: string
+    off: u64
+}
+
+/// The temporary and offset that address `a` points at, if it is the address of a
+/// temporary (`((uint8_t *)&t5)`) plus constant offsets, as `addr_of` and the offsets
+/// of fields and payloads write it: `((((uint8_t *)&t5) + 8) + 16)` is `t5` at 24.
+temp_piece :: fn(a: string) -> ?TempPiece {
+    base := "((uint8_t *)&"
+    if a.starts_with(base) and a.len > base.len and a[a.len - 1] is ')' {
+        n := a[base.len..a.len - 1]
+        if is_temp(n) { return TempPiece(name: n, off: 0) }
+        return null
+    }
+    // `(X + K)`: the offset is the digits after the last ` + `.
+    if a.len < 2 or a[0] is not '(' or a[a.len - 1] is not ')' { return null }
+    inner := a[1..a.len - 1]
+    i := inner.len
+    while i > 0 and inner[i - 1] >= '0' and inner[i - 1] <= '9' { i -= 1 }
+    if i is inner.len or i < 3 or not (inner[i - 3..i] is " + ") { return null }
+    k: u64 = 0
+    for c in inner[i..] { k = k * 10 + u64(c - '0') }
+    p := temp_piece(inner[0..i - 3]) else return null
+    return TempPiece(name: p.name, off: p.off + k)
+}
+
+/// The address of the piece of a temporary that `v` is a view of (see `load`).
+view_addr :: fn(v: string) -> ?string {
+    // `(*(C *)(((uint8_t *)&tN) + K))`
+    if not v.starts_with("(*(") { return null }
+    mark := " *)(((uint8_t *)&t"
+    i: usize = 3
+    while i + mark.len <= v.len and not (v[i..i + mark.len] is mark) { i += 1 }
+    if i + mark.len > v.len { return null }
+    a := v[i + 3..v.len - 1]
+    if temp_piece(a) is null { return null }
+    return a
+}
+
 /// Loads a value of type `t` from address `a`.
+///
+/// A large value inside a temporary is not copied: the result is a view of it, an lvalue
+/// `(*(C *)(((uint8_t *)&t5) + 8))` (a temporary is not assigned once computed, so the
+/// view reads what a copy would hold). The offsets of a temporary's pieces follow its
+/// layout, so the view is aligned for `C`.
 pub load :: fn(fg: ^FnGen, t: Ty, a: string) -> string needs sema.Load {
     c := fg.g.ty.cty(t)
+    if fg.g.ty.by_ref(t) {
+        if p := temp_piece(a) {
+            if p.off % fg.g.ty.align(t) is 0 { return str.format("(*({} *)(((uint8_t *)&{}) + {}))", c, p.name, p.off)! }
+        }
+    }
     ld := str.format("GM_LD({}, {})", c, a)!
     // Padding bits of a narrow integer in memory are unspecified; ignore them.
     if ii := fg.int_info(t) {
@@ -52,6 +117,15 @@ blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
 /// writes less (an optimized build runs a few percent faster that way) and, under Fil-C,
 /// avoids `memset`, a call into its runtime.
 blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema.Load {
+    n := fg.tmp_uninit(t)
+    fg.clear_outside(t, n, parts)
+    return n
+}
+
+/// Clears the bytes of `dest`, a C lvalue of type `t`, outside `parts`, as `blob_over`
+/// does for its temporary; `dest` is cleared whole where that is cheaper, so the parts
+/// are stored after this.
+clear_outside :: fn(fg: ^FnGen, t: Ty, dest: string, parts: []const BlobPart) needs sema.Load {
     size := fg.g.ty.size(t).trunc(usize)
     covered := list(bool)
     for _ in 0..size { covered.push(false)! }
@@ -67,7 +141,10 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
     for c in covered.items {
         if not c { gaps += 1 }
     }
-    if gaps > 32 { return fg.blob(t) }
+    if gaps > 32 {
+        fg.linef("memset(&{}, 0, sizeof {});", dest, dest)
+        return
+    }
     stores := list((at: usize, len: usize))
     i: usize = 0
     while i < size {
@@ -93,10 +170,11 @@ blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema
         stores.push((at: i, len: k))!
         i += k
     }
-    if fg.g.opts.debug and stores.items.len > 1 and size <= MAX_MEMSET_CLEAR and not fg.g.ty.lay.target.filc { return fg.blob(t) }
-    n := fg.tmp_uninit(t)
-    for st in stores.items { fg.linef("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", st.len * 8, n, st.at) }
-    return n
+    if fg.g.opts.debug and stores.items.len > 1 and size <= MAX_MEMSET_CLEAR and not fg.g.ty.lay.target.filc {
+        fg.linef("memset(&{}, 0, sizeof {});", dest, dest)
+        return
+    }
+    for st in stores.items { fg.linef("GM_ST(uint{}_t, (uint8_t *)&{} + {}, 0);", st.len * 8, dest, st.at) }
 }
 
 /// The size up to which `blob_over` clears a value with several gaps whole.
@@ -382,7 +460,7 @@ return_expr :: fn(fg: ^FnGen, e: ^Expr, levels: u32, value: ^Expr) -> Unsup!stri
         return fg.zero(t)
     }
     // A large place is copied straight to the caller's destination.
-    if levels is 0 and fg.g.ty.by_ref(value.ty) and fg.g.ty.by_ref(fg.def.ret) and not fg.outlined and fg.no_defers() and (value.kind is .Local(_) or value.kind is .Upvar(_) or value.kind is .Deref(_)) {
+    if levels is 0 and fg.g.ty.by_ref(value.ty) and fg.g.ty.by_ref(fg.def.ret) and not fg.outlined and fg.no_defers() and fg.reads_place(value) {
         addr := try fg.place_addr(value)
         fg.linef("memmove(gm_out, {}, {});", addr, fg.g.ty.size(value.ty))
         fg.jump("gm_fdone", null)
@@ -727,16 +805,43 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
         }
         fs := fg.fn_sink_stub(str_ty)
         ff := fg.fn_format_stub(fs)
+        // A function literal is called directly, where the C compiler can inline it.
+        direct: ?string = null
+        if .Fn(sx) := w.sink {
+            if .Closure(f) := sx.kind { direct = fg.g.fn_name(f) }
+        }
         for i in 0..w.pieces.len {
             if w.pieces[i].len > 0 {
-                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(w.pieces[i]), w.pieces[i].len)!)
+                if d := direct {
+                    sl := fg.make_slice(str_ty, fg.g.static_bytes(w.pieces[i]), str.format("{}", w.pieces[i].len)!)
+                    fg.linef("{}({}.env, {}, NULL, {});", d, c, ccx, sl)
+                    fg.check_unwind()
+                } else {
+                    fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(w.pieces[i]), w.pieces[i].len)!)
+                }
             }
             if i < w.args.len {
                 spec := "NULL"
                 if sp := w.specs.get(i) {
                     if not tir.is_default_spec(&sp) { spec = str.format("&{}", spec_literal(sp))! }
                 }
-                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {}, {})", ff, c, c, ccx, fg.g.ty.desc(w.args[i].ty), vals.items[i], spec)!)
+                a := vals.items[i]
+                if spec is "NULL" and w.args[i].ty is str_ty and direct is not null {
+                    // A string is written as it is, unless it is empty.
+                    p := fg.ptr_bytes()
+                    fg.linef("if (GM_LD(uintptr_t, {} + {}) != 0) {{", a, p)
+                    fg.indent += 1
+                    fg.linef("{}({}.env, {}, NULL, GM_LD({}, {}));", direct?, c, ccx, fg.g.ty.cty(str_ty), a)
+                    fg.check_unwind()
+                    fg.indent -= 1
+                    fg.line("}")
+                } else if spec is "NULL" and w.args[i].ty is str_ty {
+                    // A string is written as it is, unless it is empty.
+                    p := fg.ptr_bytes()
+                    fg.unwind_call(str.format("(GM_LD(uintptr_t, {} + {}) != 0 && {}({}.code, {}.env, {}, GM_LD(void *, {}), GM_LD(uintptr_t, {} + {})))", a, p, fs, c, c, ccx, a, a, p)!)
+                } else {
+                    fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {}, {})", ff, c, c, ccx, fg.g.ty.desc(w.args[i].ty), a, spec)!)
+                }
             }
         }
         return fg.unit()
@@ -762,6 +867,11 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
                     fg.linef("gm_buf {} = {{0}};", b)
                     fg.linef("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)
                     try fg.emit_buf(w.sink, sink_v, b, e)
+                } else if w.args[i].ty is str_ty {
+                    // A string is written as it is, unless it is empty.
+                    a := vals.items[i]
+                    p := fg.ptr_bytes()
+                    fg.unwind_call(str.format("(GM_LD(uintptr_t, {} + {}) != 0 && {}({}, GM_LD(void *, {}), GM_LD(uintptr_t, {} + {}), {}))", a, p, ps, fg.cx, a, a, p, at)!)
                 } else {
                     fg.unwind_call(str.format("{}({}, {}, {}, {})", pf, fg.cx, d, vals.items[i], at)!)
                 }
