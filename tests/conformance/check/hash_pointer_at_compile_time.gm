@@ -1,0 +1,5 @@
+//! stage: check
+// A pointer has no address at compile time, so a constant cannot hash one (§16.8).
+TEXT :: "abc"
+H :: @hash(TEXT.ptr, 1) //~ ERROR a pointer has no address at compile time
+main :: fn() {}

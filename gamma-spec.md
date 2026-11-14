@@ -2429,7 +2429,7 @@ This is how a stored function pointer can be polymorphic in its effects without 
 
 > if `a is b`, then `@hash(a, s) is @hash(b, s)` for every seed `s`.
 
-The algorithm is implementation-defined, need not be stable across builds or targets, and must give good distribution (it is meant for hash tables, not for persistence or security). It is constant-evaluable for values that contain no pointers or function pointers. Because it is defined by the compiler from the type's structure, it never needs to be written by hand and cannot be overridden; a container that needs a different notion of equality takes its own `hash` and `eq` functions (§16.4).
+The algorithm is implementation-defined, need not be stable across builds or targets, and must give good distribution (it is meant for hash tables, not for persistence or security). It is constant-evaluable for values that contain no pointers or function pointers (a null optional pointer contains none), and a hash computed at compile time is the one the program computes for the same value and seed when it runs, so a table built at compile time can be searched at run time; hashing a value that holds a pointer at compile time is an error. Because it is defined by the compiler from the type's structure, it never needs to be written by hand and cannot be overridden; a container that needs a different notion of equality takes its own `hash` and `eq` functions (§16.4).
 
 ### 16.9 No user-defined traits
 

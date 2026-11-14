@@ -119,6 +119,11 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **`@hash` in constants.** `@hash` is a constant expression, as §16.8 says: a hash computed
+  at compile time is the one the program computes for the same value when it runs, so a
+  table built at compile time can be searched at run time. A value that holds a pointer
+  cannot be hashed at compile time (a null optional pointer can) and is reported as such.
+
 - **The language server reports a message header without a valid `Content-Length`** as a
   parse error and goes on reading. A header block that lacked the field was taken for a
   stray blank line, and the messages after it were read out of step.

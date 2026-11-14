@@ -110,3 +110,4 @@
 - s50 (decisions/054): §6.4 row const-adding coercions inside `?`/`!`; §7.12 array join to `[]const T` + "joins" used by §7.7/§8.4/§10.4; §8.4 tuple iterated at its join; §10.4 fallback joins; §2.4/§2.8/A/B.3 `needs`/`handler`/`foreign` contextual (newline after `needs` no longer suppressed); §21.6.1 numbered placeholders + `q`; §3.5/§4.6/§7.10/§11.8 local struct/union; §21.7/§12.9/§19.6 Fs/Proc ops, pub handles, Env on threads.
 - s57: §19.4 on WebAssembly an `#export` is a module export, callable whether or not `main` ran (decisions/059).
 - s60: §5.9 tuple expressions take spreads (argument-list rules; named replacement keeps type); §11.4 intro + `..` sentence; A grammar `tuple_expr` uses `arg` (decisions/061).
+- s73: §16.8 const `@hash` equals the run-time hash; hashing a value holding a pointer at compile time is an error (null optional pointer allowed).

@@ -33,9 +33,7 @@ Numbers are stable ids (gaps are fixed entries). Checked 2026-10-16 (#50–53 fi
   each under Fil-C; `&key` in std maps escapes).
 
 ## Gaps against the spec
-60. `@hash` is not constant-evaluable ("gamma cannot check the builtin `.Hash` at compile
-    time yet") although §16.8 says it is for values without pointers. The interpreter has
-    the algorithm (interp/builtins.gm hash_val); the evaluator (compiler/eval) lacks it.
+(#60 const `@hash` fixed s73: eval/ops.gm hash_value mirrors interp hash_val.)
 
 ## Behaviour differences (allowed, documented)
 28. `print("{}", bytes)` of []u8 prints raw bytes (by §21.6.1); no numeric display option.

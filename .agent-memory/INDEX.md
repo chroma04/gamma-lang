@@ -5,7 +5,8 @@
   fmt −11%, emit-c −12%. cgen: temps never reassigned → addr_of/`load` use temps and VIEWS
   `(*(C *)(((uint8_t *)&tN) + K))` without copies; wrap/err/variant built in place
   (`tagged_into`); place-bodied fns memmove to gm_out; gen_body no text copies; @write
-  string args skip the formatter. fmt: would_merge memo. Seed refreshed. 069 lists next.
+  string args skip the formatter. fmt: would_merge memo. Seed refreshed. Const `@hash`
+  (eval hash_value; 3 copies of the algorithm). 069 lists next.
 - s72 (#127): PERF ROUND 8 (068; measuring recipe there): check −41%. Shared inline small
   fns across units (SHARED_SMALL_BYTES), smaller Token/Expr, 64-bit `@hash` (cgen + interp
   agree; hash_structure pins values), parser fast paths, -fno-stack-protector, shallow probes.

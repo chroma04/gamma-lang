@@ -38,6 +38,13 @@ fast path + gen_body without copies + std find first-byte 2.559/1.745/6.195.
 8. fmt/layout.gm: `would_merge` memoized per layout call (`MergeCache` keyed by the two
    token texts); was 22% of fmt (161k lexer runs on joined pairs).
 
+## Also in s73: `@hash` at compile time
+eval/ops.gm `hash_value` (+ `bits_of` packs #bits structs; `hash_word`/`hash_byte_words`)
+mirrors interp/builtins.gm hash_val and cgen's gm_mix64: any change to the algorithm must
+change all three (test run/hash_at_compile_time.gm compares const vs run time on both
+lanes; run/hash_structure.gm pins values). Pointers/fn values at compile time = trap
+NO_POINTER_HASH (spec §16.8 now says so, and that const = run-time hash).
+
 ## Not done / next candidates
 - `regrow_raw` 1.2M calls in check (many small lists start at cap 4), chunk_alloc 2M.
 - emit-c: still ~12M `extend` calls from @write closures (`fn(bytes) { out.extend(..) }`);
