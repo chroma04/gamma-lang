@@ -149,7 +149,7 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     // Literals typed by a parameter are checked against each instantiation (§16.1).
     if .Int(v) := e.kind and had_param {
         if s.tys.kind(t) is .Float(_) {
-            e.kind = .UntypedFloat(ratio.from_int(v))
+            e.kind = tir.untyped_float(ratio.from_int(v))
         } else if not s.int_fits(v, t) {
             s.error(span, str.format("the literal {} does not fit in `{}` (in an instantiation used here)", sema.show_int(v), s.show(t))!)
         }
@@ -205,11 +205,7 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
         .FnRef(c) => { e.kind = .FnRef(mono_fn(s, mc, c)) }
         .Closure(c) => { e.kind = .Closure(mono_fn(s, mc, c)) }
         .HandlerRef(h) => { e.kind = .HandlerRef(mono_handler(s, mc, h)) }
-        .Write(w) => if .Perform(eref, op) := w.sink {
-            w2 := w
-            w2.sink = .Perform(subst_eref(s, &eref, mc.map), op)
-            e.kind = .Write(w2)
-        }
+        .Write(w) => if .Perform(eref, op) := w.sink { w.sink = .Perform(subst_eref(s, &eref, mc.map), op) }
         _ => {}
     }
     tir.for_each_child(e, fn(x: ^Expr) { mono_expr(s, mc, x) })

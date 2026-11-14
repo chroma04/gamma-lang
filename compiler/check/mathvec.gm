@@ -48,7 +48,7 @@ imaginary_literal :: fn(cx: ^FnCx, l: ^const syntax.FloatLit, span: source.Span)
         ty = cx.literal_var(.Complex)
     }
     if cx.infer.complex is null and not tys.is_error(ty) { _ = cx.literal_var(.Complex) }
-    return tir.mk(ty, .UntypedComplex(re: ratio.zero(), im: l.value), span)
+    return tir.mk(ty, tir.untyped_complex(ratio.zero(), l.value), span)
 }
 
 /// The type of a fresh variable for an untyped literal.
@@ -115,7 +115,7 @@ promote_real_constant :: fn(cx: ^FnCx, v: ^Expr, agg: Ty, elem: Ty) -> ?^Expr ne
     k := cx.infer.var_kind(&cx.s.tys, v.ty)
     if k is null or k is .Complex { return null }
     if cx.infer.unify(&cx.s.tys, v.ty, elem) is !_ { return null }
-    zero := tir.mk(elem, .UntypedFloat(ratio.zero()), v.span)
+    zero := tir.mk(elem, tir.untyped_float(ratio.zero()), v.span)
     parts := list(Expr)
     parts.push(v^)!
     parts.push(zero^)!

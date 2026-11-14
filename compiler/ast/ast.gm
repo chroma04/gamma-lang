@@ -195,8 +195,8 @@ pub Expr :: struct {
 
 pub ExprKind :: union {
     // Literals and names.
-    Int: syntax.IntLit
-    Float: syntax.FloatLit
+    Int: ^const syntax.IntLit
+    Float: ^const syntax.FloatLit
     Str: syntax.StrLit
     Bool: bool
     Null

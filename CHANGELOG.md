@@ -29,6 +29,12 @@ Versions and what each kind of change means are described in
   backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` above 1 writes these
   units and the runtime, each a translation unit of its own (before: a shared header and
   `n` units).
+- **A faster compiler.** `gamma check` of a large program runs about a sixth fewer
+  instructions, `gamma fmt` a fifth, and the front end's share of a small build a
+  quarter. A build split by source file now lets the C compiler inline the smallest
+  functions (accessors, predicates) into the other files that call them, which every
+  large optimized program gains from, and tokens and syntax-tree nodes are less than
+  half their former size.
 - **A faster build from the seed.** `bootstrap/build.sh` takes under a minute on four
   cores (about two and a half before). The seed is now the units a build of the compiler
   compiles, the script compiles them as that build would, and the seed's compiler takes

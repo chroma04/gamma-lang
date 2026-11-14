@@ -234,8 +234,8 @@ pub TokenKind :: union {
     Underscore
     Keyword: Keyword
     /// An integer literal, including character literals.
-    Int: IntLit
-    Float: FloatLit
+    Int: ^const IntLit
+    Float: ^const FloatLit
     Str: StrLit
     /// `@name`; the payload is `name`.
     Intrinsic: string

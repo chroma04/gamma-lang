@@ -351,7 +351,7 @@ expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         .Trap(message) => return fg.trap(e, message)
         .WriteDeferred(_) => return !unsupported(e.span, "a template in a generic function that was not instantiated")
         .SoaDeferred(_) => return !unsupported(e.span, "a `#soa` operation in a generic function that was not instantiated")
-        .Write(w) => return fg.write(e, &w)
+        .Write(w) => return fg.write(e, w)
         .SizeOf(_), .TypeIs(_), .IntLimit(_), .TypeName(_), .UntypedFloat(_), .UntypedComplex(_), .ValueParam(_) => return !unsupported(e.span, "an expression left over from generic checking")
     }
 }

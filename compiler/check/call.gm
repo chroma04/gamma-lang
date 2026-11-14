@@ -582,7 +582,7 @@ expect_eq :: fn(cx: ^FnCx, args: []const ast.Arg, span: source.Span) -> ^Expr ne
     vals := list(Expr)
     vals.push(tir.mk(rt, .Local(y), span)^)!
     vals.push(tir.mk(lt, .Local(x), span)^)!
-    write := tir.mk(tys.unit(), .Write(tir.WriteExpr(sink: .Perform(eref, 0), pieces: pieces.items, specs: specs.items, args: vals.items)), span)
+    write := tir.mk(tys.unit(), .Write(new(tir.WriteExpr(sink: .Perform(eref, 0), pieces: pieces.items, specs: specs.items, args: vals.items))!), span)
     msg := tir.mk(tys.string_ty(), .Str("expectation failed: the values differ"), span)
     loc := cx.source_location(span)
     stop_args := list(Expr)

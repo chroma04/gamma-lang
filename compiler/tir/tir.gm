@@ -27,9 +27,9 @@ pub ExprKind :: union {
     /// A float constant of float type `ty`, already rounded to that type.
     Float: f64
     /// A float literal whose type is still being inferred (or a type parameter).
-    UntypedFloat: ratio.Rat
+    UntypedFloat: ^const ratio.Rat
     /// An imaginary or complex constant whose type is still being inferred: its parts.
-    UntypedComplex: (re: ratio.Rat, im: ratio.Rat)
+    UntypedComplex: ^const (re: ratio.Rat, im: ratio.Rat)
     Bool: bool
     Str: []const u8
     CStr: []const u8
@@ -110,10 +110,10 @@ pub ExprKind :: union {
     Cancel: ^Expr
     /// Formatted output (`print`): the template's literal pieces, a spec per placeholder
     /// and the values.
-    Write: WriteExpr
+    Write: ^WriteExpr
     /// A `Write` whose template is a compile-time `string` parameter of a generic
     /// function: each instance splits the template and its arguments (§16.1).
-    WriteDeferred: WriteDeferredExpr
+    WriteDeferred: ^WriteDeferredExpr
     /// An operation on a `#soa` value of a type parameter's elements, expanded in each
     /// instance, where the element's fields are known (§5.6.4). The operands are variables,
     /// places through a variable, or constants, so they may be used repeatedly.
@@ -556,6 +556,12 @@ pub FnDef :: struct {
 
 /// A new expression in the arena.
 pub mk :: fn(ty: Ty, kind: ExprKind, span: source.Span) -> ^Expr needs Alloc => new(Expr(ty: ty, kind: kind, span: span))!
+
+/// The untyped float constant `r`.
+pub untyped_float :: fn(r: ratio.Rat) -> ExprKind needs Alloc => .UntypedFloat(new(r)!)
+
+/// The untyped complex constant with the parts `re` and `im`.
+pub untyped_complex :: fn(re, im: ratio.Rat) -> ExprKind needs Alloc => .UntypedComplex(new((re: re, im: im))!)
 
 /// Calls `f` on each direct sub-expression, including those inside statements and
 /// conditions.

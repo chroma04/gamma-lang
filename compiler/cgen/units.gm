@@ -13,7 +13,9 @@
 // program's own C code. Small `static` helpers of the shared header stay `static`, one
 // copy per unit. The `#inline` functions go to the shared text as C99 inline definitions,
 // so that every unit can inline them, and unit 0 declares them `extern`, which makes its
-// copy the one external definition: a function's address is the same in every unit.
+// copy the one external definition: a function's address is the same in every unit. A
+// split by source file does the same for the smallest functions of an optimized build,
+// in the units that call them.
 
 arena :: import "std/arena"
 hash_map :: import "std/collections/hash_map"
@@ -103,7 +105,7 @@ split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
     defer inline_names.deinit()
     inline_defs := list(u8)
     for item in all {
-        if d := inline_definition(item) {
+        if d := inline_definition(item, 0) {
             inline_defs.extend(d.def)!
             inline_names.put(d.name, ())!
         }
@@ -138,7 +140,7 @@ split_shared :: fn(parts: ^const Parts, n: usize) -> ?Split needs Alloc {
     }
     items := list(string)
     for item in all {
-        if inline_definition(item) is not null { continue }
+        if inline_definition(item, 0) is not null { continue }
         f := function(item) else return null
         decls.extend(f.decl)!
         decls.push('\n')!
@@ -184,14 +186,32 @@ c_fn_name :: fn(line: string) -> ?string {
     return null
 }
 
-/// Whether the first line of a function definition is of an `#inline` function. (The small
-/// functions an optimized build marks `inline` are external: sharing their thousands of
-/// definitions would multiply the work of every unit.)
+/// Whether the first line of a function definition is of an `#inline` function.
 is_inline :: fn(line: string) -> bool => line.starts_with("static ") and str.contains(line, "__attribute__((always_inline)) inline ")
 
+/// How the definition of a small function of an optimized build starts (`func.gm`).
+SMALL_FN :: "static inline __attribute__((aligned(4))) "
+
+/// The most C text (in bytes, without `#line` directives) of a small function that a split
+/// by file shares with the units that call it, as it shares the `#inline` functions: the
+/// accessors and predicates that are called from every file of a program, which cost more
+/// to call than to run. Sharing every small function would multiply the work of each unit;
+/// at this size a build of the compiler takes a tenth longer and the compiler it makes
+/// runs 6% fewer instructions.
+SHARED_SMALL_BYTES :: 1600
+
+/// The bytes of `item` outside its `#line` directives.
+code_bytes :: fn(item: string) -> usize {
+    n: usize = 0
+    for line in str.lines(item) {
+        if not line.starts_with("#") { n += line.len + 1 }
+    }
+    return n
+}
+
 /// Function definition `item` as an inline definition (without `static`) and its name, if
-/// it is of an inline function.
-inline_definition :: fn(item: string) -> ?(def: string, name: string) needs Alloc {
+/// it is of an `#inline` function, or of a small function of at most `small_bytes`.
+inline_definition :: fn(item: string, small_bytes: usize) -> ?(def: string, name: string) needs Alloc {
     start: usize = 0
     while start < item.len and item[start] is '#' {
         end := str.find(item[start..item.len], "\n") else break
@@ -200,7 +220,9 @@ inline_definition :: fn(item: string) -> ?(def: string, name: string) needs Allo
     text := item[start..item.len]
     first_end := str.find(text, "\n") else text.len
     first := text[0..first_end]
-    if not is_inline(first) { return null }
+    if not is_inline(first) {
+        if small_bytes is 0 or not first.starts_with(SMALL_FN) or code_bytes(item) > small_bytes { return null }
+    }
     name := c_fn_name(first) else return null
     return (def: str.format("{}{}", item[0..start], text["static ".len..text.len])!, name: name)
 }
@@ -496,9 +518,11 @@ RANK_INLINE: u8 : 4
 
 /// `parts` split into units by the source files of the functions: unit 0 holds the entry
 /// code; then up to `DATA_GROUPS` units of data, one unit per source file, which also makes
-/// the external definitions of its inline functions, and one for the code of no file. Each unit declares only what it uses, in
-/// an order that does not depend on the rest of the program, so that an edit changes only
-/// the units it concerns. `null` if the code has a shape the split does not handle.
+/// the external definitions of its inline functions, and one for the code of no file. The
+/// inline functions are the `#inline` ones and, in an optimized build, the smallest of the
+/// others (`SHARED_SMALL_BYTES`). Each unit declares only what it uses, in an order that
+/// does not depend on the rest of the program, so that an edit changes only the units it
+/// concerns. `null` if the code has a shape the split does not handle.
 pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
     if parts.owned.len is 0 and parts.funcs.len > 0 { return null }
     decls := list(Decl)
@@ -514,7 +538,7 @@ pub split_by_file :: fn(parts: ^const Parts) -> ?Split needs Alloc {
         fns := list((name: string, def: string))
         all := items_of(o.text) else return null
         for item in all {
-            if d := inline_definition(item) {
+            if d := inline_definition(item, SHARED_SMALL_BYTES) {
                 inline_names.put(d.name, bodies.items.len)!
                 decls.push(Decl(text: line_reset(d.def), name: d.name, refs: gm_names(d.def), rank: RANK_INLINE))!
                 continue
@@ -926,6 +950,41 @@ test "a split by file declares in each unit what it uses" {
         expect(str.contains(ub, "extern const gm_type gm_tyb;\n"))
         expect(str.contains(ub, "\nint32_t gm_f_g_y(gm_tb b) {\n"))
         expect(not str.contains(ub, "gm_ta") and not str.contains(ub, "gm_fr_f_x") and not str.contains(ub, "gm_sa"))
+    }
+}
+
+test "a split by file shares the small functions of an optimized build" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        small := "static inline __attribute__((aligned(4))) int gm_f_s_w(int a) {\n    return a + 1;\n}\n"
+        big := list(u8)
+        big.extend("static inline __attribute__((aligned(4))) int gm_f_l_v(int a) {\n")!
+        for _ in 0..SHARED_SMALL_BYTES / 16 + 1 { big.extend("    a = a * 3 + 1;\n")! }
+        big.extend("    return a;\n}\n")!
+        owned := list(Owned)
+        owned.push(Owned(owner: "a.gm", text: "static int gm_f_f_x(int a) {\n    return gm_f_s_w(a) + gm_f_l_v(a);\n}\n"))!
+        owned.push(Owned(owner: "b.gm", text: str.format("{}{}", small, big.items)!))!
+        p := Parts(
+            protos: "static int gm_f_f_x(int a);\nstatic __attribute__((aligned(4))) int gm_f_s_w(int a);\nstatic __attribute__((aligned(4))) int gm_f_l_v(int a);\n",
+            tail: "int main(void) { return gm_f_f_x(0); }\n",
+            owned: owned.items,
+        )
+        s := split_by_file(&p) else {
+            expect(false)
+            return
+        }
+        ua := s.units[s.units.len - 2]
+        ub := s.units[s.units.len - 1]
+        // The unit of the caller holds the small function's inline definition and
+        // declares the large one.
+        expect(str.contains(ua, "\ninline __attribute__((aligned(4))) int gm_f_s_w(int a) {\n    return a + 1;\n}\n"))
+        expect(str.contains(ua, "__attribute__((aligned(4))) int gm_f_l_v(int a);\n"))
+        expect(not str.contains(ua, "a = a * 3 + 1;"))
+        // The unit of their file makes the external definition of both.
+        expect(str.contains(ub, "extern __attribute__((aligned(4))) int gm_f_s_w(int a);\n"))
+        expect(str.contains(ub, "inline __attribute__((aligned(4))) int gm_f_l_v(int a) {\n"))
+        expect(not str.contains(ub, "extern __attribute__((aligned(4))) int gm_f_l_v"))
     }
 }
 

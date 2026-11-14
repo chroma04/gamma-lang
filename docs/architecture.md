@@ -726,8 +726,12 @@ How the runtime is linked depends on the build mode:
   it can be inlined only within its unit. An `#inline` function keeps its hint:
   its definition goes, as a C99 inline definition, to every unit that calls it,
   and the unit of its own file declares it `extern`, which makes that copy the one
-  external definition, so its address is the same in all of them. (Sharing the thousands
-  of small functions this way would make every unit compile them all.) With
+  external definition, so its address is the same in all of them. The smallest of
+  the other functions (up to `SHARED_SMALL_BYTES` of C, 1,600) are shared the same
+  way: these are the accessors and predicates that every file of a program calls,
+  and a call of one costs more than its body. Sharing all of the small functions
+  would make every unit compile thousands of them; at this size the units of the
+  compiler grow by a tenth and the compiler runs 6% fewer instructions. With
   `-g`, the debugger views (`views.gm`) are declarations like the types, named
   `gm_dv<number>_<kind>` with a number hashed from the type's text, and every
   function definition ends by mapping the lines after it back to the C file, since
