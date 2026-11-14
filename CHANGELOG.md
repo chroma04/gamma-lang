@@ -47,6 +47,18 @@ Versions and what each kind of change means are described in
   levels deep (accessors, predicates, small helpers) no longer check the stack
   themselves: the check of the function that calls them covers them, within the space
   kept free below every stack's limit (another 6%).
+- **Fewer copies in generated code.** Large values (structs, optionals, results, unions
+  bigger than 16 bytes) are copied less: a value inside a temporary (the payload of a
+  `try`, a pattern binding, a field of a call's result) is used where it is instead of
+  copied out first; `some`, `ok`, errors and union variants are built straight in their
+  destination (a variable, the result slot, the caller's destination); and a function
+  whose body reads a large value from a place copies it straight to its caller. The
+  compiler's own `gamma check` runs 8% fewer instructions (0.83 s to 0.71 s) and its C back
+  end 12% fewer. `@write` and `print` pass a string argument to the sink without
+  formatting it.
+- **A faster `gamma fmt`.** Whether two tokens written together would lex as one is
+  remembered per file instead of lexed anew at every place (11% fewer instructions on the
+  compiler's sources). `str.find` checks the first byte before comparing the rest.
 - **A faster `@hash`.** The structural hash mixes a 64-bit word per step instead of a
   byte: a short string key hashes in about a tenth of the instructions, an integer key in
   a few. Hash maps with the default hashing gain accordingly (the compiler's own type

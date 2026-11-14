@@ -57,10 +57,12 @@ matches_at :: fn(s, needle: string, at: usize) -> bool {
 /// `needle` is found at index 0.
 pub find :: fn(s, needle: string) -> ?usize {
     if needle.len > s.len { return null }
+    if needle.len is 0 { return 0 }
+    first := needle[0]
     last := s.len - needle.len
     i: usize = 0
     while i <= last {
-        if matches_at(s, needle, i) { return i }
+        if s[i] is first and matches_at(s, needle, i) { return i }
         i += 1
     }
     return null
