@@ -376,6 +376,33 @@ restore :: fn(p: ^Parser, s: Snapshot) {
     p.restr = s.restr
 }
 
+/// Whether a `:=` follows on this line outside brackets, as it does after the pattern of a
+/// binding (a pattern holds no line break and no brace): where none does, a pattern need
+/// not be tried.
+binds_ahead :: fn(p: ^const Parser) -> bool {
+    depth: usize = 0
+    i := p.pos
+    while i < p.toks.len {
+        match p.toks[i].kind {
+            .Punct(x) => match x {
+                .LParen, .LBracket => { depth += 1 }
+                .RParen, .RBracket => {
+                    if depth is 0 { return false }
+                    depth -= 1
+                }
+                .LBrace, .RBrace => if depth is 0 { return false }
+                .ColonEq => if depth is 0 { return true }
+                _ => {}
+            }
+            .Newline => if depth is 0 { return false }
+            .Eof => return false
+            _ => {}
+        }
+        i += 1
+    }
+    return false
+}
+
 /// Runs `f` with diagnostics suppressed. If it succeeds without raising any error,
 /// returns its value; otherwise rolls back and returns `null`.
 speculate :: fn(T: type, p: ^Parser, f: fn() -> Abort!T needs Alloc) -> ?T needs Alloc {

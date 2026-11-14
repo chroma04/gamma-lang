@@ -12,41 +12,73 @@ pub Keyword :: union {
     Struct, True, Try, Union, Using, When, While, With
 }
 
-/// The keyword spelled `s`, if it is one.
-keyword_from :: fn(s: string) -> ?Keyword => match s {
-    "and" => .And
-    "break" => .Break
-    "cancel" => .Cancel
-    "continue" => .Continue
-    "ctl" => .Ctl
-    "defer" => .Defer
-    "effect" => .Effect
-    "else" => .Else
-    "errdefer" => .Errdefer
-    "esc" => .Esc
-    "false" => .False
-    "fn" => .Fn
-    "for" => .For
-    "if" => .If
-    "import" => .Import
-    "in" => .In
-    "is" => .Is
-    "match" => .Match
-    "not" => .Not
-    "null" => .Null
-    "or" => .Or
-    "pub" => .Pub
-    "resume" => .Resume
-    "return" => .Return
-    "struct" => .Struct
-    "true" => .True
-    "try" => .Try
-    "union" => .Union
-    "using" => .Using
-    "when" => .When
-    "while" => .While
-    "with" => .With
-    _ => null
+/// The keyword spelled `s`, if it is one. Every word of a source text is looked up here,
+/// and few are keywords: the first letter leaves at most four to compare with.
+keyword_from :: fn(s: string) -> ?Keyword {
+    if s.len < 2 or s.len > 8 { return null }
+    match s[0] {
+        'a' => if s is "and" { return .And }
+        'b' => if s is "break" { return .Break }
+        'c' => return match s {
+            "cancel" => .Cancel
+            "continue" => .Continue
+            "ctl" => .Ctl
+            _ => null
+        }
+        'd' => if s is "defer" { return .Defer }
+        'e' => return match s {
+            "effect" => .Effect
+            "else" => .Else
+            "errdefer" => .Errdefer
+            "esc" => .Esc
+            _ => null
+        }
+        'f' => return match s {
+            "false" => .False
+            "fn" => .Fn
+            "for" => .For
+            _ => null
+        }
+        'i' => return match s {
+            "if" => .If
+            "import" => .Import
+            "in" => .In
+            "is" => .Is
+            _ => null
+        }
+        'm' => if s is "match" { return .Match }
+        'n' => return match s {
+            "not" => .Not
+            "null" => .Null
+            _ => null
+        }
+        'o' => if s is "or" { return .Or }
+        'p' => if s is "pub" { return .Pub }
+        'r' => return match s {
+            "resume" => .Resume
+            "return" => .Return
+            _ => null
+        }
+        's' => if s is "struct" { return .Struct }
+        't' => return match s {
+            "true" => .True
+            "try" => .Try
+            _ => null
+        }
+        'u' => return match s {
+            "union" => .Union
+            "using" => .Using
+            _ => null
+        }
+        'w' => return match s {
+            "when" => .When
+            "while" => .While
+            "with" => .With
+            _ => null
+        }
+        _ => {}
+    }
+    return null
 }
 
 pub keyword_text :: fn(k: Keyword) -> string => match k {
@@ -291,4 +323,17 @@ pub describe :: fn(k: TokenKind) -> string needs Alloc => match k {
     .Punct(p) => str.format("`{}`", punct_text(p))!
     .Newline => "newline"
     .Eof => "end of file"
+}
+
+test "every keyword is found by its spelling, and nothing else is" {
+    for k in KEYWORD_TEXTS {
+        kw := keyword_from(k) else {
+            expect(false)
+            continue
+        }
+        expect_eq(keyword_text(kw), k)
+    }
+    for word in [_]string("", "a", "an", "andy", "An", "iff", "i", "returns", "errdefers", "x", "whil", "zzz") {
+        expect(keyword_from(word) is null)
+    }
 }
