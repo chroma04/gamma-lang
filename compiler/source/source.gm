@@ -64,12 +64,16 @@ pub add :: fn(sm: ^SourceMap, path_as_given, text: string) -> FileId needs Alloc
         path = name.items
     }
     starts := list(u32)
+    // Source lines are rarely shorter than 16 bytes on average.
+    starts.reserve(text.len / 16 + 1)!
     starts.push(0)!
-    ascii := true
+    // The bytes or-ed together: the text is ASCII if the top bit stays clear.
+    bits: u8 = 0
     for i, c in enumerate(text) {
+        bits |= c
         if c is '\n' { starts.push((i + 1).trunc(u32))! }
-        if c >= 0x80 { ascii = false }
     }
+    ascii := bits < 0x80
     sm.files.push(SourceFile(path: path, text: text, line_starts: starts, ascii: ascii))!
     return (sm.files.items.len - 1).trunc(u32)
 }

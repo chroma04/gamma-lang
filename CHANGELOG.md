@@ -52,13 +52,15 @@ Versions and what each kind of change means are described in
   `try`, a pattern binding, a field of a call's result) is used where it is instead of
   copied out first; `some`, `ok`, errors and union variants are built straight in their
   destination (a variable, the result slot, the caller's destination); and a function
-  whose body reads a large value from a place copies it straight to its caller. The
-  compiler's own `gamma check` runs 8% fewer instructions (0.83 s to 0.71 s) and its C back
-  end 12% fewer. `@write` and `print` pass a string argument to the sink without
-  formatting it.
+  whose body reads a large value from a place copies it straight to its caller. `@write`
+  and `print` pass a string argument to the sink without formatting it, and an `@write`
+  to a function literal calls it directly. `List.push` and `List.extend` are inlined
+  where they are called, and an arena allocation takes a short path. The compiler's own
+  `gamma check` runs 13% fewer instructions (0.82 s to 0.66 s) and its C back end 21%
+  fewer.
 - **A faster `gamma fmt`.** Whether two tokens written together would lex as one is
-  remembered per file instead of lexed anew at every place (11% fewer instructions on the
-  compiler's sources). `str.find` checks the first byte before comparing the rest.
+  remembered per file instead of lexed anew at every place; with the faster lexer and
+  lists, `gamma fmt --check` runs 21% fewer instructions on the compiler's sources. `str.find` checks the first byte before comparing the rest.
 - **A faster `@hash`.** The structural hash mixes a 64-bit word per step instead of a
   byte: a short string key hashes in about a tenth of the instructions, an integer key in
   a few. Hash maps with the default hashing gain accordingly (the compiler's own type

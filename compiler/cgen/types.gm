@@ -749,6 +749,7 @@ assert_message :: fn(text: string) -> string needs Alloc {
 /// A C string literal holding `bytes` (escaped so any byte is safe).
 pub c_string :: fn(bytes: []const u8) -> string needs Alloc {
     out := list(u8)
+    out.reserve(bytes.len + 2)!
     out.push('"')!
     for b in bytes {
         match b {

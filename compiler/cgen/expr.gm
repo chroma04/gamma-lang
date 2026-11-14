@@ -805,9 +805,20 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
         }
         fs := fg.fn_sink_stub(str_ty)
         ff := fg.fn_format_stub(fs)
+        // A function literal is called directly, where the C compiler can inline it.
+        direct: ?string = null
+        if .Fn(sx) := w.sink {
+            if .Closure(f) := sx.kind { direct = fg.g.fn_name(f) }
+        }
         for i in 0..w.pieces.len {
             if w.pieces[i].len > 0 {
-                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(w.pieces[i]), w.pieces[i].len)!)
+                if d := direct {
+                    sl := fg.make_slice(str_ty, fg.g.static_bytes(w.pieces[i]), str.format("{}", w.pieces[i].len)!)
+                    fg.linef("{}({}.env, {}, NULL, {});", d, c, ccx, sl)
+                    fg.check_unwind()
+                } else {
+                    fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(w.pieces[i]), w.pieces[i].len)!)
+                }
             }
             if i < w.args.len {
                 spec := "NULL"
@@ -815,7 +826,16 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
                     if not tir.is_default_spec(&sp) { spec = str.format("&{}", spec_literal(sp))! }
                 }
                 a := vals.items[i]
-                if spec is "NULL" and w.args[i].ty is str_ty {
+                if spec is "NULL" and w.args[i].ty is str_ty and direct is not null {
+                    // A string is written as it is, unless it is empty.
+                    p := fg.ptr_bytes()
+                    fg.linef("if (GM_LD(uintptr_t, {} + {}) != 0) {{", a, p)
+                    fg.indent += 1
+                    fg.linef("{}({}.env, {}, NULL, GM_LD({}, {}));", direct?, c, ccx, fg.g.ty.cty(str_ty), a)
+                    fg.check_unwind()
+                    fg.indent -= 1
+                    fg.line("}")
+                } else if spec is "NULL" and w.args[i].ty is str_ty {
                     // A string is written as it is, unless it is empty.
                     p := fg.ptr_bytes()
                     fg.unwind_call(str.format("(GM_LD(uintptr_t, {} + {}) != 0 && {}({}.code, {}.env, {}, GM_LD(void *, {}), GM_LD(uintptr_t, {} + {})))", a, p, fs, c, c, ccx, a, a, p)!)

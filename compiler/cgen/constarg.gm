@@ -39,6 +39,7 @@ same_site_const :: fn(a, b: ^const SiteConst) -> bool {
 new_site_const :: fn(g: ^Gen, t: Ty) -> SiteConst needs sema.Load {
     size := g.ty.size(t)
     v := SiteConst(ty: t, bytes: list(u8), relocs: list(SiteReloc))
+    v.bytes.reserve(size.trunc(usize))!
     for _ in 0..size { v.bytes.push(0)! }
     return v
 }

@@ -45,11 +45,27 @@ change all three (test run/hash_at_compile_time.gm compares const vs run time on
 lanes; run/hash_structure.gm pins values). Pointers/fn values at compile time = trap
 NO_POINTER_HASH (spec §16.8 now says so, and that const = run-time hash).
 
+## Second pass (s73, user: "finish the rest of the open items other than release")
+After the first commit: check 2.559 → 2.406, fmt 1.745 → 1.553, emit-c 6.195 → 5.579
+(vs main: −13% / −21% / −21%; check 0.82 → 0.66 s). Binary 8.85 → 9.07 MB; cold build 48 s
+unchanged.
+- lib/core/list.gm: `#inline` on extend (emit −2.8%) and push (check −2%, fmt −6%); push
+  writes through `l.items.ptr[n]` with `n +% 1` (no checks in every inlined copy: +463 KB
+  instead of +615 KB). A separate non-inlined `push_grown` slow path saved 113 KB but cost
+  1.3% emit-c: not kept.
+- cgen expr.gm write(): sink that is a `.Closure(f)` literal → pieces and string args call
+  `gm_f_<fn>(c.env, ccx, NULL, slice)` directly + check_unwind (emit −2.1%).
+- std/arena: chunk_alloc fast path in wrapping arithmetic, `#inline`, new chunk in
+  `new_chunk_alloc` (allocates itself: #inline forbids the recursion) → −2% check.
+- lexer: flush_newline only if pending; lex_word one-letter tests only for len 1 (−1%).
+- SourceMap.add: OR-accumulated ascii test + reserve (small).
+- reserve() in hash_text/sanitized/new_site_const/c_string (small).
+Tried and dropped: first list block of 8 small elements (−0.35% Ir, +2.5% peak RSS);
+lex_string reserve by pre-scan (no gain); merges_with_tail memo (no gain: most calls exit
+before lexing).
+
 ## Not done / next candidates
-- `regrow_raw` 1.2M calls in check (many small lists start at cap 4), chunk_alloc 2M.
-- emit-c: still ~12M `extend` calls from @write closures (`fn(bytes) { out.extend(..) }`);
-  an `@write` straight into a `List(u8)` (no closure, inline extend) would cut most of it.
-- Lexer ~500 Ir/token (emit/flush_newline/push); SourceMap.add line scan 1.1% of check
-  (lazy line_starts needs non-const SourceFile access).
-- merges_with_tail in fmt (1.7%) re-lexes; keys can't be memoized cheaply (out grows).
+- regrow_raw 1.2M calls (99 Ir) in check: long tail of small lists, no dominant caller.
+- memcpy ~11M calls in emit-c (small appends); an inline small-copy in extend could help.
+- Lexer still ~430 Ir/token: emit is a full frame function (needs Alloc for errors).
 - Release single-unit build (068) still open.

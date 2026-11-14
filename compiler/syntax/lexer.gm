@@ -361,13 +361,15 @@ scan_ident :: fn(lx: ^Lexer) -> string {
 lex_word :: fn(lx: ^Lexer) needs Alloc {
     lo := lx.pos
     text := lx.scan_ident()
-    if text is "c" and lx.peek() is '"' {
-        lx.lex_string(lo, .C)
-        return
-    }
-    if text is "_" {
-        lx.emit(.Underscore, lo, lx.pos)
-        return
+    if text.len is 1 {
+        if text[0] is 'c' and lx.peek() is '"' {
+            lx.lex_string(lo, .C)
+            return
+        }
+        if text[0] is '_' {
+            lx.emit(.Underscore, lo, lx.pos)
+            return
+        }
     }
     kw := keyword_from(text) else {
         lx.emit(.Ident(text), lo, lx.pos)
@@ -566,7 +568,7 @@ emit :: fn(lx: ^Lexer, kind: TokenKind, lo, hi: usize) needs Alloc {
     if lx.recover and lx.brackets.items.len > 0 and lx.declaration_starts_at(lo, kind) {
         lx.close_all_brackets(lo)
     }
-    lx.flush_newline(kind, hi)
+    if lx.pending_newline is not null { lx.flush_newline(kind, hi) }
     match kind {
         .Punct(.LParen) => lx.open_bracket(.Paren, here)
         .Punct(.LBracket) => lx.open_bracket(.Bracket, here)

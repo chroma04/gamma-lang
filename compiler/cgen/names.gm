@@ -54,6 +54,7 @@ HASH_DIGITS :: "0123456789abcdefghijklmnopqrstuv"
 hash_text :: fn(text: []const u8, digits: usize) -> string needs Alloc {
     h := hash64(text)
     out := list(u8)
+    out.reserve(digits.min(12))!
     for _ in 0..digits.min(12) {
         out.push(HASH_DIGITS[(h & 31).trunc(usize)])!
         h >>= 5
@@ -65,6 +66,7 @@ hash_text :: fn(text: []const u8, digits: usize) -> string needs Alloc {
 /// a person can recognize (`<literal>` gives `literal`).
 sanitized :: fn(name: string, max: usize) -> string needs Alloc {
     out := list(u8)
+    out.reserve(name.len.min(max))!
     for c in name {
         if out.items.len >= max { break }
         if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c is '_' {

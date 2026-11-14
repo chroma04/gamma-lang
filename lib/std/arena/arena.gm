@@ -76,17 +76,26 @@ arena_alloc :: fn(data: rawptr, size, align: usize) -> ?[^]u8 {
 }
 
 /// An allocation from the current chunk, or from a new one.
+#inline
 chunk_alloc :: fn(a: ^Arena, size, align: usize) -> ?[^]u8 {
     if c := a.chunk {
+        // The fast path, in wrapping arithmetic: an address and an offset within a chunk
+        // do not overflow, and the comparisons reject what would not fit.
         base := c.addr()
-        start := align_up(base + a.used, align) - base
-        if start <= a.size and size <= a.size - start {
+        mask := align -% 1
+        start := ((base +% a.used +% mask) & ~mask) -% base
+        if start <= a.size and size <= a.size -% start {
             a.last = start
-            a.used = start + size
+            a.used = start +% size
             return c[start..a.size].ptr
         }
     }
-    // A new chunk: twice the previous one, and big enough for this request.
+    return new_chunk_alloc(a, size, align)
+}
+
+/// An allocation from a new chunk: twice the previous one, and big enough for this
+/// request. Apart from `chunk_alloc`, which then stays small.
+new_chunk_alloc :: fn(a: ^Arena, size, align: usize) -> ?[^]u8 {
     header := align_up(@size_of(Chunk), 16)
     if size > @max_value(usize) - header - align { return null }
     need := header + size + align
@@ -98,8 +107,12 @@ chunk_alloc :: fn(a: ^Arena, size, align: usize) -> ?[^]u8 {
     h.size = n
     a.chunk = c
     a.size = n
-    a.used = header
-    return chunk_alloc(a, size, align)
+    // `need` leaves room to align the allocation after the header.
+    base := c.addr()
+    start := align_up(base + header, align) - base
+    a.last = start
+    a.used = start + size
+    return c[start..n].ptr
 }
 
 /// A block of its own for an allocation (Safe builds).
