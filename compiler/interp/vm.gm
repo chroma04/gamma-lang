@@ -109,6 +109,9 @@ Ins :: union {
     /// decides).
     Shl: (t: IntW, shift: IntW, wrap: bool, r: u32, a: u32, b: u32, n: ^Node)
     SetUpvarAt: (levels: u32, local: u32, rel: u32, size: u32, align: u32, v: u32, n: ^Node)
+    /// Copies the local `local` of the frame `levels` out (`n`, of `size` bytes) to the
+    /// slot at `at`.
+    UpvarSlot: (at: u32, levels: u32, local: u32, size: u32, n: ^Node)
     /// A word at the address in register `base` plus `off`.
     Load: (r: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
     Store: (base: u32, off: u32, size: u32, align: u32, v: u32, n: ^Node)
@@ -241,6 +244,9 @@ Ins :: union {
     /// `label` (`vc_with`).
     WithLit: (id: u32, at: u32, label: u32)
     WithDecl: (decls: []const u32, at: u32, size: u32, label: u32)
+    /// The value of the function literal `f` (it captures this frame and context) to the
+    /// slot at `at`.
+    ClosureSlot: (at: u32, f: u32)
 }
 
 /// An argument of a call: a word in a register, or the bytes in a slot.
@@ -778,6 +784,10 @@ vm_push :: fn(m: ^Machine, cur: ^CallRec, pc: usize, site: u32) -> ?^CallRec nee
         if s.state is 0 { m.vm_site(cur.code, pc, s) }
         if s.state is 1 {
             if n := m.vm_push_site(cur, pc, s, cur.cx) { return n }
+        } else if s.state is 4 {
+            if m.vm_value_site(cur, pc, s) {
+                if n := m.vm_push_site(cur, pc, s, s.callee_cx) { return n }
+            }
         } else if s.state is 3 {
             cx := cur.cx
             if s.cx is not cx or s.gen is not m.ctxs.items.ptr[us(cx)].gen { m.vm_perform_site(cur.code, pc, s, cx) }
@@ -804,6 +814,15 @@ vm_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite) needs All
             s.state = 3
             s.callee = null
             s.gen = 0
+        }
+        // A function value whose type lists no effect to handle at the call: worked out
+        // for each function it calls.
+        .CallValue(x) => if .Fn(sig) := m.kind(x.callee.ty) and sig.effects.effects.len is 0 {
+            s.state = 4
+            s.callee = null
+        } else if m.kind(x.callee.ty) is not .Fn(_) {
+            s.state = 4
+            s.callee = null
         }
         _ => {}
     }
@@ -848,6 +867,58 @@ vm_perform_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite, c
     }
     s.callee = null
     s.state = 2
+}
+
+/// Works out the site `s` of the call of a function value at `pc` for the function it
+/// calls now: whether it is the common call. The function is most often the same as
+/// before, with another captured frame.
+vm_value_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^CallSite) -> bool needs Alloc {
+    .CallValue(x) := cur.code.ins.ptr[pc] else return false
+    cv := fat(cur.regs, usize(x.at))[0..us(x.callee.size)]
+    f: u32 = 0
+    env: ?^Frame = null
+    cx := cur.cx
+    if .Fn(_) := m.kind(x.callee.ty) {
+        f = m.fn_from_addr(m.word(cv, 0)) else return false
+        env = m.frame_of(m.word(cv, 1))
+        cx = m.word(cv, 2).trunc(u32)
+    } else {
+        f = m.fn_from_addr(m.ptr_of(cv)) else return false
+    }
+    // A second function called from here is kept in `alt`: the two are swapped when the
+    // other one is called.
+    if s.f is not f and (s.callee is not null or s.gen is 1) {
+        if a := s.alt {
+            t := a^
+            a^ = s^
+            a.alt = null
+            s^ = t
+            s.alt = a
+        } else {
+            a := new(s^)!
+            a.alt = null
+            s.moves = empty_slice(Move)
+            s.callee = null
+            s.gen = 0
+            s.alt = a
+        }
+    }
+    s.env = env
+    s.callee_cx = cx
+    if s.f is f {
+        // `gen` 1: the call of `f` is not the common one.
+        if s.callee is not null { return true }
+        if s.gen is 1 { return false }
+    }
+    info := m.fn_info(f)
+    if callee := info.vm and m.site_fill(s, f, info, callee, 0, x.args, x.dst, x.node) {
+        s.gen = 0
+        return true
+    }
+    s.callee = null
+    s.f = f
+    s.gen = 1
+    return false
 }
 
 /// Fills in the site `s` for a call of `f` (`info`, compiled to `callee`) with arguments
@@ -1242,6 +1313,11 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
         }
         .UpvarAt(x) => { regs[usize(x.r)] = try m.vm_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, x.n) }
         .SetUpvarAt(x) => try m.vm_set_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n)
+        .UpvarSlot(x) => {
+            e := us(regs[usize(code.env_reg)]).to_ptr(^Frame) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
+            up := frame_up(e, x.levels - 1) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
+            try m.read_local(x.n.span, up, x.local, fat(regs, usize(x.at))[0..usize(x.size)])
+        }
         // The locals in memory of a body without a frame (`Code.hidden`).
         .LocalAddr(r, local, n) => { regs[usize(r)] = try m.vm_hidden_addr(code, regs, local, n.span) }
         .Local(r, local, _, size) => {
@@ -1354,6 +1430,12 @@ vm_framed :: fn(m: ^Machine, act: ^Act, code: ^Code, regs: [^]u64, pc: usize, ds
         .CxSave(r) => { regs[usize(r)] = u64(act.cx) }
         .CxRestore(r) => m.vm_cx_restore(act, regs, r)
         .WithDecl(x) => { act.cx = m.vm_with_decl(fr, act.cx, x.decls, x.at, x.size, x.label) }
+        .ClosureSlot(at, f) => {
+            d := fat(regs, usize(at))[0..us(3 * m.ptr_bytes)]
+            m.put_word(d, 0, m.fn_addr(f))
+            m.put_word(d, 1, u64(m.frame_handle(fr)))
+            m.put_word(d, 2, u64(a.cx))
+        }
         .WithLit(id, at, label) => {
             inst := Installed.Lit(id, fr, a.cx)
             if at is not NO_REG {

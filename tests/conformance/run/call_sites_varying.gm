@@ -1,0 +1,64 @@
+// The same call or perform reaching different functions, handlers and captured frames
+// from one run to the next (§11.6, §12.4, §12.6): each call must reach the callee of
+// that run, with that run's captured locals and handler.
+Acc :: effect { add: fn(x: u32) }
+Sum :: struct { t: u32 }
+handler Acc for ^Sum { add(self, x) => { self.t += x } }
+
+Pair :: struct { a: u64, b: u64 }
+
+apply :: fn(f: fn(x: u64) -> u64, x: u64) -> u64 => f(x)
+
+// Each call of `adder` captures its own pair; the literals alternate at the call in
+// `apply`.
+adder :: fn(p: Pair) -> u64 {
+    plus :: fn(x: u64) -> u64 => x + p.a
+    times :: fn(x: u64) -> u64 => x * p.b
+    nested :: fn(x: u64) -> u64 {
+        inner :: fn() -> u64 {
+            q := p
+            return q.a + q.b
+        }
+        return x + inner()
+    }
+    s: u64 = 0
+    for i in 0..4 {
+        s += apply(plus, u64(i))
+        s += apply(times, u64(i))
+        s += apply(nested, u64(i))
+    }
+    return s
+}
+
+// The perform in `step` reaches a handler literal, then a declaration, then a literal
+// in another frame.
+step :: fn(x: u32) needs Acc { Acc.add(x) }
+
+count :: fn(n: u32) needs Yield(u32) {
+    for i in 0..n { yield(i) }
+}
+
+main :: fn() needs Out {
+    print("{} {}\n", adder(Pair(a: 1, b: 2)), adder(Pair(a: 10, b: 20)))
+    total: u32 = 0
+    for round in 0..3 {
+        if round is 1 {
+            s := Sum(t: 100)
+            with &s { for i in 0..5 { step(i) } }
+            total += s.t
+        } else {
+            local: u32 = round
+            with (handler Acc { add(x) => { local += x } }) { for i in 0..5 { step(i) } }
+            total += local
+        }
+    }
+    print("{}\n", total)
+    // Loops over the same iterator, each in a context of its own.
+    sum: u32 = 0
+    for k in 0..4 {
+        part: u32 = 0
+        for x in count(k) { part += x * (k + 1) }
+        sum += part
+    }
+    print("{}\n", sum)
+}

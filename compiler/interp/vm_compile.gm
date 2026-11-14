@@ -1121,6 +1121,14 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             c.vc_emit(.StrSlot(at, n))
             return ()
         }
+        .Upvar(levels, l) => if n.size is c.m.size(n.ty) and levels > 0 {
+            c.vc_emit(.UpvarSlot(at, levels, l, n.size.trunc(u32), n))
+            return ()
+        }
+        .Closure(f) => {
+            c.vc_emit(.ClosureSlot(at, f))
+            return ()
+        }
         .Aggregate(items, offs) => {
             total: u64 = 0
             for x in items { total += x.size }
