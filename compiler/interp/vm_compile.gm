@@ -1129,6 +1129,20 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             c.vc_emit(.ClosureSlot(at, f))
             return ()
         }
+        .Binary(op, l, r) => {
+            slots := c.slot_top
+            la := c.vc_slot_at(c.vc_alloc_slot(l.size))
+            c.vc_to_slot(l, la)
+            lb := c.vc_slot_at(c.vc_alloc_slot(r.size))
+            c.vc_to_slot(r, lb)
+            wide: u8 = 0
+            if c.m.word_locals and n.size is 16 {
+                if t := c.m.int_info(n.ty) and t.bits is 128 and c.m.int_info(l.ty) is t and c.m.int_info(r.ty) is t { wide = if t.signed { 2 } else { 1 } }
+            }
+            c.vc_emit(.BinSlot(op, wide, at, la, lb, n, l, r))
+            c.slot_top = slots
+            return ()
+        }
         .Aggregate(items, offs) => {
             total: u64 = 0
             for x in items { total += x.size }
@@ -1136,7 +1150,12 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             for i in 0..items.len { c.vc_to_slot(items[i], at + offs[i].trunc(u32)) }
             return ()
         }
-        .Coerce(kind, x) => if c.vc_coerce_builds(kind, n) {
+        .Coerce(kind, x) => if kind is .IntWiden and is_word(x) and n.size > 8 {
+            r := c.vc_operand(x, true)
+            c.vc_emit(.WidenSlot(at, r, x, n))
+            c.vc_set_top(save)
+            return ()
+        } else if c.vc_coerce_builds(kind, n) {
             m := c.m
             match kind {
                 .WrapOptional => {
@@ -1217,9 +1236,10 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
 /// Whether `vc_to_slot` builds the value of `n` itself rather than having the tree
 /// evaluate it (its parts may still be the tree's).
 vc_builds :: fn(c: ^Vc, n: ^const Node) -> bool needs Alloc => match n.op {
-    .Call(_), .CallValue(_), .Perform(_), .Bytes(_), .Aggregate(_), .Block(_), .If(_), .Match(_) => true
+    .Call(_), .CallValue(_), .Perform(_), .Bytes(_), .Aggregate(_), .Block(_), .If(_), .Match(_), .Binary(_), .Closure(_) => true
+    .Upvar(levels, _) => levels > 0
     .Else(lhs, _, _) => c.vc_else_shape(n, lhs) is not null
-    .Coerce(kind, _) => c.vc_coerce_builds(kind, n)
+    .Coerce(kind, x) => c.vc_coerce_builds(kind, n) or (kind is .IntWiden and is_word(x) and n.size > 8)
     .MakeErr(_) => c.m.kind(n.ty) is .Result(_, _)
     .Variant(_) => c.vc_variant_builds(n.ty)
     .Slice(x) => c.vc_slice_builds(x)

@@ -112,6 +112,14 @@ Ins :: union {
     /// Copies the local `local` of the frame `levels` out (`n`, of `size` bytes) to the
     /// slot at `at`.
     UpvarSlot: (at: u32, levels: u32, local: u32, size: u32, n: ^Node)
+    /// The binary operator of `n` on its operands in the slots at `la` and `lb`, to the
+    /// slot at `at`: for values that are not words (128-bit integers, vectors).
+    /// `wide` is 1 (2) for unsigned (signed) 128-bit integers in little-endian words,
+    /// which most operators compute directly.
+    BinSlot: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node)
+    /// The integer word in register `r` (the value of `x`) widened to `n`, a value that
+    /// is not a word (a 128-bit integer), in the slot at `at`.
+    WidenSlot: (at: u32, r: u32, x: ^Node, n: ^Node)
     /// A word at the address in register `base` plus `off`.
     Load: (r: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
     Store: (base: u32, off: u32, size: u32, align: u32, v: u32, n: ^Node)
@@ -1313,6 +1321,19 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
         }
         .UpvarAt(x) => { regs[usize(x.r)] = try m.vm_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, x.n) }
         .SetUpvarAt(x) => try m.vm_set_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n)
+        .BinSlot(x) => if v := wide_op(x, regs) {
+            d := fat(regs, usize(x.at))
+            st8(d, v.trunc(u64))
+            st8(fat(regs, usize(x.at) + 8), (v >> 64).trunc(u64))
+        } else {
+            try m.binop(x.n.span, x.op, x.l.ty, x.r.ty, x.n.ty, fat(regs, usize(x.la))[0..us(x.l.size)], fat(regs, usize(x.lb))[0..us(x.r.size)], fat(regs, usize(x.at))[0..us(x.n.size)])
+        }
+        .WidenSlot(x) => {
+            b: [8]u8 = ---
+            w := b[0..us(x.x.size)]
+            m.wr_word(w, regs[usize(x.r)])
+            try m.coerce_bytes(x.n.span, .IntWiden, x.x.ty, x.n.ty, w, fat(regs, usize(x.at))[0..us(x.n.size)])
+        }
         .UpvarSlot(x) => {
             e := us(regs[usize(code.env_reg)]).to_ptr(^Frame) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
             up := frame_up(e, x.levels - 1) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
@@ -1859,6 +1880,37 @@ vm_invoke :: fn(m: ^Machine, caller: ^const Code, f: u32, env: ?^Frame, cx: u32,
     m.release(mk)
     try res
     if .Reg(r) := dst and not direct { regs[usize(r)] = m.rd_word(d) }
+}
+
+/// The result of the `BinSlot` `x` on 128-bit integers, computed directly: `null` if it
+/// is not such an operation or its common case does not apply (an overflow, a division
+/// by zero), which `binop` then reports.
+wide_op :: fn(x: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node), regs: [^]u64) -> ?u128 {
+    if x.wide is 0 { return null }
+    p := u128(ld8(fat(regs, usize(x.la)))) | (u128(ld8(fat(regs, usize(x.la) + 8))) << 64)
+    q := u128(ld8(fat(regs, usize(x.lb)))) | (u128(ld8(fat(regs, usize(x.lb) + 8))) << 64)
+    signed := x.wide is 2
+    match x.op {
+        .Add(f) => {
+            if f is .Wrap { return p +% q }
+            if f is .Checked { return if signed { ((p.bits(i128) +? q.bits(i128)) else return null).bits(u128) } else { p +? q } }
+        }
+        .Sub(f) => {
+            if f is .Wrap { return p -% q }
+            if f is .Checked { return if signed { ((p.bits(i128) -? q.bits(i128)) else return null).bits(u128) } else { p -? q } }
+        }
+        .Mul(f) => {
+            if f is .Wrap { return p *% q }
+            if f is .Checked { return if signed { ((p.bits(i128) *? q.bits(i128)) else return null).bits(u128) } else { p *? q } }
+        }
+        .Div => if q is not 0 and not signed { return p / q }
+        .Rem => if q is not 0 and not signed { return p % q }
+        .BitAnd => return p & q
+        .BitOr => return p | q
+        .BitXor => return p ~ q
+        _ => {}
+    }
+    return null
 }
 
 /// The word at offset `rel` of local `l` of the frame `levels` capture links up from `fr`.

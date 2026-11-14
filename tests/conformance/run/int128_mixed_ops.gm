@@ -1,0 +1,21 @@
+// 128-bit arithmetic built from 64-bit values (§5.2, §6.3): widening, checked and wrapping
+// + - *, / and % on unsigned values, bitwise operators, and `*?` reporting an overflow.
+main :: fn() needs Out {
+    xs := [_]u64(0, 1, 7, 0xffff_ffff, 0xffff_ffff_ffff_ffff, 12345678901234567)
+    acc: u128 = 0
+    sacc: i128 = 0
+    for a in xs {
+        for b in xs {
+            p := u128(a) * u128(b)
+            q := u128(b) + 3
+            acc = (acc +% (p / q)) ~ ((p % q) | (p & u128(a)))
+            acc = acc *% 31 +% p -% q
+            s := i128(a) - i128(b) * 3
+            t := i128(b) + 1
+            sacc = sacc +% s *% t
+            sacc = sacc ~ ((s & t) | (s -% t))
+            if s *? t is null { print("ovf\n") }
+        }
+    }
+    print("{} {}\n", acc, sacc)
+}
