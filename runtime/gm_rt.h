@@ -729,13 +729,15 @@ GM_API gm_cont gm_fiber_cont(gm_with *w, gm_fiber *fb);
 #define GM_STACK_CHECK(p, n) do { if ((uintptr_t)(p) < gm_stack_limit + (uintptr_t)(n)) gm_stack_overflow(); } while (0)
 #else
 /* The frame address is above the function's locals where the C compiler keeps the frame
-   record at the top of the frame (x86-64, Clang on AArch64), and below them where it
-   keeps it at the bottom (GCC on AArch64 without a stack protector): there the frame is
-   above it already. The comparison with the frame `p` tells which, and folds away. */
-#define GM_STACK_CHECK(p, n) do { \
-    uintptr_t gm_fa = (uintptr_t)__builtin_frame_address(0); \
-    if (gm_fa < gm_stack_limit + (gm_fa > (uintptr_t)(p) ? (uintptr_t)(n) + sizeof(*(p)) : 0)) gm_stack_overflow(); \
-} while (0)
+   record at the top of the frame (x86-64, s390x, Clang on AArch64): the frame and the
+   temporaries must fit below it. GCC on AArch64 keeps the record at the bottom of the
+   frame unless the function has a stack protector: without one, the frame is above the
+   frame address already. */
+#if defined(__aarch64__) && defined(__GNUC__) && !defined(__clang__) && !defined(__SSP__) && !defined(__SSP_STRONG__) && !defined(__SSP_ALL__)
+#define GM_STACK_CHECK(p, n) do { (void)(p); if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit) gm_stack_overflow(); } while (0)
+#else
+#define GM_STACK_CHECK(p, n) do { if ((uintptr_t)__builtin_frame_address(0) < gm_stack_limit + (uintptr_t)(n) + sizeof(*(p))) gm_stack_overflow(); } while (0)
+#endif
 #endif
 #endif
 /* The probe of a function whose calls nest at most three deep, all of them direct calls of

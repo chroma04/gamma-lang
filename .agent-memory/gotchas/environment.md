@@ -137,6 +137,7 @@
   (at the top with one; x86-64 and Clang: always top), so `__builtin_frame_address(0)` is
   not "above the locals" there. s72: -fno-stack-protector made GM_STACK_CHECK count the
   frame twice → fibers of exactly @stack_size overflowed (aarch64 lane only). The macro
-  now compares the frame address with &F. Run the aarch64 lane locally for anything that
+  is now chosen by #if (aarch64 GCC without __SSP*__: `fa < limit`); a run-time
+  comparison of fa with &F cost +7% Ir on x86-64 (not folded). Run the aarch64 lane for anything that
   touches frames or C flags: `apt-get install gcc-aarch64-linux-gnu`,
   `GAMMA_TEST_LANE=aarch64 target/bootstrap/harness -j 4 lanes/` (56 s).
