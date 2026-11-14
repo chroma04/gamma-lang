@@ -799,8 +799,8 @@ significant byte) instead of indexing, and `gm_load_u128` /
 compile-time values are laid out for the target (`store_int` in
 `cgen/consts.gm`; a `ConstKey` keeps an integer's bytes little-endian, whatever the
 target), and the interpreter's memory is in target order, so constants emitted into
-C are exactly what the generated code would store. Hashes mix the little-endian
-bytes of every value, so they agree across targets, and printed output is the same
+C are exactly what the generated code would store. Hashes mix the value of every
+scalar, and bytes as little-endian words, so they agree across targets, and printed output is the same
 everywhere except where a program looks at its own memory (`bits`, `#c_union`,
 `target.endian`). Fibers switch stacks in assembly for x86-64, AArch64 and s390x;
 other architectures trap on the first fiber switch. `f16` is C's `_Float16`; where
@@ -980,7 +980,19 @@ and of each thread) plus a reserve for reporting the overflow. The check also co
 `gm_format`, driven by type descriptors generated for each formatted type.
 Structural `is`, ordering and `@hash` use C functions generated per type
 (`cgen/helpers.gm`) that agree with the interpreter, including the hash
-values, so hash maps iterate in the same order.
+values, so hash maps iterate in the same order. The hash (§16.8 leaves the
+algorithm to the implementation) keeps 64 bits of state and mixes in one 64-bit
+word at a time: the state and the word are combined with exclusive or and
+multiplied by an odd constant to 128 bits, whose two halves are then combined
+(`gm_mix64`; `hash_u64` in `interp/builtins.gm`). The words of a value are its
+scalars in the order of the type's structure: an integer's value extended to 64
+bits (two words for a wider one), a float's bits as `f64`, a pointer's address,
+0 or 1 for a `bool`, the number of a union's variant, the state of an optional
+or result, the length of a slice. Arrays and slices of `u8`, strings above all,
+go in eight bytes per word. A table can use the low bits of the result: the
+test `tests/conformance/run/hash_structure.gm` checks that near keys spread
+over them, and pins the values, which both back ends must compute on every
+target.
 
 **Calling conventions and foreign code.** A function whose effects are at most
 `Sys` takes no hidden parameters: it has the plain C calling convention, so it

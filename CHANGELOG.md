@@ -35,6 +35,11 @@ Versions and what each kind of change means are described in
   functions (accessors, predicates) into the other files that call them, which every
   large optimized program gains from, and tokens and syntax-tree nodes are less than
   half their former size.
+- **A faster `@hash`.** The structural hash mixes a 64-bit word per step instead of a
+  byte: a short string key hashes in about a tenth of the instructions, an integer key in
+  a few. Hash maps with the default hashing gain accordingly (the compiler's own type
+  check runs 3% fewer instructions). Hash values differ from those of earlier versions,
+  as §16.8 allows.
 - **A faster build from the seed.** `bootstrap/build.sh` takes under a minute on four
   cores (about two and a half before). The seed is now the units a build of the compiler
   compiles, the script compiles them as that build would, and the seed's compiler takes
