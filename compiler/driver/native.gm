@@ -678,7 +678,7 @@ cached_program :: fn(b: ^const Built, opts: Options) -> CacheLookup needs Alloc 
         touch(exe)
         return .Exe(exe)
     }
-    pkg.make_dirs(dir) else return .Uncached
+    pkg.make_cache_dirs(dir) else return .Uncached
     tmp := private_name(dir, stem, "exe")
     built := compile_built(b, tmp, opts)
     _ = fs.remove_all(str.format("{}.c", tmp)!)

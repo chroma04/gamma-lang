@@ -33,7 +33,7 @@ pub run_interp :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -
 /// Runs `entry` (a function of the program's ambient effects that returns the exit status,
 /// such as the entry of a test) in the interpreter, with `input` as the program's name;
 /// returns its exit status as `run_interp` does. A function that reaches foreign code or
-/// assembly is refused.
+/// assembly is refused (`gamma test` runs such tests natively).
 pub run_interp_entry :: fn(s: ^sema.Sema, entry: u32, input: string, opts: Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     roots := [1]u32(entry)
     if not check.prepare_codegen(s, roots[..]) { return 1 }
@@ -65,7 +65,7 @@ interpret :: fn(p: ^cgen.Prog, entry: u32, opts: Options, args: []const string) 
 }
 
 /// Whether the program from `entry` reaches a foreign function or variable, or `@asm`.
-needs_native :: fn(p: ^cgen.Prog, entry: u32) -> bool needs Alloc {
+pub needs_native :: fn(p: ^cgen.Prog, entry: u32) -> bool needs Alloc {
     seen := hash_map.hash_map(u32, bool)
     sc := NativeScan(p: p, work: list(u32), found: false)
     sc.work.push(entry)!

@@ -59,7 +59,7 @@ runtime_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, source: st
         touch(obj)
         return obj
     }
-    pkg.make_dirs(dir) else return null
+    pkg.make_cache_dirs(dir) else return null
     if adopt_object(source, dir, stem) { return obj }
     // The source stays next to the object (a debugger reads it); writing it is idempotent
     // but goes through a private file too, so a concurrent build never compiles a partial one.
@@ -184,7 +184,7 @@ KEPT_UNITS :: 4000
 unit_objects :: fn(tc: ^const pkg.Toolchain, flags: []const string, sources: []const string, compiler: ?string, jobs: usize, line_paths: bool) -> UnitObjects needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
     dir := pkg.cache_dir() else return .NoCache
     version := compiler else return .NoCache
-    pkg.make_dirs(dir) else return .NoCache
+    pkg.make_cache_dirs(dir) else return .NoCache
     cc := str.join(tc.cc, "\0")!
     cflags := str.join(tc.cflags, "\0")!
     fl := str.join(flags, "\0")!
@@ -373,7 +373,7 @@ package_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, src: ^cons
             return obj
         }
     }
-    pkg.make_dirs(dir) else return null
+    pkg.make_cache_dirs(dir) else return null
     tmp_o := private_name(dir, stem, "o")
     tmp_d := private_name(dir, stem, "d")
     defer _ = Fs.remove(tmp_d)

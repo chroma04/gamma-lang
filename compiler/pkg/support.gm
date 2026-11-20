@@ -100,6 +100,20 @@ pub make_dirs :: fn(dir: string) -> string!() needs Alloc + Fs {
     return ()
 }
 
+/// Creates `dir`, a directory in the cache (or the cache directory itself), with its
+/// parents. A cache directory that does not exist yet is made private to the user (mode
+/// 0700) first: the cache holds objects and executables that builds link and run, so
+/// others must not be able to put files there.
+pub make_cache_dirs :: fn(dir: string) -> string!() needs Alloc + Env + Fs {
+    if root := cache_dir() {
+        if not fs.exists(root) {
+            try make_dirs(root)
+            when target.os is not .Windows { _ = Fs.set_mode(root, 0o700) }
+        }
+    }
+    return make_dirs(dir)
+}
+
 /// The cache directory, or `null` if there is none: `$GAMMA_CACHE_DIR` if set (an empty
 /// value turns the cache off), else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma`
 /// on macOS and `~/.cache/gamma` elsewhere.

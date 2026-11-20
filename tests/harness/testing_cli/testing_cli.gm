@@ -26,6 +26,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "tests_run_in_the_interpreter", run: tests_run_in_the_interpreter))!
     out.push(kit.Test(name: "a_test_that_runs_too_long_fails_in_the_interpreter", run: a_test_that_runs_too_long_fails_interp))!
     out.push(kit.Test(name: "benchmarks_run_in_the_interpreter", run: benchmarks_run_in_the_interpreter))!
+    out.push(kit.Test(name: "tests_reaching_foreign_code_run_natively", run: tests_reaching_foreign_code_run_natively))!
 }
 
 /// A file of a package: its path below the package's root, and its text.
@@ -447,6 +448,40 @@ a_test_that_runs_too_long_fails_interp :: fn(t: ^kit.T) -> kit.Fail!() needs kit
     started := Clock.now()
     out := try gamma(t, p, [_]string("test", "--backend=interp", "--timeout=1", "--jobs=2"))
     try check_timeout(t, out, Clock.now().since(started).to_ms())
+    return ()
+}
+
+FOREIGN_TESTS :: `
+libc :: foreign "c" {
+    labs :: fn(x: i64) -> i64 needs not
+}
+
+main :: fn() {}
+
+test "pure" {
+    expect_eq(1 + 2, 3)
+}
+
+test "foreign" {
+    expect_eq(libc.labs(-5), 5)
+}
+
+test "pure fails" {
+    expect_eq(1 + 2, 4)
+}
+`
+
+// The tests the interpreter cannot run are compiled and run natively, in their place in the
+// report.
+tests_reaching_foreign_code_run_natively :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip("no C compiler") }
+    p := try package(t, "foreign_interp", [_]File(File(path: "main.gm", text: FOREIGN_TESTS)))
+    out := try gamma(t, p, [_]string("test", "--backend=interp", "-j", "2"))
+    try t.check(out.code() is 1, "{}{}", out.out, out.err)
+    try t.expect_contains("stdout", out.out, "test \"pure\" ... ok\ntest \"foreign\" ... ok\ntest \"pure fails\" ... FAILED\n")
+    try t.check(str.strip_suffix(out.out, "2 passed, 1 failed\n") is not null, "{}", out.out)
+    native := try gamma(t, p, [_]string("test", "--backend=c", "-j", "2"))
+    try t.expect_text("the output of the native run", native.out, out.out)
     return ()
 }
 

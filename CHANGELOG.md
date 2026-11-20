@@ -11,7 +11,8 @@ Versions and what each kind of change means are described in
 - **`gamma test --backend=interp` and `gamma bench --backend=interp`** run tests and
   benchmarks in the interpreter, without a C compiler. Each test runs in a process of its
   own, so `--jobs`, `--timeout`, `--filter` and the report work as with the C back end, and
-  the output is the same; a test that reaches foreign code or assembly is refused, and
+  the output is the same; a test that reaches foreign code or assembly is compiled through C
+  and run natively, in its place in the report, and
   `--coverage` still needs C. `--backend=interp` was a usage error for these commands.
 - **`gamma lint --target=<triple>` and `gamma fix --target=<triple>`** check the program
   for another machine, as `gamma check --target` does, so code in `when target…` branches
@@ -32,6 +33,8 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **A cache directory that `gamma` creates is private to the user** (mode 0700), since builds
+  link the objects and run the executables it holds. An existing directory keeps its mode.
 - **The C sources of packages are compiled once**, and their objects kept in the cache
   (`native/`), instead of by every build. An object is used again only while the file
   and every header it includes are unchanged.
