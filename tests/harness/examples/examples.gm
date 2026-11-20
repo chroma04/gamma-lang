@@ -36,14 +36,13 @@ str :: import "std/str"
 pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
     names := list(string)
     cases_dir := kit.join(cfg.root, "tests/examples")
-    for r in fs.entries(cases_dir) {
-        e := r else err => {
-            out.push(kit.Test(name: "examples_run", run: cannot_list, param: str.format("{}: {}", cases_dir, err)!))!
-            break
-        }
-        if stem := str.strip_suffix(e.name, ".run") { names.push(dupe(stem)!)! }
+    entries := kit.list_dir(cases_dir) else err => {
+        out.push(kit.Test(name: "examples_run", run: cannot_list, param: str.format("{}: {}", cases_dir, err)!))!
+        return
     }
-    names.items.sort()
+    for e in entries {
+        if stem := str.strip_suffix(e.name, ".run") { names.push(stem)! }
+    }
     for name in names.items {
         out.push(kit.Test(name: str.format("examples_run/{}", name)!, run: examples_run, param: name))!
     }

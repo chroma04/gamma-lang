@@ -17,6 +17,7 @@
 
 diag :: import "gammac/diag"
 fs :: import "std/fs"
+json :: import "std/json"
 load :: import "gammac/load"
 path :: import "std/path"
 str :: import "std/str"
@@ -292,5 +293,36 @@ pub quote :: fn(s: string) -> string needs Alloc {
         }
     }
     out.push('"')!
+    return out.items
+}
+
+/// An entry of a directory that `list_dir` lists; its name is a copy.
+pub Listed :: struct {
+    pub name: string
+    pub kind: fs.FileKind
+}
+
+/// The entries of the directory `dir`, sorted by name, so that what a test does with them
+/// does not depend on the order the system lists them in.
+pub list_dir :: fn(dir: string) -> IoError![]Listed needs Alloc + Fs {
+    out := list(Listed)
+    for r in fs.entries(dir) {
+        e := try r
+        // The entry's name lasts until the next one is read.
+        out.push(Listed(name: dupe(e.name)!, kind: e.kind))!
+    }
+    out.items.sort_by(fn(a, b: ^const Listed) -> bool => a.name < b.name)
+    return out.items
+}
+
+/// The lines of `text` (JSON Lines, such as `--diag-format=json` output), each parsed as
+/// JSON; blank lines are skipped. Fails the test on a line that is not JSON.
+pub json_lines :: fn(t: ^T, text: string) -> Fail![]json.Value needs Alloc {
+    out := list(json.Value)
+    for line in str.lines(text) {
+        if str.trim(line).len is 0 { continue }
+        doc := json.parse(line) else e => return !t.fail("not JSON ({}): {}", e, line)
+        out.push(doc.root)!
+    }
     return out.items
 }

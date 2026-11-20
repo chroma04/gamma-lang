@@ -170,13 +170,17 @@ freed when it ends, so tests allocate freely. The module `tests/harness/kit` has
 
 - checks: `t.check(cond, template, args…)`, `t.expect_text(what, expected, actual)` (a diff on
   failure), `t.expect_contains(what, text, needle)`, `t.fail(…)` and `t.skip(…)`;
-- commands: `t.gamma(argv)` is a command that runs the compiler under test; `kit.command(prog)`
+- commands: `t.gamma(argv)` is a command that runs the compiler under test (`t.gamma_in(dir,
+  argv)` in the directory `dir`); `kit.command(prog)`
   runs another program; `c.set(name, value)`, `c.stdin(bytes)` and `c.dir` adjust it;
   `t.run(c)` runs it with the time limit and returns its `status`, `out` and `err`,
   `t.run_ok(c)` also fails the test if it did not succeed, and `t.try_run(c)` returns `null`
   when the program is not installed;
 - files: `t.scratch(name)` is a fresh directory for the test, `t.write(path, text)`,
-  `t.read(path)`, `t.repo(rel)` a path in the repository;
+  `t.read(path)`, `t.repo(rel)` a path in the repository, `kit.list_dir(dir)` the entries
+  of a directory sorted by name (with copied names);
+- output: `t.json_lines(text)` parses each line of `--diag-format=json` output (or other
+  JSON Lines);
 - golden files: `t.golden(what, file, actual)` compares `actual` with the file (a missing file
   counts as empty) and returns a message with the diff, or null if they agree; with `BLESS=1`
   it rewrites the file instead. Use it, rather than comparing by hand, for any expected output

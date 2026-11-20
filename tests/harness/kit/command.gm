@@ -33,6 +33,13 @@ pub command :: fn(program: string) -> Command needs Alloc {
 /// library and runtime, and the cache directory of the tests.
 pub gamma :: fn(t: ^const T, args: []const string) -> Command needs Alloc => gamma_at(t, t.cfg.compiler, args)
 
+/// Like `gamma`, run in the directory `dir`.
+pub gamma_in :: fn(t: ^const T, dir: string, args: []const string) -> Command needs Alloc {
+    c := gamma(t, args)
+    c.dir = dir
+    return c
+}
+
 /// Like `gamma`, for the compiler `exe` (one that a test built).
 pub gamma_at :: fn(t: ^const T, exe: string, args: []const string) -> Command needs Alloc {
     c := command(exe)

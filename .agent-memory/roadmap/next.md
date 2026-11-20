@@ -17,7 +17,6 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 - Windows: command-line quoting, 0700 cache dirs; Safe, `gamma debug`, gdb printers are
   Linux-only; ARM64 Windows. Windows-only code paths (spawn, install.ps1,
   gm_fs_open_dir) are exercised only by Windows CI.
-- Harness kit helpers wanted: gamma_in, sorted directory listing, jsonl.
 
 ## 2. Performance (measure first; callgrind recipe in docs/contributing.md)
 - Compiler: decisions/069 "Not done" (regrow_raw tail, small memcpy in extend, lexer

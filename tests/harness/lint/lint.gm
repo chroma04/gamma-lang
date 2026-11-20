@@ -28,8 +28,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
     inputs.extend([_]string("compiler", "tests/harness", "tools/difftest"))!
     modules(cfg, "lib/std", &inputs)
     examples := kit.join(cfg.root, "examples")
-    for r in fs.entries(examples) {
-        e := r else break
+    for e in kit.list_dir(examples) else empty_slice(kit.Listed) {
         is_program := e.kind is .Dir and fs.exists(kit.join(kit.join(examples, e.name), "main.gm"))
         if is_program or (e.kind is .File and str.strip_suffix(e.name, ".gm") is not null) {
             inputs.push(str.format("examples/{}", e.name)!)!
@@ -60,11 +59,7 @@ modules :: fn(cfg: ^const kit.Config, rel: string, out: ^List(string)) needs All
 }
 
 /// Runs `gamma` with `args` in `dir`.
-gamma_in :: fn(t: ^kit.T, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run {
-    c := t.gamma(args)
-    c.dir = dir
-    return try t.run(c)
-}
+run_in :: fn(t: ^kit.T, dir: string, args: []const string) -> kit.Fail!kit.Output needs kit.Run => t.run(t.gamma_in(dir, args))
 
 /// A program with warnings of several rules, each with a fix.
 MESSY :: `fmt :: import "std/fmt"
@@ -96,7 +91,7 @@ TIDY :: `main :: fn() needs Out {
 reports_each_rule_by_name :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     d := try t.scratch(t.name)
     try t.write(kit.join(d, "main.gm"), MESSY)
-    out := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    out := try run_in(t, d, [_]string("lint", "main.gm"))
     try t.check(out.success(), "warnings alone do not fail: {}", out.err)
     for rule in [_]string("unused-import", "unused-variable", "bool-comparison", "collapsible-else-if", "double-negation") {
         try t.check(str.contains(out.err, str.format("warning[{}]", rule)!), "no {} in:\n{}", rule, out.err)
@@ -109,16 +104,16 @@ fix_applies_every_fix :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     d := try t.scratch(t.name)
     main_gm := kit.join(d, "main.gm")
     try t.write(main_gm, MESSY)
-    out := try gamma_in(t, d, [_]string("lint", "--fix", "main.gm"))
+    out := try run_in(t, d, [_]string("lint", "--fix", "main.gm"))
     try t.check(out.success(), "{}", out.err)
     try t.expect_contains("stderr", out.err, "gamma: applied 6 fixes in 1 file")
     try t.check(not str.contains(out.err, "warning"), "{}", out.err)
     try t.expect_text("the fixed program", TIDY, try t.read(main_gm))
-    run := try gamma_in(t, d, [_]string("run", "main.gm"))
+    run := try run_in(t, d, [_]string("run", "main.gm"))
     try t.check(run.success(), "{}", run.err)
     try t.expect_text("the output", "hi\n3\n", run.out)
     // A second run has nothing left to do.
-    again := try gamma_in(t, d, [_]string("lint", "--fix", "main.gm"))
+    again := try run_in(t, d, [_]string("lint", "--fix", "main.gm"))
     try t.check(again.success() and again.err.len is 0, "{}", again.err)
     return ()
 }
@@ -128,7 +123,7 @@ collapsible_else_if_fix_keeps_raw_strings :: fn(t: ^kit.T) -> kit.Fail!() needs 
     main_gm := kit.join(d, "main.gm")
     src := "f :: fn(a: bool, c: bool) -> string {\n    if a {\n        return \"a\"\n    } else {\n        if c {\n            return `line1\n            line2`\n        }\n    }\n    return \"z\"\n}\n\nmain :: fn() needs Out {\n    print(\"{}\\n\", f(false, true))\n}\n"
     try t.write(main_gm, src)
-    out := try gamma_in(t, d, [_]string("lint", "--fix", "main.gm"))
+    out := try run_in(t, d, [_]string("lint", "--fix", "main.gm"))
     try t.expect_contains("stderr", out.err, "collapsible-else-if")
     try t.expect_text("the program", src, try t.read(main_gm))
     return ()
@@ -151,7 +146,7 @@ main :: fn() needs Out {
 }
 `
     try t.write(main_gm, src)
-    out := try gamma_in(t, d, [_]string("lint", "--fix", "--warn=prefer-immutable", "main.gm"))
+    out := try run_in(t, d, [_]string("lint", "--fix", "--warn=prefer-immutable", "main.gm"))
     try t.check(out.success(), "{}", out.err)
     try t.expect_text("the program", str.replace_alloc(src, "unused := r", "_ = r")!, try t.read(main_gm))
     try t.expect_contains("stderr", out.err, "1 lint fix left the program failing to compile, so it was not applied")
@@ -163,17 +158,17 @@ main :: fn() needs Out {
 deny_fails_the_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     d := try t.scratch(t.name)
     try t.write(kit.join(d, "main.gm"), MESSY)
-    out := try gamma_in(t, d, [_]string("lint", "--deny=unused-variable", "main.gm"))
+    out := try run_in(t, d, [_]string("lint", "--deny=unused-variable", "main.gm"))
     try t.check(not out.success(), "`--deny` did not fail the command")
     try t.expect_contains("stderr", out.err, "error[unused-variable]")
     try t.expect_contains("stderr", out.err, "warning[unused-import]")
     try t.expect_contains("stderr", out.err, "gamma lint: 1 error and 5 warnings")
-    all := try gamma_in(t, d, [_]string("lint", "-D", "main.gm"))
+    all := try run_in(t, d, [_]string("lint", "-D", "main.gm"))
     try t.check(not all.success(), "`-D` did not fail the command")
     try t.expect_contains("stderr", all.err, "gamma lint: 6 errors")
-    allowed := try gamma_in(t, d, [_]string("lint", "--allow=all", "main.gm"))
+    allowed := try run_in(t, d, [_]string("lint", "--allow=all", "main.gm"))
     try t.check(allowed.success() and allowed.err.len is 0, "{}", allowed.err)
-    unknown := try gamma_in(t, d, [_]string("lint", "--allow=no-such-rule", "main.gm"))
+    unknown := try run_in(t, d, [_]string("lint", "--allow=no-such-rule", "main.gm"))
     try t.check(not unknown.success(), "an unknown rule was accepted")
     try t.expect_contains("stderr", unknown.err, "unknown lint rule `no-such-rule`")
     return ()
@@ -182,7 +177,7 @@ deny_fails_the_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 a_program_that_does_not_compile_gets_its_errors :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     d := try t.scratch(t.name)
     try t.write(kit.join(d, "main.gm"), "main :: fn() {\n    unused := 5\n    x: i32 = true\n}\n")
-    out := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    out := try run_in(t, d, [_]string("lint", "main.gm"))
     try t.check(not out.success(), "a program that does not compile passed")
     try t.check(str.contains(out.err, "error") and not str.contains(out.err, "warning["), "{}", out.err)
     return ()
@@ -193,17 +188,17 @@ manifest_lint_table_sets_levels :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     manifest := kit.join(d, "gamma.toml")
     try t.write(manifest, "[package]\nname = \"tidy\"\nversion = \"0.1.0\"\n\n[lint]\nunused-variable = \"allow\"\nbool-comparison = \"deny\"\n")
     try t.write(kit.join(d, "main.gm"), MESSY)
-    out := try gamma_in(t, d, [_]string("lint", "."))
+    out := try run_in(t, d, [_]string("lint", "."))
     try t.check(not out.success(), "a rule at `deny` did not fail the command")
     try t.check(not str.contains(out.err, "unused-variable"), "{}", out.err)
     try t.expect_contains("stderr", out.err, "error[bool-comparison]")
     // The command line comes after the manifest.
-    warn := try gamma_in(t, d, [_]string("lint", "--warn=bool-comparison", "."))
+    warn := try run_in(t, d, [_]string("lint", "--warn=bool-comparison", "."))
     try t.check(warn.success(), "{}", warn.err)
     try t.expect_contains("stderr", warn.err, "warning[bool-comparison]")
 
     try t.write(manifest, "[package]\nname = \"tidy\"\nversion = \"0.1.0\"\n\n[lint]\nunused-thing = \"allow\"\n")
-    bad := try gamma_in(t, d, [_]string("lint", "."))
+    bad := try run_in(t, d, [_]string("lint", "."))
     try t.check(not bad.success() and str.contains(bad.err, "unused-thing"), "{}", bad.err)
     return ()
 }
@@ -222,14 +217,14 @@ main :: fn() needs Out {
 }
 `
     try t.write(main_gm, src)
-    out := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    out := try run_in(t, d, [_]string("lint", "main.gm"))
     try t.check(out.success() and out.err.len is 0, "{}", out.err)
     try t.write(main_gm, str.replace_alloc(src, "unused-declaration", "unused-decl")!)
     // Which names are rules is the tool's concern: the program compiles, and the tool
     // reports the name it does not know.
-    check := try gamma_in(t, d, [_]string("check", "main.gm"))
+    check := try run_in(t, d, [_]string("check", "main.gm"))
     try t.check(check.success() and check.err.len is 0, "{}", check.err)
-    unknown := try gamma_in(t, d, [_]string("lint", "main.gm"))
+    unknown := try run_in(t, d, [_]string("lint", "main.gm"))
     try t.check(not unknown.success(), "an unknown rule in an attribute was accepted")
     try t.expect_contains("stderr", unknown.err, "unknown lint rule `unused-decl`")
     return ()
@@ -245,14 +240,10 @@ member_is :: fn(v: json.Value, key, want: string) -> bool {
 json_output_names_the_rule :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     d := try t.scratch(t.name)
     try t.write(kit.join(d, "main.gm"), MESSY)
-    out := try gamma_in(t, d, [_]string("lint", "--diag-format=json", "main.gm"))
-    diags := list(json.Value)
-    for line in str.lines(out.err) {
-        doc := json.parse(line) else e => return !t.fail("not JSON ({}): {}", line, e)
-        diags.push(doc.root)!
-    }
-    try t.check(diags.items.len is 6, "{} diagnostics:\n{}", diags.items.len, out.err)
-    for diag in diags.items {
+    out := try run_in(t, d, [_]string("lint", "--diag-format=json", "main.gm"))
+    diags := try t.json_lines(out.err)
+    try t.check(diags.len is 6, "{} diagnostics:\n{}", diags.len, out.err)
+    for diag in diags {
         code_is_string := false
         if c := json.get(diag, "code") {
             if .String(_) := c { code_is_string = true }
@@ -260,7 +251,7 @@ json_output_names_the_rule :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
         try t.check(member_is(diag, "severity", "warning") and code_is_string, "not a warning with a code:\n{}", out.err)
     }
     found := false
-    for diag in diags.items {
+    for diag in diags {
         if not member_is(diag, "code", "unused-variable") { continue }
         found = true
         fixes := json.get(diag, "fixes") else return !t.fail("no fixes:\n{}", out.err)
@@ -293,7 +284,7 @@ rules_lists_every_rule :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 
 /// The module or program `t.param` (a path below the repository's root) has no findings.
 library_and_examples_lint_clean :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    out := try gamma_in(t, t.cfg.root, [_]string("lint", "--diag-format=short", t.param))
+    out := try run_in(t, t.cfg.root, [_]string("lint", "--diag-format=short", t.param))
     try t.check(out.success() and out.err.len is 0, "`gamma lint {}`:\n{}", t.param, out.err)
     return ()
 }
