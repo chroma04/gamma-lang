@@ -317,10 +317,14 @@ call_closure :: fn(fg: ^FnGen, cv: string, cty: Ty, vals: []const string, tys: [
 
 /// True if values of function pointer type `t` use the plain C convention: their
 /// effects are at most `{Sys}`.
-ptr_type_plain :: fn(fg: ^FnGen, t: Ty) -> bool needs sema.Load {
-    match fg.g.ty.kind(t) {
-        .FnPtr(sig) => return fg.g.within_sys(&sig.effects)
-        .Optional(inner) => return fg.ptr_type_plain(inner)
+ptr_type_plain :: fn(fg: ^FnGen, t: Ty) -> bool needs sema.Load => fg.g.fn_ptr_type_plain(t)
+
+/// Whether calls through a function pointer of type `t` (or an optional one) use the plain
+/// convention: its effects are at most `Sys`.
+fn_ptr_type_plain :: fn(g: ^Gen, t: Ty) -> bool needs sema.Load {
+    match g.ty.kind(t) {
+        .FnPtr(sig) => return g.within_sys(&sig.effects)
+        .Optional(inner) => return g.fn_ptr_type_plain(inner)
         _ => return false
     }
 }

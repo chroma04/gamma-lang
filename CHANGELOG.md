@@ -8,6 +8,8 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- **Thread-local foreign variables**: `#thread_local #global x: T` in a `foreign` block
+  declares a C `_Thread_local` variable, one instance per thread (spec §19.3).
 - **`gamma test --backend=interp` and `gamma bench --backend=interp`** run tests and
   benchmarks in the interpreter, without a C compiler. Each test runs in a process of its
   own, so `--jobs`, `--timeout`, `--filter` and the report work as with the C back end, and
@@ -145,6 +147,9 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **A function in a constant table is the same pointer as at run time.** A function that
+  performs no effects, stored in a constant at a function pointer type that performs some,
+  compared unequal (`is`) to the same function converted at run time in native builds.
 - **Long complex-number chains check in linear time.** `1j + y + y + …` was quadratic
   (20000 links: 6.9 s, now 0.3 s): the operator nodes are classified once, and the names
   the compiler gives the operands of each complex operation no longer pile up in the

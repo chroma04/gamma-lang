@@ -2660,7 +2660,7 @@ libc :: foreign "c" {
 
 `#global name: T = e` declares a mutable variable with static storage. `e` must be a compile-time constant (§17.4). Every read or write of a `#global`, and taking its address, performs `Sys`; accesses through a pointer obtained that way do not (they are ordinary memory accesses, §19.6). `#global` inside a `foreign` block declares a variable defined by foreign code (no initializer).
 
-`#thread_local` may be added to make one instance per thread.
+`#thread_local` may be added to make one instance per thread. On a foreign `#global` it declares a variable the foreign code defines as thread-local (C's `_Thread_local`): each thread reaches its own instance, the one the foreign code of that thread uses. (`errno` is reached as `#global errno: c.c_int` without it: the implementation knows the C library's definition.)
 
 *Rationale:* requiring `Sys` keeps functions without `Sys` free of hidden state, which is what makes compile-time evaluation and test handlers sound.
 

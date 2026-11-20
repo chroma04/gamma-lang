@@ -66,6 +66,7 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
     for member in block.members {
         link_name: ?string = null
         callconv: ?(win64: bool, span: source.Span) = null
+        thread_local := false
         for a in member.attrs {
             match a.name.name {
                 "link_name" => {
@@ -93,6 +94,14 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
                         if w := s.callconv_attr(&a) { callconv = (win64: w, span: a.span) }
                     } else {
                         s.error(a.span, "attribute `#callconv` does not apply to a foreign member")
+                    }
+                }
+                // A C `_Thread_local` variable (§19.3).
+                "thread_local" => {
+                    if member.kind is .Global(_) {
+                        thread_local = true
+                    } else {
+                        s.error(a.span, "`#thread_local` applies only to a `#global`")
                     }
                 }
                 other => s.error(a.span, str.format("attribute `#{}` does not apply to a foreign member", other)!)
@@ -130,7 +139,7 @@ declare_foreign :: fn(s: ^Sema, module: usize, name: ast.Ident, block: ^const as
         d := s.l.add_member(m, own_name, item)
         s.set_state(d, .Done(value))
         if .Global(t) := value {
-            s.globals.push(GlobalInfo(decl: d, name: own_name.name, ty: t, module: module, init: null, thread_local: false, link_name: sym, align: null))!
+            s.globals.push(GlobalInfo(decl: d, name: own_name.name, ty: t, module: module, init: null, thread_local: thread_local, link_name: sym, align: null))!
         }
     }
     return .Module(m)

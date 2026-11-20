@@ -39,10 +39,7 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 ## 4. Language and library (only with evidence; check spec §22 for std additions)
 - spec-notes/pain-points.md "Open": template code size (checked template values).
 - Vector follow-ups if asked: lane sqrt, two-input shuffles, lane trunc/round to ints.
-- Interop gaps: const relocations of plain fns stored at effectful fn-pointer types;
-  errno-style TLS foreign globals.
-- Platforms: FreeBSD, a freestanding/embedded profile. Docs: Rosetta-style examples,
-  "Gamma for Zig programmers".
+- Platforms: FreeBSD, a freestanding/embedded profile. Docs: Rosetta-style examples.
 
 ## Small cleanups (only when touching the code)
 - check: generic_call_packed's per-argument loop; write_expr's big match.

@@ -1,6 +1,6 @@
 # Gamma for C programmers
 
-[Contents](README.md) · [Gamma for Rust programmers](for-rust-programmers.md)
+[Contents](README.md) · [Gamma for Rust programmers](for-rust-programmers.md) · [Gamma for Zig programmers](for-zig-programmers.md)
 
 This page is for someone who writes C for a living and wants to know what Gamma looks like from there: which C constructs map onto which Gamma constructs, what has been removed, and why. It is a map, not a tutorial. Each section gives the C idiom, its Gamma replacement with a short program you can run, and a sentence on the reason. The chapters of the [guide](README.md) cover each area in depth, and this page links to them. The [specification](../../gamma-spec.md) is the normative definition; its [Appendix C](../../gamma-spec.md#appendix-c-design-rationale) derives every rule below from the five design principles.
 

@@ -33,6 +33,7 @@ This guide is for experienced programmers, especially C programmers, who want to
 | Guide | What it covers |
 | --- | --- |
 | [Gamma for C programmers](for-c-programmers.md) | C constructs and their Gamma counterparts, what changes and why, and the C habits that are compile errors |
+| [Gamma for Zig programmers](for-zig-programmers.md) | What Zig and Gamma share, allocation as an effect instead of a parameter, error unions as types, compile time without type functions |
 | [Gamma for Rust programmers](for-rust-programmers.md) | What carries over from Rust, memory without ownership, generics without traits, effects, and the Rust habits that do not carry over |
 
 ## Conventions used in this guide

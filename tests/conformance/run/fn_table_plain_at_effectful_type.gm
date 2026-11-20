@@ -1,0 +1,22 @@
+// A constant table of function pointers whose type performs an effect holds functions
+// that perform fewer (§5.14, §12.3): the plain one is called through the same pointer type.
+plain :: fn() {}
+say :: fn() needs Out => print("said")
+
+Entry :: struct {
+    name: string
+    run: ^fn() needs Out
+}
+
+TABLE :: [_]Entry(Entry(name: "plain", run: plain), Entry(name: "say", run: say))
+
+main :: fn() needs Out {
+    for e in TABLE {
+        print("{}: ", e.name)
+        e.run()
+        print("\n")
+    }
+    p: ^fn() needs Out = plain
+    p()
+    print("{}\n", TABLE[0].run is p)
+}

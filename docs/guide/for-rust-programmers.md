@@ -1,6 +1,6 @@
 # Gamma for Rust programmers
 
-[Contents](README.md) · [Gamma for C programmers](for-c-programmers.md)
+[Contents](README.md) · [Gamma for C programmers](for-c-programmers.md) · [Gamma for Zig programmers](for-zig-programmers.md)
 
 This page is for programmers who know Rust well and want to know how Gamma differs. It maps familiar Rust ideas onto Gamma, shows the short programs that replace the ones you would write in Rust, and says, for each place where Gamma chose differently, what the trade-off is. It is a companion to the tutorial chapters, which it links to for depth, not a replacement for them. When you need an exact rule, the [language specification](../../gamma-spec.md) is normative.
 

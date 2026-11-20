@@ -1,0 +1,11 @@
+//! stage: check
+// `#thread_local` applies to a foreign `#global` (a C `_Thread_local` variable), not to a
+// foreign function (§19.3).
+c :: import "std/c"
+
+lib :: foreign "c" {
+    #thread_local #global counter: c.c_int
+    #thread_local bump :: fn() -> c.c_int    //~ ERROR `#thread_local` applies only to a `#global`
+}
+
+main :: fn() {}

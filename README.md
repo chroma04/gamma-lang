@@ -46,8 +46,9 @@ early exit, coroutines, testing.
   that runs programs in your browser.
 - [`gamma-spec.md`](gamma-spec.md) — the complete language specification.
 - [`docs/guide/`](docs/guide/README.md) — a tutorial introduction to the language.
-  Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md)
-  or [Gamma for Rust programmers](docs/guide/for-rust-programmers.md).
+  Coming from another language? Read [Gamma for C programmers](docs/guide/for-c-programmers.md),
+  [Gamma for Rust programmers](docs/guide/for-rust-programmers.md)
+  or [Gamma for Zig programmers](docs/guide/for-zig-programmers.md).
 - [`docs/std.md`](docs/std.md) — the standard library.
 - [`docs/architecture.md`](docs/architecture.md) — how the compiler, written in Gamma, is
   organized: its stages, back ends and tools.
