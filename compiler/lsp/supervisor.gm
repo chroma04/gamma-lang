@@ -1,0 +1,454 @@
+// `gamma lsp` runs the server in a child process (`gamma lsp --worker`) and passes the
+// messages through, so that a trap in the server (an internal error: a trap cannot be
+// caught in the process that traps) does not end the session. When the child ends without
+// having been told to exit, the client is shown the error, the requests it had not
+// answered fail with it, and a new child is started and given the state of the session
+// again: the `initialize` request and the notifications that open, change and close
+// documents or change the configuration, which the supervisor keeps (§ "The language
+// server" in docs/architecture.md).
+
+/// What the supervisor waits for: messages from the client and from the child, and their
+/// ends. `gen` tells the children apart, so that what an earlier one sent is dropped.
+Event :: union {
+    Client: Incoming
+    ClientEnded
+    Worker: (gen: u32, body: []u8)
+    WorkerEnded: (gen: u32, status: ?process.ExitStatus, err: []u8)
+}
+
+/// The events that the threads have produced and the supervisor has not yet taken.
+Events :: struct {
+    lock: thread.Mutex
+    ready: thread.Condvar
+    items: List(Event)
+    head: usize
+}
+
+post :: fn(q: ^Events, e: Event) needs Sys {
+    thread.lock(&q.lock)
+    q.items.push(e)!
+    thread.signal(&q.ready)
+    thread.unlock(&q.lock)
+}
+
+next_event :: fn(q: ^Events) -> Event needs Sys {
+    thread.lock(&q.lock)
+    while q.head is q.items.items.len { thread.wait(&q.ready, &q.lock) }
+    e := q.items.items[q.head]
+    q.head += 1
+    if q.head is q.items.items.len {
+        q.items.clear()
+        q.head = 0
+    }
+    thread.unlock(&q.lock)
+    return e
+}
+
+/// The thread that hands the client's messages, which `reader` reads, to the supervisor.
+forward_client :: fn(p: ^(box: ^Inbox, q: ^Events)) needs Sys {
+    with heap_allocator() {
+        while true {
+            m := p.box.take() else break
+            post(p.q, .Client(m))
+        }
+        post(p.q, .ClientEnded)
+    }
+}
+
+/// What a thread that reads one child's output needs.
+WorkerOut :: struct {
+    q: ^Events
+    child: process.Child
+    gen: u32
+}
+
+/// The most of the child's standard error that is kept for the report of a crash.
+MAX_ERR_TAIL :: 16 * 1024
+
+/// The thread that reads one child's output: its messages go to the supervisor, its
+/// standard error to ours (and the last of it into the report of how it ended).
+read_worker :: fn(w: ^WorkerOut) needs Sys {
+    with heap_allocator(), system_io(), system_output() {
+        pending := list(u8)
+        tail := list(u8)
+        buf: [65536]u8 = ---
+        while true {
+            chunk := (w.child.read(buf[..]) else break) else break
+            data := buf[0..chunk.len]
+            match chunk.from {
+                .Stdout => {
+                    pending.extend(data)!
+                    while body := take_frame(&pending) { post(w.q, .Worker(gen: w.gen, body: body)) }
+                }
+                .Stderr => {
+                    Err.write(data)
+                    tail.extend(data)!
+                    if tail.items.len > 2 * MAX_ERR_TAIL {
+                        keep := tail.items[tail.items.len - MAX_ERR_TAIL..]
+                        rest := list(u8)
+                        rest.extend(keep)!
+                        tail.deinit()
+                        tail = rest
+                    }
+                }
+            }
+        }
+        status: ?process.ExitStatus = null
+        if st := w.child.wait() { status = st }
+        post(w.q, .WorkerEnded(gen: w.gen, status: status, err: tail.items))
+    }
+}
+
+/// The body of the first whole message in `pending`, which is taken out; the child writes
+/// well-formed `Content-Length` frames.
+take_frame :: fn(pending: ^List(u8)) -> ?[]u8 needs Alloc {
+    text := string(pending.items)
+    end := str.find(text, "\r\n\r\n") else return null
+    length: usize = 0
+    for line in str.lines(text[0..end]) {
+        split := str.split_once(line, ":") else continue
+        if str.eq_ignore_case(str.trim(split.before), "content-length") {
+            length = parse_length(str.trim(split.after)) else 0
+        }
+    }
+    start := end + 4
+    if pending.items.len - start < length { return null }
+    body := dupe(pending.items[start..start + length])!
+    rest := list(u8)
+    rest.extend(pending.items[start + length..])!
+    pending.deinit()
+    pending^ = rest
+    return body
+}
+
+/// A client message the supervisor keeps, to give a new child the state of the session.
+Kept :: struct {
+    body: []u8
+    /// The document it is about, if any.
+    uri: ?[]u8
+    /// It sets the whole text of the document (`didOpen`, or a `didChange` of the full text,
+    /// which is all the server asks for).
+    whole: bool
+}
+
+/// A request of the client that the child has not answered: its id as JSON text.
+Unanswered :: struct {
+    id: []u8
+}
+
+Supervisor :: struct {
+    q: ^Events
+    /// The command that starts a child.
+    argv: []const string
+    child: ?process.Child = null
+    /// The generation of the current child; the child is running if `alive`.
+    gen: u32 = 0
+    alive: bool = false
+    /// No client message has reached the child since it started: a crash then happens on
+    /// the replayed state, and the next child waits for the next message.
+    fresh: bool = false
+    /// The response to the replayed `initialize` is not the client's.
+    drop_initialize: bool = false
+    /// The client sent `exit`, or closed its end.
+    exiting: bool = false
+    kept: List(Kept)
+    unanswered: List(Unanswered)
+    crashes: u32 = 0
+}
+
+/// Children that crash after this many in a session end it: something is badly wrong.
+MAX_CRASHES :: 50
+
+/// Runs the server behind a supervisor, as `command` does.
+pub supervise :: fn() -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    q := new(Events(lock: thread.mutex(), ready: thread.condvar(), items: list(Event), head: 0))!
+    box := new(inbox())!
+    _ = thread.spawn(reader, box) else {
+        eprint("gamma: cannot start the reader thread\n")
+        return 1
+    }
+    link := new((box: box, q: q))!
+    _ = thread.spawn(forward_client, link) else {
+        eprint("gamma: cannot start the reader thread\n")
+        return 1
+    }
+    argv := list(string)
+    argv.push(load.executable())!
+    argv.push("lsp")!
+    argv.push("--worker")!
+    sup := Supervisor(q: q, argv: argv.items, kept: list(Kept), unanswered: list(Unanswered))
+    if not sup.start() {
+        // Without a child, serve in this process.
+        eprint("gamma: cannot start the language server process; serving without a supervisor\n")
+        srv := server()
+        return srv.run(box)
+    }
+    while true {
+        match next_event(q) {
+            .Client(m) => sup.from_client(m)
+            .ClientEnded => {
+                sup.exiting = true
+                if c := sup.child { if sup.alive { c.close_in() } }
+                if not sup.alive { return 1 }
+            }
+            .Worker(gen, body) => {
+                if gen is sup.gen { sup.from_worker(body) }
+                free(body)
+            }
+            .WorkerEnded(gen, ?status, err) => {
+                if gen is not sup.gen { continue }
+                sup.alive = false
+                code := exit_code(status)
+                if sup.exiting { return code }
+                sup.crashed(status, string(err))
+                if sup.crashes >= MAX_CRASHES {
+                    notify("window/showMessage", message(1, "the Gamma language server stopped after too many internal errors"))
+                    return 1
+                }
+                // A crash on the replayed state would recur at once: wait for a message.
+                if not sup.fresh { _ = sup.restart() }
+            }
+        }
+    }
+}
+
+/// The exit code of a child that ended with `status`.
+exit_code :: fn(status: ?process.ExitStatus) -> u8 {
+    st := status else return 1
+    .Exited(c) := st else return 1
+    return c.trunc(u8)
+}
+
+/// Starts a child; false if it cannot be started.
+start :: fn(sup: ^Supervisor) -> bool needs Alloc + Proc + Sys {
+    child := Proc.spawn(sup.argv, process.SpawnOptions(stdin: .Pipe, stdout: .Pipe, stderr: .Pipe)) else return false
+    sup.gen += 1
+    sup.child = child
+    sup.alive = true
+    sup.fresh = true
+    sup.drop_initialize = false
+    w := new(WorkerOut(q: sup.q, child: child, gen: sup.gen))!
+    _ = thread.spawn(read_worker, w) else {
+        _ = child.kill()
+        _ = child.wait()
+        sup.alive = false
+        return false
+    }
+    return true
+}
+
+/// Starts a new child and gives it the kept state; false if it cannot be started.
+restart :: fn(sup: ^Supervisor) -> bool needs Alloc + Proc + Sys {
+    if not sup.start() { return false }
+    // The client sees one `initialize` response: the first child's.
+    for k in sup.kept.items {
+        if is_initialize(k.body) { sup.drop_initialize = true }
+        sup.to_worker(k.body)
+    }
+    return true
+}
+
+/// Writes a message to the child.
+to_worker :: fn(sup: ^Supervisor, body: []const u8) needs Alloc + Proc {
+    c := sup.child else return
+    msg := list(u8)
+    defer msg.deinit()
+    msg.write("Content-Length: {}\r\n\r\n", body.len)!
+    msg.extend(body)!
+    rest := msg.items[..]
+    while rest.len > 0 {
+        n := c.write(rest) else return
+        if n is 0 { return }
+        rest = rest[n..]
+    }
+}
+
+/// What a client message is to the supervisor.
+Seen :: struct {
+    method: ?[]u8 = null
+    /// The id of a request (or of a response to the child's request), as JSON text.
+    id: ?[]u8 = null
+    uri: ?[]u8 = null
+    /// A `didChange` that replaces the whole text.
+    whole_change: bool = false
+}
+
+/// Frees the copies.
+deinit :: fn(s: ^Seen) needs Alloc {
+    if m := s.method { free(m) }
+    if u := s.uri { free(u) }
+}
+
+/// Reads what the supervisor needs from a client message; the strings are copies (`id`
+/// included, which the caller keeps or frees).
+seen :: fn(body: []const u8) -> Seen needs Alloc {
+    doc := json.parse(body) else return Seen()
+    defer doc.deinit()
+    r := Seen()
+    if m := as_str(field(doc.root, "method")) { r.method = dupe(m)! }
+    if id := json.get(doc.root, "id") { r.id = dupe(to_text(id))! }
+    params := field(doc.root, "params")
+    if u := as_str(path2(params, "textDocument", "uri")) { r.uri = dupe(u)! }
+    if changes := as_array(field(params, "contentChanges")) {
+        r.whole_change = true
+        for c in changes {
+            if json.get(c, "range") is not null { r.whole_change = false }
+        }
+    }
+    return r
+}
+
+is_initialize :: fn(body: []const u8) -> bool needs Alloc => method_is(body, "initialize")
+
+is_open :: fn(body: []const u8) -> bool needs Alloc => method_is(body, "textDocument/didOpen")
+
+/// Whether the message `body` calls `method`.
+method_is :: fn(body: []const u8, method: string) -> bool needs Alloc {
+    s := seen(body)
+    defer s.deinit()
+    if id := s.id { free(id) }
+    return if m := s.method { m is method } else { false }
+}
+
+/// A message from the client: kept if it carries state, passed to the child (started first
+/// if the last one crashed).
+from_client :: fn(sup: ^Supervisor, m: Incoming) needs Alloc + Fs + Out + Proc + Sys {
+    body := match m {
+        .Bad(e) => {
+            respond_error(NULL, PARSE_ERROR, e)
+            return
+        }
+        .Body(b) => b
+    }
+    s := seen(body)
+    defer s.deinit()
+    method := s.method else ""
+    if method is "exit" { sup.exiting = true }
+    // A request (a response to a request of the server's has an id too, but no method).
+    if id := s.id {
+        if s.method is not null { sup.unanswered.push(Unanswered(id: id))! } else { free(id) }
+    }
+    kept := sup.keep(method, body, s)
+    defer if not kept { free(body) }
+    if not sup.alive {
+        if sup.exiting { return }
+        // The kept state includes this message.
+        if not sup.restart() {
+            if s.method is not null {
+                if id := s.id { respond_raw_error(id, "the Gamma language server cannot be started") }
+            }
+            return
+        }
+        if not kept { sup.to_worker(body) }
+    } else {
+        sup.to_worker(body)
+    }
+    sup.fresh = false
+}
+
+/// Keeps `body` if it carries state of the session; returns whether it did.
+keep :: fn(sup: ^Supervisor, method: string, body: []u8, s: Seen) -> bool needs Alloc {
+    match method {
+        "initialize", "initialized", "workspace/didChangeConfiguration", "workspace/didChangeWorkspaceFolders" => {
+            sup.kept.push(Kept(body: body, uri: null, whole: false))!
+            return true
+        }
+        "textDocument/didOpen", "textDocument/didChange", "textDocument/didClose" => {
+            uri := s.uri else return false
+            whole := method is "textDocument/didOpen" or s.whole_change
+            // What a closing, or a new whole text, makes obsolete.
+            if method is "textDocument/didClose" or whole {
+                i: usize = 0
+                while i < sup.kept.items.len {
+                    k := sup.kept.items[i]
+                    same := if ku := k.uri { ku is uri } else { false }
+                    // The `didOpen` stays for its language and version.
+                    if same and (method is "textDocument/didClose" or not is_open(k.body)) {
+                        free(k.body)
+                        if ku := k.uri { free(ku) }
+                        _ = sup.kept.remove(i)
+                    } else {
+                        i += 1
+                    }
+                }
+            }
+            if method is "textDocument/didClose" { return false }
+            sup.kept.push(Kept(body: body, uri: dupe(uri)!, whole: whole))!
+            return true
+        }
+        _ => return false
+    }
+}
+
+/// A message from the child, passed to the client unless it answers the replayed
+/// `initialize`.
+from_worker :: fn(sup: ^Supervisor, body: []const u8) needs Alloc + Out {
+    s := seen(body)
+    defer s.deinit()
+    if id := s.id {
+        defer free(id)
+        if s.method is null {
+            if sup.drop_initialize {
+                sup.drop_initialize = false
+                return
+            }
+            for i, u in enumerate(sup.unanswered.items) {
+                if u.id is id {
+                    free(u.id)
+                    _ = sup.unanswered.remove(i)
+                    break
+                }
+            }
+        }
+    }
+    write_message(string(body))
+}
+
+/// Tells the client that the child crashed, and fails its unanswered requests.
+crashed :: fn(sup: ^Supervisor, status: ?process.ExitStatus, err: string) needs Alloc + Fs + Out {
+    sup.crashes += 1
+    what := last_report(err)
+    how: string = "ended"
+    if st := status {
+        how = match st {
+            .Exited(c) => str.format("exited with status {}", c)!
+            .Signaled(n) => str.format("was ended by signal {}", n)!
+        }
+    }
+    summary := if what.len > 0 { what } else { how }
+    notify("window/showMessage", message(1, str.format("internal error in the Gamma language server: {}. The server restarted; please report this, with the file that caused it, at https://github.com/chroma04/gamma-lang/issues", summary)!))
+    notify("window/logMessage", message(1, str.format("the Gamma language server {}:\n{}", how, err)!))
+    for u in sup.unanswered.items {
+        respond_raw_error(u.id, str.format("internal error in the Gamma language server: {}", summary)!)
+        free(u.id)
+    }
+    sup.unanswered.clear()
+}
+
+/// The reason of the last trap report in `err` (the line after its `trap: `), or "".
+last_report :: fn(err: string) -> string {
+    i := str.rfind(err, "trap: ") else return ""
+    rest := err[i + "trap: ".len..]
+    end := rest.index_of('\n') else rest.len
+    return rest[0..end]
+}
+
+/// The params of `window/showMessage` and `window/logMessage`.
+message :: fn(kind: i64, text_: string) -> Value needs Alloc {
+    o := obj()
+    o.put("type", int(kind))
+    o.put("message", text(text_))
+    return o.value()
+}
+
+/// An `InternalError` response to the request whose id is the JSON text `id`.
+respond_raw_error :: fn(id: []const u8, message_: string) needs Alloc + Fs + Out {
+    doc := json.parse(id) else return
+    defer doc.deinit()
+    respond_error(doc.root, INTERNAL_ERROR, message_)
+}
+
+INTERNAL_ERROR :: -32603
+
+load :: import "../load"
+process :: import "std/process"

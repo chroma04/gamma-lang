@@ -14,7 +14,6 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 - `test --backend=interp`: a test reaching foreign code is refused (could fall back to
   C per test, as `run` does); each test process re-checks the program (~1 s for the
   compiler package; a shared checked-program cache would remove it).
-- LSP: a trap ends the server (no ICE diagnostic).
 - Windows: command-line quoting, 0700 cache dirs; Safe, `gamma debug`, gdb printers are
   Linux-only; ARM64 Windows. Windows-only code paths (spawn, install.ps1,
   gm_fs_open_dir) are exercised only by Windows CI.

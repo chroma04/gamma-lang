@@ -1376,6 +1376,7 @@ pointed to [`lsp.md`](lsp.md). This section is about how it works.
 | `compiler/lsp/refs.gm` | find references and rename across the modules of a package |
 | `compiler/lsp/workspace.gm` | the modules of a package, and a cache of what was learned from checking each |
 | `compiler/lsp/server.gm` | open documents, when to analyze, and request dispatch |
+| `compiler/lsp/supervisor.gm` | runs the server in a child process and restarts it after a crash |
 | `compiler/ide/` | the index that the requests are answered from, built from a checked program |
 
 A second thread only reads messages and queues them. The main loop handles a message, and
@@ -1392,7 +1393,20 @@ errors do not stop it. Diagnostics are published for every open document of the 
 for every other file that has diagnostics. Files that had diagnostics before and have none now
 get an empty list. A diagnostic without a location goes to line 0 of the first open document.
 Labels become `relatedInformation`; the explanations that a diagnostic carries are appended to
-its message. A failure inside the checker ends the server, since traps cannot be caught.
+its message.
+
+**Crashes.** A trap cannot be caught in the process that traps, so `gamma lsp` is a
+supervisor: it runs the server as `gamma lsp --worker` and passes messages through,
+keeping the `initialize` request and the notifications that carry the session's state
+(`initialized`, configuration and workspace-folder changes, and per document its `didOpen`
+and its last full-text `didChange`; `didClose` drops the document's). If the child ends
+without an `exit`, the supervisor shows the trap's reason (`window/showMessage`, with the
+whole standard error in `window/logMessage`), answers the requests the child had not
+answered with `InternalError`, starts a new child and replays what it kept, dropping the
+answer to the replayed `initialize`. A child that crashes before the client sent anything
+new would crash again on the same state, so the next one starts with the next client
+message instead. `GAMMA_LSP_DEBUG_TRAP` makes the request `gamma/debugTrap` trap, for the
+tests.
 
 **The index** (`compiler/ide/`) reads the state of a finished run and adds no code to the
 checking passes, so ordinary compilation is unaffected.

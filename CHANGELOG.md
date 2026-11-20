@@ -16,6 +16,10 @@ Versions and what each kind of change means are described in
 - **`gamma lint --target=<triple>` and `gamma fix --target=<triple>`** check the program
   for another machine, as `gamma check --target` does, so code in `when target…` branches
   for it is linted too.
+- **The language server survives its own crashes.** `gamma lsp` runs the server in a
+  child process; after an internal error it shows the error in the editor, fails the
+  request that caused it, and restarts the server with the open documents as they were.
+  Before, a trap in the server ended the session.
 - **Spreads in tuple expressions.** A tuple expression takes `..e` like an argument list:
   `(1, ..t)`, `(..a)` for the elements of an array `a`, `(..p, z: 0)` to extend a named
   tuple, and `(..p, x: 5)` to replace one of its elements. Array constructors already took

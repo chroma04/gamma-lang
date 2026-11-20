@@ -58,6 +58,13 @@ A `.gm` buffer that has not been saved is part of the module of its directory,
 and a buffer in a directory that does not exist yet is checked as a module of its
 own.
 
+An internal error in the server (a bug in the compiler) does not end the session:
+`gamma lsp` runs the server as a child process, and when that crashes it shows the
+error in the editor, fails the request that caused it, and starts the server again
+with your open documents. If the error comes from the text of a document, the next
+start waits for your next edit. Please report such errors with the file that
+caused them.
+
 Details are in the "Language server" section of [`docs/architecture.md`](architecture.md#language-server).
 
 ## Limitations
