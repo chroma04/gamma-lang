@@ -465,6 +465,7 @@ and feeds arbitrary input to one part of the compiler:
 | `parse` | text, lexed and parsed |
 | `fmt` | text the parser accepts is formatted, and the result must format to itself |
 | `check` | text as a single-file program through the whole front end (name resolution, type checking, lowering), with the real standard library from `lib/std` of the source tree |
+| `lower` | as `check`, and a program that checks cleanly also through the back end: preparation for code generation and the C it generates, in a Debug and a Fast configuration |
 | `manifest` | text as a `gamma.toml` and as a `gamma.lock` (an accepted lock must name no path outside the package store) |
 | `archive` | bytes unpacked as a package archive into a scratch directory; nothing may be written outside it |
 
@@ -473,7 +474,7 @@ blowups are bugs.
 
 How a Gamma program becomes a libFuzzer target: `gamma build --emit-c` writes the C of the
 program, and `build.sh` compiles it with `-fsanitize=fuzzer-no-link` (coverage
-instrumentation, plus `address` for every target but `check`) and links it with libFuzzer's
+instrumentation, plus `address` for every target but `check` and `lower`) and links it with libFuzzer's
 driver library without its `main`. The generated C defines `main`, which `build.sh` renames
 (`-Dmain=gm_program_main`) so that `shim.c` can own the real one. It starts the Gamma program,
 whose `main` sets up the runtime and the ambient handlers and then calls
@@ -499,9 +500,9 @@ tree) and passes everything after the target to libFuzzer. `seed.sh` runs `seed-
 which copies the Gamma sources (the library, the examples and the conformance tests) and the
 manifests and lockfiles of the repository into `fuzz/corpus/TARGET`, and adds a few package
 archives for the `archive` target (a valid one and the kinds the unpacker must refuse). The
-`check` target loads and checks the standard library for every input, so it is slow (tens of
-inputs per second); `-jobs` and `-workers` use several cores, and `build.sh` builds it without
-a sanitizer by default.
+`check` and `lower` targets load and check the standard library for every input, so they are
+slow (tens of inputs per second); `-jobs` and `-workers` use several cores, and `build.sh`
+builds them without a sanitizer by default.
 
 Seeds are in `fuzz/corpus/TARGET`, new inputs go to `fuzz/found/TARGET` and crashing inputs to
 `fuzz/artifacts/TARGET`; none of them is checked in. `build.sh selftest` builds a target that
