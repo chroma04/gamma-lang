@@ -101,7 +101,7 @@ harness in `tests/harness/` (package `harness`, which depends on the compiler's 
 what it shares with it). `tools/test.sh` builds both and runs them:
 
 ```sh
-tools/test.sh [-j N] [-v] [--list] [--filter TEXT] [PREFIX...]
+tools/test.sh [-j N] [-v] [--list] [--slowest N] [--filter TEXT] [PREFIX...]
 ```
 
 It builds `target/bootstrap/gamma` from the current sources (from the seed the first time,
@@ -113,8 +113,9 @@ suite and `tools/test.sh conformance/run/std_` a part of it; with no prefix ever
 `--filter TEXT` (or `GAMMA_TEST_FILTER=TEXT`) keeps the tests whose name contains `TEXT`,
 `--list` prints the names instead of running, `-v` lists every test as it passes or is skipped, and
 `-j N` sets the number of tests that run at once (default: one per processor). Tests run in
-parallel on threads, those that took longest in the previous run first. The exit status is 0 if
-no test failed.
+parallel on threads, those that took longest in the previous run first. The summary gives the
+wall time and the sum of the tests' times, whose ratio is how many ran at once on average;
+`--slowest N` also lists the `N` slowest tests. The exit status is 0 if no test failed.
 
 ```sh
 tools/test.sh                              # every suite

@@ -138,13 +138,34 @@ jobs:
         with:
           name: gamma-exe
           path: gamma
+      # What one build and run costs on this machine, step by step, to compare with the Linux
+      # jobs when the tests below get slow.
+      - name: Time the steps of one build
+        shell: bash
+        run: |
+          export GAMMA_STD="$PWD/lib/std" GAMMA_RUNTIME="$PWD/runtime" GAMMA_CACHE_DIR="$PWD/target/probe-cache"
+          g=gamma/gamma.exe
+          powershell -NoProfile -Command "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-List" || true
+          echo "processors: $NUMBER_OF_PROCESSORS"
+          time gcc --version > /dev/null
+          time "$g" version
+          time "$g" check examples/hello.gm
+          time "$g" run --backend=interp examples/hello.gm
+          time "$g" build examples/hello.gm -o target/hello1.exe
+          time "$g" build examples/hello.gm -o target/hello2.exe
+          time target/hello2.exe
+          time target/hello2.exe
+          cp target/hello2.exe target/hello3.exe
+          time target/hello3.exe
+          time "$g" run examples/hello.gm
+          time "$g" run examples/hello.gm
       # Gamma takes the first of cc, gcc and clang on PATH, which is MSYS2's (added first
       # above).
       - name: Test
         shell: bash
         run: |
           GAMMA_TEST_COMPILER="$(cygpath -w "$PWD/gamma/gamma.exe")" \
-            GAMMA_TEST_HARNESS="$PWD/gamma/harness.exe" tools/test.sh conformance/ examples/
+            GAMMA_TEST_HARNESS="$PWD/gamma/harness.exe" tools/test.sh --slowest 25 conformance/ examples/
 
   fuzz-gammac:
     # The compiler's fuzz targets (libFuzzer) build, and each runs for a while on the seed

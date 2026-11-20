@@ -1,13 +1,15 @@
 //! The test harness: runs the test suites of the repository against a `gamma` executable.
 //!
-//!     harness [-j N] [-v] [--list] [--filter TEXT] [PREFIX...]
+//!     harness [-j N] [-v] [--list] [--slowest N] [--filter TEXT] [PREFIX...]
 //!
 //! Run from the repository's root, with `GAMMA_TEST_COMPILER` naming the compiler under
 //! test (`tools/test.sh` builds both and runs this). A test runs if its name (`suite/test`,
 //! such as `conformance/run/std_process.gm`) starts with one of the prefixes, or there are
 //! none, and contains the text of `--filter` (or `GAMMA_TEST_FILTER`) if one is given. Tests run in parallel,
 //! on `-j` threads (default: one per processor), those that took longest in the previous
-//! run first. The exit status is 0 if no test failed.
+//! run first. The summary gives the wall time and the sum of the tests' times (their ratio is
+//! how many ran at once on average); `--slowest N` also lists the N slowest tests. The exit
+//! status is 0 if no test failed.
 //!
 //! The suites are listed in `suites`; each is a module with a function adding its tests
 //! (see `kit`). `docs/contributing.md` describes the environment variables that select
@@ -47,7 +49,7 @@ testing_cli :: import "./testing_cli"
 wasi :: import "./wasi"
 selftest :: import "./selftest"
 
-USAGE :: "usage: harness [-j N] [-v] [--list] [--filter TEXT] [PREFIX...]"
+USAGE :: "usage: harness [-j N] [-v] [--list] [--slowest N] [--filter TEXT] [PREFIX...]"
 
 /// A suite: its name and the function that adds its tests.
 Suite :: struct {
@@ -119,6 +121,7 @@ run :: fn() -> string!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Ran
     jobs_n: u32 = thread.cpu_count()
     verbose := false
     listing := false
+    slowest: usize = 0
     patterns := list(string)
     filter: ?string = Env.var("GAMMA_TEST_FILTER")
     args := Env.args()
@@ -135,6 +138,11 @@ run :: fn() -> string!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Ran
             }
             "-v", "--verbose" => { verbose = true }
             "--list" => { listing = true }
+            "--slowest" => {
+                n := args.get(i) else return !str.format("--slowest needs a number\n{}", USAGE)!
+                i += 1
+                slowest = str.parse_int(usize, n) else return !str.format("--slowest needs a number, not `{}`", n)!
+            }
             "-f", "--filter" => {
                 filter = args.get(i) else return !str.format("--filter needs a text\n{}", USAGE)!
                 i += 1
@@ -186,7 +194,9 @@ run :: fn() -> string!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Ran
     passed: usize = 0
     failed := list(string)
     skipped: usize = 0
+    busy_ms: u64 = 0
     for j in all.items {
+        busy_ms += j.ms
         match j.outcome {
             .Pass => { passed += 1 }
             .Fail => failed.push(j.full)!
@@ -197,7 +207,15 @@ run :: fn() -> string!u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Ran
         print("\nfailed:\n")
         for name in failed.items { print("    {}\n", name) }
     }
-    print("\n{} passed, {} failed, {} skipped in {}.{} s\n", passed, failed.items.len, skipped, took.to_ms() / 1000, took.to_ms() % 1000 / 100)
+    if slowest > 0 {
+        all.items.sort_by(fn(x, y: ^const Job) -> bool => x.ms > y.ms)
+        print("\nslowest:\n")
+        for j in all.items[0..slowest.min(all.items.len)] { print("    {}.{} s  {}\n", j.ms / 1000, j.ms % 1000 / 100, j.full) }
+    }
+    print(
+        "\n{} passed, {} failed, {} skipped in {}.{} s ({}.{} s of test time on {} threads)\n", passed, failed.items.len, skipped,
+        took.to_ms() / 1000, took.to_ms() % 1000 / 100, busy_ms / 1000, busy_ms % 1000 / 100, n,
+    )
     return if failed.items.len > 0 { 1 } else { 0 }
 }
 
