@@ -19,6 +19,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
         out.push(kit.Test(name: "cross_build_runs", run: cross_build_runs))!
         out.push(kit.Test(name: "big_endian_cross_build_runs", run: big_endian_cross_build_runs))!
         out.push(kit.Test(name: "target_flag_checks_the_compiler", run: target_flag_checks_the_compiler))!
+        out.push(kit.Test(name: "lint_checks_for_the_target", run: lint_checks_for_the_target))!
     }
 }
 
@@ -231,5 +232,29 @@ target_flag_checks_the_compiler :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     try t.check(not out.success(), "an empty --target was accepted")
     out = try gamma(t, [_]string("run", "--target=s390x-linux-gnu", "--mode=safe", s.src), [_]string("CC=clang"))
     try t.expect_contains("stderr", out.err, "--mode=safe")
+    return ()
+}
+
+LINT_TARGET :: `main :: fn() needs Out {
+    big := @black_box(true)
+    when target.arch is .S390x {
+        if big is true { print("big\n") }
+    }
+}
+`
+
+/// `gamma lint --target` checks the branches of `when target…` for that target, which
+/// are not checked for the host.
+lint_checks_for_the_target :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not kit.runs("clang") { return !t.skip("needs clang") }
+    dir := try t.scratch(kit.join("cross", "lint-target"))
+    src := kit.join(dir, "main.gm")
+    try t.write(src, LINT_TARGET)
+    out := try gamma(t, [_]string("lint", src), [_]string("CC=clang"))
+    try t.check(out.success(), "{}", out.err)
+    try t.check(not str.contains(out.err, "bool-comparison"), "{}", out.err)
+    out = try gamma(t, [_]string("lint", "--target=s390x-linux-gnu", src), [_]string("CC=clang"))
+    try t.check(out.success(), "{}", out.err)
+    try t.expect_contains("stderr", out.err, "warning[bool-comparison]")
     return ()
 }

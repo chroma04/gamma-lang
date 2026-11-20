@@ -1,5 +1,6 @@
 //! Tests of `gamma test` and `gamma bench`: which tests run (`--all`, `--filter`), what is
-//! printed (`--show-output`, `--time`), `--jobs`, `--timeout`, `--coverage`, and benchmarks.
+//! printed (`--show-output`, `--time`), `--jobs`, `--timeout`, `--coverage`, benchmarks,
+//! and both back ends (`--backend=c`, `--backend=interp`).
 
 kit :: import "../kit"
 str :: import "std/str"
@@ -22,6 +23,9 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "lsp_rejects_unknown_options", run: lsp_rejects_unknown_options))!
     out.push(kit.Test(name: "a_test_that_runs_too_long_fails_natively", run: a_test_that_runs_too_long_fails))!
     out.push(kit.Test(name: "the_timeout_must_be_a_positive_number", run: the_timeout_must_be_positive))!
+    out.push(kit.Test(name: "tests_run_in_the_interpreter", run: tests_run_in_the_interpreter))!
+    out.push(kit.Test(name: "a_test_that_runs_too_long_fails_in_the_interpreter", run: a_test_that_runs_too_long_fails_interp))!
+    out.push(kit.Test(name: "benchmarks_run_in_the_interpreter", run: benchmarks_run_in_the_interpreter))!
 }
 
 /// A file of a package: its path below the package's root, and its text.
@@ -265,10 +269,10 @@ coverage_on_the_c_back_end :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     try expect_hits(t, info, try line_of(t, main, "return x + 1"), 1)
     unreached := str.format("DA:{},", try line_of(t, main, "return x * 2"))!
     try t.check(not str.contains(info, unreached), "{} is in the tracefile:\n{}", unreached, info)
-    // Tests run only through C.
+    // Lines are counted only through C.
     interp := try gamma(t, p, [_]string("test", "--backend=interp", "--coverage"))
-    try t.check(not interp.success(), "{}", interp.out)
-    try t.expect_contains("stderr", interp.err, "`--backend=interp` is supported by `run` only")
+    try t.check(interp.code() is 2, "{}", interp.out)
+    try t.expect_contains("stderr", interp.err, "`--coverage` needs the C back end")
     return ()
 }
 
@@ -389,5 +393,68 @@ the_timeout_must_be_positive :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
         err := try usage_error(t, [_]string("test", bad, "x.gm"))
         try t.expect_contains("stderr", err, "`--timeout` needs a positive number of seconds")
     }
+    return ()
+}
+
+INTERP_TESTS :: `
+main :: fn() {}
+
+add :: fn(a, b: i32) -> i32 => a + b
+
+test "adds" {
+    expect_eq(add(1, 2), 3)
+}
+
+test "prints" {
+    print("hello from the interpreter\n")
+}
+
+test "fails" {
+    expect_eq(add(1, 2), 4)
+}
+
+test "traps" {
+    xs := [_]i32(1, 2)
+    i := 5
+    _ = xs[i]
+}
+`
+
+tests_run_in_the_interpreter :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "interp_tests", [_]File(File(path: "main.gm", text: INTERP_TESTS)))
+    out := try gamma(t, p, [_]string("test", "--backend=interp", "--show-output"))
+    try t.check(out.code() is 1, "{}{}", out.out, out.err)
+    try t.expect_contains("stdout", out.out, "test \"adds\" ... ok\ntest \"prints\" ... ok\n    hello from the interpreter\n")
+    try t.expect_contains("stdout", out.out, "test \"fails\" ... FAILED\n    expected: 4\n    actual:   3\n")
+    try t.expect_contains("stdout", out.out, "test \"traps\" ... FAILED\n    index 5 out of bounds for length 2\n")
+    try t.check(str.strip_suffix(out.out, "2 passed, 2 failed\n") is not null, "{}", out.out)
+    // In parallel, and with a filter, the report is the same.
+    parallel := try gamma(t, p, [_]string("test", "--backend=interp", "--show-output", "-j", "3"))
+    try t.expect_text("the output of the parallel run", out.out, parallel.out)
+    one := try gamma(t, p, [_]string("test", "--backend=interp", "--filter=add"))
+    try t.check(one.success(), "{}{}", one.out, one.err)
+    try t.expect_text("stdout", "test \"adds\" ... ok\n1 passed, 0 failed, 3 filtered out\n", one.out)
+    // Both back ends report the same.
+    if t.cfg.c {
+        native := try gamma(t, p, [_]string("test", "--backend=c", "--show-output"))
+        try t.expect_text("the output of the native run", native.out, out.out)
+    }
+    return ()
+}
+
+a_test_that_runs_too_long_fails_interp :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "timeout_interp", [_]File(File(path: "main.gm", text: HANGS)))
+    started := Clock.now()
+    out := try gamma(t, p, [_]string("test", "--backend=interp", "--timeout=1", "--jobs=2"))
+    try check_timeout(t, out, Clock.now().since(started).to_ms())
+    return ()
+}
+
+benchmarks_run_in_the_interpreter :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    p := try package(t, "bench_interp", package_files())
+    out := try gamma(t, p, [_]string("bench", "--backend=interp"))
+    try t.check(out.success(), "{}{}", out.out, out.err)
+    try t.check(str.strip_prefix(out.out, "bench \"sum of a thousand\" ... ") is not null, "{}", out.out)
+    try t.check(str.strip_suffix(out.out, "1 run, 0 failed\n") is not null, "{}", out.out)
     return ()
 }

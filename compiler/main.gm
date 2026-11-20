@@ -19,8 +19,8 @@
 //!     gamma lsp
 //!     gamma help | version
 //!
-//! `check`, `build` and `run` also take `--offline`, `--locked` and `--profile=NAME`, and
-//! read the package's `gamma.toml` (`pkg/`).
+//! The commands that load a program also take `--offline`, `--locked` and
+//! `--profile=NAME`, and read the package's `gamma.toml` (`pkg/`).
 //!
 //! Every command takes `--diag-format=human|short|json` (default `human`), the formats of
 //! `gamma`; `doc` has its own options and diagnostics (`doc/doc.gm`). See `usage` for what
@@ -278,7 +278,6 @@ apply_option :: fn(opts: ^driver.Options, hit: driver.Hit) needs Alloc + Env + E
         .Recover => { opts.recover = true }
         .Dump => { opts.dump = true }
         .Target => {
-            if opts.command in (driver.Command.Lint, driver.Command.Fix) { usage_error("`--target` is not supported by `lint` and `fix`") }
             opts.target_triple = value
         }
         .DebugInfo => {
@@ -299,9 +298,10 @@ apply_option :: fn(opts: ^driver.Options, hit: driver.Hit) needs Alloc + Env + E
             if file := hit.value { opts.coverage_file = file }
         }
         .Backend => {
-            if value is "interp" and opts.command is not .Run { usage_error("`--backend=interp` is supported by `run` only: the other commands use the C back end") }
+            if value is "interp" and opts.command not in (driver.Command.Run, driver.Command.Test, driver.Command.Bench) { usage_error("`--backend=interp` is supported by `run`, `test` and `bench` only: the other commands use the C back end") }
             opts.interp = value is "interp"
         }
+        .RunTest => { opts.run_test = str.parse_int(usize, value) else usage_error(str.format("`--run-test` needs a number, not `{}`", value)!) }
         .Offline => { opts.offline = true }
         .Locked => { opts.locked = true }
         .Profile => { opts.profile = value }
@@ -393,7 +393,11 @@ process_file :: fn(path: string, in_opts: driver.Options) -> fs.ReadError!u8 nee
             return 1
         }
     }
-    if opts.command in (driver.Command.Lint, driver.Command.Fix) { return lint_or_fix(path, opts) }
+    if opts.command in (driver.Command.Lint, driver.Command.Fix) {
+        // With `--target`, the program is checked for the machine the toolchain builds for.
+        if opts.target_triple is not null { driver.new_session(&opts) }
+        return lint_or_fix(path, opts)
+    }
     if opts.command not in (driver.Command.Lex, driver.Command.Parse) { return load_program(path, opts) }
     text := try fs.read_all(path)
     defer free(text)
@@ -462,7 +466,7 @@ render :: fn(sm: ^const source.SourceMap, diags: ^diag.Diagnostics, format: diag
 lint_or_fix :: fn(path: string, opts: driver.Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     std := driver.std_root()
     packages := pkg.Options(offline: opts.offline, locked: opts.locked)
-    setup := fix.Setup(std: std, core: driver.core_root(std), mode: driver.mode_name(opts.mode), recover: opts.recover, format: opts.format, packages: packages, profile: opts.profile)
+    setup := fix.Setup(std: std, core: driver.core_root(std), mode: driver.mode_name(opts.mode), recover: opts.recover, format: opts.format, packages: packages, profile: opts.profile, target: opts.target)
     if opts.command is .Fix { return fix.command(path, setup) }
     return linting.command(path, &opts.lint, setup)
 }
@@ -545,7 +549,7 @@ load_program :: fn(input: string, in_opts: driver.Options) -> u8 needs Alloc + C
                         .Build => {
                             if not driver.build(&s, m, root, opts) { status = 1 }
                         }
-                        .Run => { status = if opts.interp { driver.run_interp(&s, m, root, opts) } else { driver.run(&s, m, opts) } }
+                        .Run => { status = if opts.interp { driver.run_interp(&s, m, root, opts) } else { driver.run(&s, m, root, opts) } }
                         _ => {}
                     }
                 }

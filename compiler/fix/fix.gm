@@ -116,6 +116,8 @@ pub Setup :: struct {
     /// How the dependencies of the input's package are fetched, and the build profile.
     pub packages: pkg.Options
     pub profile: ?string
+    /// The machine the program is checked for (`--target`; else the host).
+    pub target: load.Target
 }
 
 /// The directory of the files that `gamma fix` may change and `gamma lint` reports on:
@@ -159,6 +161,7 @@ pub command :: fn(path: string, setup: Setup) -> u8 needs Alloc + Clock + Env + 
             diags := diag.diagnostics()
             next_id: ast.NodeId = 0
             l := load.loader(&sm, &diags, &next_id, setup.std, setup.recover)
+            l.target = setup.target
             prepared := pkg.prepare_build(path, setup.packages, setup.profile) else return 1
             l.resolution = prepared.resolution
             if l.load_core(setup.core, setup.mode) {

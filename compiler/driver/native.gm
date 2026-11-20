@@ -589,11 +589,13 @@ default_exe :: fn(root: string) -> string {
     return trimmed
 }
 
-/// `run`: compiles the checked program rooted at module `root` to an executable (kept in the
-/// cache of programs, or else in a new temporary directory) and runs it with the program's
-/// arguments, sharing our standard streams. Returns the exit status to end with: the
-/// program's, or 1 if it could not be built or started.
-pub run :: fn(s: ^sema.Sema, root: usize, opts: Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
+/// `run`: compiles the checked program rooted at module `root` (from the file or directory
+/// `input`) to an executable (kept in the cache of programs, or else in a new temporary
+/// directory) and runs it with the program's arguments, sharing our standard streams. The
+/// program sees `input` as its name (`argv[0]`), as in the interpreter, unless it runs
+/// behind a runner command. Returns the exit status to end with: the program's, or 1 if it
+/// could not be built or started.
+pub run :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Proc + Rand + Sys {
     d := s.l.lookup(root, "main") else {
         eprint("gamma: the program has no `main` function\n")
         return 1
@@ -626,10 +628,16 @@ pub run :: fn(s: ^sema.Sema, root: usize, opts: Options) -> u8 needs Alloc + Clo
         return 2
     }
     argv := list(string)
-    argv.extend(runner.items)!
-    argv.push(exe)!
+    spawn := process.SpawnOptions()
+    if runner.items.len is 0 {
+        argv.push(input)!
+        spawn.program = exe
+    } else {
+        argv.extend(runner.items)!
+        argv.push(exe)!
+    }
     argv.extend(opts.program_args)!
-    status := process.status(argv.items) else e => {
+    status := process.status(argv.items, spawn) else e => {
         eprint("gamma: cannot run {}: {}\n", exe, pkg.io_message(e))
         return 1
     }

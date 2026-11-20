@@ -1,0 +1,24 @@
+// Local types, aliases and nested functions that the rest of their block never names
+// are reported (§3.5).
+//! stage: lint
+
+main :: fn() needs Out {
+    Pair :: struct { a, b: u32 } //~ WARNING [unused-declaration] the local type `Pair`
+    Shape :: union { Dot, Line: u32 } //~ WARNING [unused-declaration] the local type `Shape`
+    Bytes :: []u8 //~ WARNING [unused-declaration] the local type alias `Bytes`
+    Word :: u32 //~ WARNING [unused-declaration] the local type alias `Word`
+    helper :: fn() -> u32 => 1 //~ WARNING [unused-declaration] the local function `helper`
+    // A type that mentions only itself is still unused.
+    Node :: struct { next: ?^Node } //~ WARNING [unused-declaration] the local type `Node`
+
+    Used :: struct { a: u32 }
+    Count :: u32
+    twice :: fn(x: Count) -> Count => x * 2
+    n: Count = 3
+    if n > 0 {
+        inner :: fn() -> u32 => 4 //~ WARNING [unused-declaration] the local function `inner`
+        u := Used(a: twice(n))
+        print("{}\n", u.a)
+    }
+    _Ignored :: struct { a: u32 }
+}

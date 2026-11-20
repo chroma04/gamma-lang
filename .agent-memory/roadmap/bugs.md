@@ -1,12 +1,6 @@
 # Open bugs and accepted behaviour differences (delete entries when fixed)
 
 ## Bugs
-- After a syntax error inside an `if` condition (`if needs := f() {`), `gamma check` also
-  reports "cannot check this kind of expression yet" for the `if`: the checker should stay
-  silent on the parser's error node.
-- A local alias named like a visible type (`Point :: i32` with a top-level `Point`) is
-  accepted though §4.6 forbids it; fixing it may break existing code (grep the repo first).
-- `gamma lint` has no unused check for local struct/union types.
 - Interpreter hangs when one thread reads a child's output while another writes its stdin
   (even `cat`): tests/conformance/run/std_process_within.gm is `//! native:` for it.
   (Green threads: a blocking host syscall blocks all of them.)

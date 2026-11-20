@@ -9,12 +9,11 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 - Regenerate `docs/std` after std changes: `gamma doc lib/std --all -o docs/std`.
 
 ## 1. Tooling gaps
-- `gamma test`/`bench --backend=interp`: still a usage error ("supported by `run` only").
-- Package manager: `fix` does not call prepare_packages; `test`/`bench` do not resolve
-  package dependencies (`--package=` for test is a usage error); lint/fix ignore
-  `--offline`/`--locked` and `--target`; manifest `mode = "safe"` errors in build/run;
-  no package C-source object cache; several versions of one repository in one graph.
-- `gamma run` passes the temp exe path as argv[0] (spawn needs an argv[0] option).
+- Package manager: no package C-source object cache; several versions of one repository
+  in one graph.
+- `test --backend=interp`: a test reaching foreign code is refused (could fall back to
+  C per test, as `run` does); each test process re-checks the program (~1 s for the
+  compiler package; a shared checked-program cache would remove it).
 - LSP: a trap ends the server (no ICE diagnostic).
 - Windows: command-line quoting, 0700 cache dirs; Safe, `gamma debug`, gdb printers are
   Linux-only; ARM64 Windows. Windows-only code paths (spawn, install.ps1,

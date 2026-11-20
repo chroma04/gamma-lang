@@ -8,6 +8,14 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- **`gamma test --backend=interp` and `gamma bench --backend=interp`** run tests and
+  benchmarks in the interpreter, without a C compiler. Each test runs in a process of its
+  own, so `--jobs`, `--timeout`, `--filter` and the report work as with the C back end, and
+  the output is the same; a test that reaches foreign code or assembly is refused, and
+  `--coverage` still needs C. `--backend=interp` was a usage error for these commands.
+- **`gamma lint --target=<triple>` and `gamma fix --target=<triple>`** check the program
+  for another machine, as `gamma check --target` does, so code in `when target…` branches
+  for it is linted too.
 - **Spreads in tuple expressions.** A tuple expression takes `..e` like an argument list:
   `(1, ..t)`, `(..a)` for the elements of an array `a`, `(..p, z: 0)` to extend a named
   tuple, and `(..p, x: 5)` to replace one of its elements. Array constructors already took
@@ -20,6 +28,8 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **`gamma run` gives the program its source path as its name** (`argv[0]`), as the
+  interpreter does, instead of the path of the temporary or cached executable.
 - **Incremental native builds.** A large program is now split into one C translation unit
   per source file, and compiled units are kept in the cache (`$GAMMA_CACHE_DIR`, by default
   `~/.cache/gamma`), so a rebuild compiles only the units an edit changed. A build of the
@@ -121,6 +131,12 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **A local type alias named like a visible type is an error**, as §4.6 says for every
+  local: `Point :: i32` inside a function with a top-level `Point` (or a type parameter
+  `T`, or a predeclared type name) was accepted and hid the type.
+- **`gamma lint` reports unused local types, aliases and nested functions** under
+  `unused-declaration`: `Pair :: struct { … }`, `Bytes :: []u8` or `helper :: fn() { … }`
+  inside a function body that the rest of its block never names.
 - **`@hash` in constants.** `@hash` is a constant expression, as §16.8 says: a hash computed
   at compile time is the one the program computes for the same value when it runs, so a
   table built at compile time can be searched at run time. A value that holds a pointer

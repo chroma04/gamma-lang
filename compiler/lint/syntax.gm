@@ -44,9 +44,11 @@ pub Walk :: struct {
     pub facts: FileFacts
     /// The labels in scope (of enclosing loops and `with`s) and whether they are used.
     labels: List(LabelUse)
+    /// The tokens of the file being walked.
+    tokens: []const syntax.Token
 }
 
-walk :: fn(sm: ^const source.SourceMap) -> Walk needs Alloc => Walk(sm: sm, facts: file_facts(), labels: list(LabelUse))
+walk :: fn(sm: ^const source.SourceMap) -> Walk needs Alloc => Walk(sm: sm, facts: file_facts(), labels: list(LabelUse), tokens: empty_slice(syntax.Token))
 
 /// Where a pattern is written, which decides how its unused bindings are fixed.
 PatSite :: union {
@@ -72,7 +74,8 @@ push :: fn(w: ^Walk, d: diag.Diagnostic) needs Alloc {
     w.facts.diags.push(d)!
 }
 
-walk_file :: fn(w: ^Walk, file: ^const ast.File) needs Alloc {
+walk_file :: fn(w: ^Walk, file: ^const ast.File, tokens: []const syntax.Token) needs Alloc {
+    w.tokens = tokens
     for i in 0..file.items.len { w.item(&file.items[i]) }
 }
 
@@ -307,7 +310,10 @@ capture :: fn(w: ^Walk, name: ast.Ident, removable: bool) needs Alloc {
 // --- statements ---
 
 block :: fn(w: ^Walk, b: ^const ast.Block) needs Alloc {
-    for i in 0..b.stmts.len { w.stmt(&b.stmts[i]) }
+    for i in 0..b.stmts.len {
+        w.stmt(&b.stmts[i])
+        w.unused_local_decl(&b.stmts[i], b.span.hi)
+    }
     if b.stmts.len > 0 {
         last := &b.stmts[b.stmts.len - 1]
         if .Defer(is_err, _) := last.kind {
@@ -319,6 +325,53 @@ block :: fn(w: ^Walk, b: ^const ast.Block) needs Alloc {
             w.push(lint_diag(last.span, "useless-defer", msg))
         }
     }
+}
+
+/// Reports a local type, alias or nested function (`Name :: struct { … }`, `Name :: []u8`,
+/// `name :: fn() { … }`) that the rest of its block, up to `end`, never names. The checker
+/// sees no uses of these (they have no storage), but no shadowing within a function (§4.6)
+/// makes every later identifier of that name refer to the declaration, so the tokens
+/// decide; a field or argument of that name counts as a use.
+unused_local_decl :: fn(w: ^Walk, s: ^const ast.Stmt, end: u32) needs Alloc {
+    .Binding(_, b) := s.kind else return
+    if b.kind is not .Const or b.ty is not null or b.names.len is not 1 { return }
+    name := b.names[0]
+    if name.name.starts_with("_") { return }
+    what := declared_kind(b.init) else return
+    if w.mentions(name.name, s.span.hi, end) { return }
+    d := lint_diag(name.span, "unused-declaration", str.format("the local {} `{}` is never used", what, name.name)!)
+    d.add_note("nothing after it in its block names it")
+    w.push(d)
+}
+
+/// What the initializer of a local `::` binding declares, if it is a type or a function
+/// rather than a value: "type", "type alias" or "function".
+declared_kind :: fn(e: ^const ast.Expr) -> ?string {
+    inner := e
+    if .Attributed(_, i) := inner.kind { inner = i }
+    return match inner.kind {
+        .Struct(_), .Union(_) => "type"
+        .Fn(_) => if e.kind is .Fn(_) { "function" } else { null }
+        .PtrType(_, _), .SliceType(_, _), .ManyPtrType(_, _), .ErrorUnionType(_, _), .FnType(_), .ContType(_) => "type alias"
+        .Ident(id) => if sema.is_builtin_type_name(id.name) { "type alias" } else { null }
+        _ => null
+    }
+}
+
+/// Whether an identifier token `name` lies between offsets `lo` and `hi` of the file.
+mentions :: fn(w: ^const Walk, name: string, lo, hi: u32) -> bool {
+    // The tokens are in source order: find the first at or after `lo`.
+    a: usize = 0
+    b := w.tokens.len
+    while a < b {
+        m := a + (b - a) / 2
+        if w.tokens[m].span.lo < lo { a = m + 1 } else { b = m }
+    }
+    for t in w.tokens[a..] {
+        if t.span.lo >= hi { break }
+        if .Ident(s) := t.kind and s is name { return true }
+    }
+    return false
 }
 
 stmt :: fn(w: ^Walk, s: ^const ast.Stmt) needs Alloc {

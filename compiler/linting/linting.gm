@@ -128,6 +128,7 @@ lint_round :: fn(path: string, o: ^const lint.Options, setup: fix.Setup, base: ^
     diags := diag.diagnostics()
     next_id: ast.NodeId = 0
     l := load.loader(&sm, &diags, &next_id, setup.std, setup.recover)
+    l.target = setup.target
     prepared := pkg.prepare_build(path, setup.packages, setup.profile) else return .Done(1)
     l.resolution = prepared.resolution
     parsed := list(load.Parsed)

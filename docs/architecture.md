@@ -22,7 +22,7 @@ AST
   ▼
 TIR                          typed intermediate representation (tir/)
   ├─▶ eval/                  compile-time evaluation (spec §17)
-  ├─▶ interp/                interpreter: gamma run --backend=interp, gamma repl
+  ├─▶ interp/                interpreter: --backend=interp (run, test, bench), gamma repl
   └─▶ cgen/                  C code generation → system C compiler → executable
 ```
 
@@ -413,7 +413,7 @@ them into static storage and the interpreter lays them out in its memory.
 
 ## The interpreter
 
-`gamma run --backend=interp` and `gamma repl` run the program in the interpreter
+`--backend=interp` (`gamma run`, `test`, `bench`) and `gamma repl` run the program in the interpreter
 (`compiler/interp/`) instead of compiling it, and so need no C compiler. It implements the
 language exactly as the target would: target integer sizes, layouts and float semantics, with
 every checked operation checked.
@@ -1259,7 +1259,11 @@ change the value (integers and booleans; Fil-C and other types: a round trip thr
 `gamma test` and `gamma bench` (`compiler/testing/`) check the program as a library with its
 tests (the modules of the root's package that it imports; all of them with `--all`), compile
 the chosen tests into one executable whose `main` runs the test given by its first argument,
-and run it once per test with captured output. Both always compile through C. `run.gm`
+and run it once per test with captured output. With `--backend=interp` there is no
+executable: each test runs in a `gamma` process started with the same command line plus the
+hidden option `--run-test=j`, which checks the program again and interprets the `j`th
+selected test's entry (`driver.run_interp_entry`), so traps, exits and `--timeout` work as
+for an executable, and a test reaching foreign code or assembly is refused. `run.gm`
 selects the cases (`--filter`), runs them, on `--jobs` threads that only start processes, and
 prints the results in order; a test passes if its exit status is 0, and a trap's message and
 location reach the report from standard error. A test that exceeds `--timeout` is killed by a

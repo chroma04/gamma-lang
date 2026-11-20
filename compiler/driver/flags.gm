@@ -27,6 +27,7 @@ pub OptionId :: union {
     Time
     Coverage
     Backend
+    RunTest
     Offline
     Locked
     Profile
@@ -68,6 +69,8 @@ pub OptionSpec :: struct {
     pub commands: string = ""
     /// Only `gamma repl` knows the option; the other commands report it as unknown.
     pub repl_only: bool = false
+    /// Left out of the usage text: an option `gamma` passes to itself.
+    pub hidden: bool = false
     /// The usage text's description. Line breaks continue it on the next line.
     pub help: string
 }
@@ -109,7 +112,7 @@ OPTIONS :: [_]OptionSpec(
         arg: "triple",
         needs: "a target triple",
         nonempty: true,
-        commands: "check build run test bench",
+        commands: "check build run test bench lint fix",
         help: "the target (default: the C compiler's)",
     ),
     OptionSpec(
@@ -194,19 +197,28 @@ OPTIONS :: [_]OptionSpec(
         choices: "c interp",
         refuse: "cranelift",
         refuse_message: "`--backend=cranelift` is not supported: gamma has the C back end and, for `run`, the interpreter",
-        commands: "run",
-        help: "compile via C (the default) or run in the interpreter;\n(test, bench) only c is accepted",
+        commands: "run test bench",
+        help: "compile via C (the default) or run in the interpreter",
+    ),
+    OptionSpec(
+        id: .RunTest,
+        names: "--run-test",
+        form: .Attached,
+        arg: "n",
+        commands: "test bench",
+        hidden: true,
+        help: "run the <n>th selected test in the interpreter and exit with its status",
     ),
     OptionSpec(
         id: .Offline,
         names: "--offline",
-        commands: "check run build",
+        commands: "check build run test bench lint fix",
         help: "never use the network for dependencies",
     ),
     OptionSpec(
         id: .Locked,
         names: "--locked",
-        commands: "check run build",
+        commands: "check build run test bench lint fix",
         help: "fail if gamma.lock is missing or out of date",
     ),
     OptionSpec(
@@ -216,7 +228,7 @@ OPTIONS :: [_]OptionSpec(
         arg: "name",
         needs: "a profile name",
         nonempty: true,
-        commands: "check run build",
+        commands: "check build run test bench lint fix",
         help: "use the [profile.<name>] table of gamma.toml",
     ),
     OptionSpec(id: .Lint, names: "--fix", commands: "lint", help: "apply the fixes of the warnings that have one"),
@@ -348,6 +360,7 @@ syntax :: fn(spec: ^const OptionSpec) -> string needs Alloc {
 /// Writes the lines of the options of the usage text.
 pub options_help :: fn(out: ^List(u8)) needs Alloc {
     for spec in OPTIONS[..] {
+        if spec.hidden { continue }
         text := syntax(&spec)
         out.extend("  ")!
         out.extend(text)!
@@ -380,7 +393,7 @@ test "the usage text lists every option once" {
         out := list(u8)
         options_help(&out)
         for spec in OPTIONS[..] {
-            for name in str.split(spec.names, " ") { expect(str.contains(out.items, name)) }
+            for name in str.split(spec.names, " ") { expect(str.contains(out.items, name) is not spec.hidden) }
         }
         for i, a in enumerate(OPTIONS[..]) {
             for j, b in enumerate(OPTIONS[..]) {

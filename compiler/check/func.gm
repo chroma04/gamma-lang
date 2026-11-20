@@ -500,7 +500,7 @@ declare :: fn(cx: ^FnCx, name: string, b: LocalBinding, span: source.Span) needs
     if name is "_" { return }
     if cx.lookup_local(name) is not null {
         cx.error(span, str.format("`{}` is already declared in this function; locals may not be shadowed", name)!)
-    } else if b is not .Label and b is not .Type(_) and cx.s.names_type(cx.module, name) {
+    } else if b is not .Label and cx.s.names_type(cx.module, name) {
         cx.error(span, str.format("`{}` names a type; a local may not have the name of a type (§4.6)", name)!)
     } else if load.is_reserved_type_name(name) {
         cx.error(span, str.format("`{}` is a reserved type name and cannot be redeclared", name)!)

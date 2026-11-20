@@ -17,6 +17,11 @@ lint` checks every module of the package, as `gamma test --all` does, with their
 and `bench` declarations, and reports on the package's own files: not on the standard
 library or on dependencies. Outside a package it reports on the input's directory.
 
+The program is checked for the host, so code in `when target…` branches for other machines
+is not; `--target=<triple>` checks it for that target instead, as `gamma check --target`
+does (it needs a C compiler for the target). `--offline`, `--locked` and `--profile` work as
+for the other commands that load a program.
+
 Each warning names its rule:
 
 ```
@@ -89,7 +94,7 @@ A name that starts with `_` is never reported as unused: `_unused := f()` and
 | `unused-variable` | a local variable or pattern binding whose value is never read, including one that is only assigned | `x := f()` becomes `_ = f()`; a binding in a pattern, destructuring or `for` becomes `_`; an unused `else e =>` capture is removed |
 | `unused-parameter` | a parameter of a named function that its body never uses. Parameters of function literals and handler clauses, and of functions used as values (passed to another function, exported), are left alone: their signature is not theirs to choose | — (name it `_x`) |
 | `unused-import` | an import binding that nothing in its module uses | the import line is removed |
-| `unused-declaration` | a private top-level function, type, constant, global or effect that nothing refers to | — |
+| `unused-declaration` | a private top-level function, type, constant, global or effect that nothing refers to; also a local type, type alias or nested function (`Pair :: struct { … }`, `Bytes :: []u8`, `helper :: fn() { … }`) that the rest of its block never names | — |
 | `needless-pub` | a `pub(package)` function or constant that no other module of its package names, or a `pub` one of a program package (one whose root module declares `main`, which no other package imports) that no other module names, as a function, a constant, a method or a value. Types, effects and imports are not reported, since a `pub` signature may need them | — (remove the marker) |
 | `unused-label` | a label of a `for`, `while` or `with` that no `break` or `continue` names | the label is removed |
 
