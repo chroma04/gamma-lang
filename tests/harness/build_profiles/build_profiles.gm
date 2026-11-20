@@ -88,21 +88,37 @@ fails_with :: fn(w: ^const World, dir: string, args: []const string, needle: str
     return w.t.expect_contains("the error message", out.err, needle)
 }
 
-/// The names of the object files in the cache other than the runtime's and the units of
-/// generated code. The C sources of packages are compiled for each build into objects next
-/// to the executable, which are removed after linking, so none stays in the cache.
+/// The names of the object files in the cache other than the runtime's, the units of
+/// generated code and the objects of package C sources kept in `native/` (`obj-*`): the
+/// objects a build makes for itself alone are removed after linking, so none stays.
 package_objects :: fn(w: ^const World) -> []string needs Alloc + Fs {
     names := list(string)
     for r in fs.walk(w.cache_dir()) {
         e := r else break
         if e.kind is .Dir { continue }
         name := dupe(base_name(e.path))!
-        if str.strip_suffix(name, ".o") is not null and not name.starts_with("gm_rt-") and not name.starts_with("unit-") {
+        if str.strip_suffix(name, ".o") is not null and not name.starts_with("gm_rt-") and not name.starts_with("unit-") and not name.starts_with("obj-") {
             names.push(name)!
         }
     }
     names.items.sort()
     return names.items
+}
+
+/// The objects of package C sources kept in the cache, with their modification times.
+cached_objects :: fn(w: ^const World) -> []CachedObject needs Alloc + Fs {
+    out := list(CachedObject)
+    for e in kit.list_dir(kit.join(w.cache_dir(), "native")) else empty_slice(kit.Listed) {
+        if not (e.name.starts_with("obj-") and e.name.ends_with(".o")) or str.contains(e.name, ".tmp-") { continue }
+        info := Fs.stat(kit.join(kit.join(w.cache_dir(), "native"), e.name)) else continue
+        out.push(CachedObject(name: e.name, modified: info.modified))!
+    }
+    return out.items
+}
+
+CachedObject :: struct {
+    name: string
+    modified: i64
 }
 
 base_name :: fn(p: string) -> string {
@@ -200,18 +216,29 @@ c_objects_follow_changes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     w := try world(t, "c_cache")
     try w.shim_package(SHIM_BUILD)
     try w.prints("app", [_]string("run", "main.gm"), "5\n")
-    // Nothing changed: the same result, and no object is kept in the cache.
+    // The object is kept in the cache, and a build with nothing changed links it again.
+    first := w.cached_objects()
+    try t.check(first.len is 1, "{} cached objects", first.len)
+    _ = try w.ok("app", [_]string("build", "main.gm", "-o", "app.out"))
+    again := w.cached_objects()
+    try t.check(again.len is 1 and again[0].name is first[0].name and again[0].modified is first[0].modified, "the object was compiled again")
+    try w.built_prints("app/app.out", "5\n")
     try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "5\n")
     try w.no_objects()
     // A changed source is compiled again, and the program follows.
     try w.write("app/c/shim.c", shim_c(10))
     try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "15\n")
     try w.prints("app", [_]string("run", "main.gm"), "15\n")
-    // So does a changed header.
+    // So does a changed header, which the cached object's name does not cover.
     try w.write("app/c/include/shim.h", "#define BONUS 1000\nint shim_add(int a, int b);\n")
     try w.prints("app", [_]string("run", "--backend=c", "main.gm"), "1015\n")
     try w.prints("app", [_]string("run", "main.gm"), "1015\n")
     try w.no_objects()
+    // Without a cache directory, the objects are made for the build alone.
+    nc := w.command("app", [_]string("build", "main.gm", "-o", "nocache.out"))
+    nc.set("GAMMA_CACHE_DIR", "")
+    _ = try t.run_ok(nc)
+    try w.built_prints("app/nocache.out", "1015\n")
     // And a changed flag.
     try w.write("app/c/include/shim.h", SHIM_H)
     c := w.command("app", [_]string("run", "--backend=c", "main.gm"))

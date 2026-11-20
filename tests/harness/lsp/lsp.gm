@@ -19,6 +19,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "utf8_is_negotiated_when_offered", run: utf8_is_negotiated_when_offered))!
     out.push(kit.Test(name: "exit_without_shutdown_is_a_failure", run: exit_without_shutdown_is_a_failure))!
     out.push(kit.Test(name: "end_of_input_ends_the_server", run: end_of_input_ends_the_server))!
+    out.push(kit.Test(name: "an_internal_error_restarts_the_server", run: an_internal_error_restarts_the_server))!
     out.push(kit.Test(
         name: "unknown_requests_are_answered_and_unknown_notifications_ignored",
         run: unknown_requests_are_answered_and_unknown_notifications_ignored,

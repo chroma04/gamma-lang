@@ -51,6 +51,35 @@ end_of_input_ends_the_server :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     return ()
 }
 
+/// A trap in the server fails the request that caused it and is shown to the user; the
+/// server comes back with the documents as the client last sent them.
+an_internal_error_restarts_the_server :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-internal_error")
+    path := kit.join(dir, "main.gm")
+    l := try start_with(t, [_]string("GAMMA_LSP_DEBUG_TRAP=1"))
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, "main :: fn() {}\n")
+    try l.change(path, 2, "answer :: fn() -> i32 => 42\n\nmain :: fn() {\n    _ = answer()\n}\n")
+    try expect_clean(t, try l.diagnostics(path, 2))
+    r := try l.request("gamma/debugTrap", "{}")
+    try expect_int(t, "the error code", dig(r, "error.code"), -32603)
+    try expect_contains_text(t, "the error", dig(r, "error.message"), "internal error in the Gamma language server: gamma/debugTrap")
+    shown := false
+    for m in l.queued.items {
+        if text_is(field(m, "method"), "window/showMessage") {
+            try expect_contains_text(t, "the message", dig(m, "params.message"), "gamma/debugTrap")
+            shown = true
+        }
+    }
+    try t.check(shown, "no window/showMessage before the error response")
+    // The new server knows the latest text: `answer` is on line 3 of version 2.
+    d := try l.result("textDocument/definition", at(path, 3, 9))
+    try expect_int(t, "the line of the definition", dig(d, "range.start.line"), 0)
+    try l.shutdown()
+    return ()
+}
+
 unknown_requests_are_answered_and_unknown_notifications_ignored :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     l := try start(t)
     defer l.stop()

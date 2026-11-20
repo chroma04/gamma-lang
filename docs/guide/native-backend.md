@@ -2,8 +2,8 @@
 
 The `gamma` tool has two ways to run a program: the **C back end**, which translates the
 program to C and compiles it with the system C compiler, and the **interpreter**, which
-walks the checked program and needs no C compiler. `gamma build`, `gamma test` and
-`gamma bench` always use C; `gamma run` uses C by default and the interpreter with
+walks the checked program and needs no C compiler. `gamma build` always uses C;
+`gamma run`, `gamma test` and `gamma bench` use C by default and the interpreter with
 `--backend=interp`; `gamma repl` uses the interpreter.
 
 ```sh
@@ -11,6 +11,7 @@ gamma run main.gm                      # compile through C and run
 gamma run --backend=interp main.gm     # interpret
 gamma build main.gm -o main            # a native executable
 gamma test src/                        # tests are compiled through C
+gamma test --backend=interp src/       # each test interpreted, in a process of its own
 ```
 
 Both give the same results: the same output, the same trap messages and locations, the

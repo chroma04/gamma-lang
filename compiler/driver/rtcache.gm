@@ -319,3 +319,171 @@ test "gcc is told apart by its version" {
     expect(not is_gcc("Apple clang version 15.0.0 (clang-1500.3.9.4)\n"))
     expect(not is_gcc(null))
 }
+
+// --- package C objects ---
+
+/// Compiles the C sources of the packages (`extras`) for a build of `exe` and returns what
+/// the build links: each object from the cache (see `package_object`), or, without one,
+/// compiled next to `exe` for this build alone (`pkg.remove_objects` removes those).
+package_link :: fn(extras: ^const pkg.Extras, tc: ^const pkg.Toolchain, exe: string, debug, debug_info: bool) -> string!pkg.Link needs Alloc + Clock + Env + Fs + Proc + Rand {
+    link := pkg.no_link()
+    link.libs = extras.libs.items
+    link.lib_dirs = extras.lib_dirs.items
+    version: ?string = if extras.sources.items.len > 0 { compiler_version(tc) } else { null }
+    for i, src in enumerate(extras.sources.items) {
+        flags := pkg.object_flags(debug, debug_info, &src)
+        if obj := package_object(tc, flags.items, &src, version) {
+            link.objects.push(obj)!
+            continue
+        }
+        obj := pkg.temporary_object(exe, i)
+        pkg.compile_source(tc, &src, obj, flags.items) else e => {
+            pkg.remove_objects(&link)
+            return !e
+        }
+        link.objects.push(obj)!
+        link.temporary.push(obj)!
+    }
+    return link
+}
+
+/// The object of the package C file `src` compiled with `tc` and `flags`, from the cache
+/// directory's `native/` (compiled into it if missing or out of date); `null` if there is no
+/// cache, no `compiler` version, or it cannot be made there (the build then compiles it on
+/// its own, and reports any error). The object's name covers the file's path and text, the
+/// compiler and the flags; next to it, `obj-<key>.deps` lists every file the compilation
+/// read (the headers too, from the compiler's `-MD` output) with a hash of its text, and the
+/// object is used only while they all still have that text.
+package_object :: fn(tc: ^const pkg.Toolchain, flags: []const string, src: ^const pkg.CSource, compiler: ?string) -> ?string needs Alloc + Clock + Env + Fs + Proc + Rand {
+    base := pkg.cache_dir() else return null
+    version := compiler else return null
+    text := fs.read_all(src.path) else return null
+    dir := load.join(base, "native")
+    key := cache_key([7]string("package", src.path, string(text), str.join(tc.cc, "\0")!, str.join(tc.cflags, "\0")!, str.join(flags, "\0")!, version)[..])
+    stem := str.format("obj-{}", key)!
+    obj := load.join(dir, str.format("{}.o", stem)!)
+    deps := load.join(dir, str.format("{}.deps", stem)!)
+    if info := Fs.stat(obj) {
+        if deps_current(deps) {
+            // Mark it as used now and then, so the cache cleaner keeps it.
+            if info.modified < Clock.wall() - 86400 * NS_PER_SECOND {
+                touch(obj)
+                touch(deps)
+            }
+            return obj
+        }
+    }
+    pkg.make_dirs(dir) else return null
+    tmp_o := private_name(dir, stem, "o")
+    tmp_d := private_name(dir, stem, "d")
+    defer _ = Fs.remove(tmp_d)
+    tail := [7]string("-MD", "-MF", tmp_d, "-c", "-o", tmp_o, src.path)
+    if not pkg.run(pkg.command(tc, flags, tail[..]).items).ok {
+        _ = Fs.remove(tmp_o)
+        return null
+    }
+    manifest := (fs.read_all(tmp_d) else null) else {
+        _ = Fs.remove(tmp_o)
+        return null
+    }
+    listing := deps_listing(string(manifest)) else {
+        _ = Fs.remove(tmp_o)
+        return null
+    }
+    tmp_m := private_name(dir, stem, "deps")
+    fs.write_all(tmp_m, listing) else {
+        _ = Fs.remove(tmp_o)
+        _ = Fs.remove(tmp_m)
+        return null
+    }
+    // The object first: an object without its listing is never used.
+    rename_or_remove(tmp_o, obj) else {
+        _ = Fs.remove(tmp_m)
+        return null
+    }
+    rename_or_remove(tmp_m, deps) else return null
+    return obj
+}
+
+/// The listing of the files named by the make rule `rule` (a compiler's `-MD` output): a
+/// line per prerequisite, the hash of its text and its path. `null` if a file cannot be
+/// read.
+deps_listing :: fn(rule: string) -> ?[]u8 needs Alloc + Fs {
+    out := list(u8)
+    for p in make_prerequisites(rule).items {
+        text := fs.read_all(p) else return null
+        out.write("{} {}\n", pkg.sha256_hex(text)[0..16], p)!
+    }
+    return out.items
+}
+
+/// Whether every file of the listing `path` still has the text it had.
+deps_current :: fn(path: string) -> bool needs Alloc + Fs {
+    listing := fs.read_all(path) else return false
+    for line in str.lines(string(listing)) {
+        if line.len is 0 { continue }
+        split := str.split_once(line, " ") else return false
+        text := fs.read_all(split.after) else return false
+        if pkg.sha256_hex(text)[0..16] is not split.before { return false }
+    }
+    return true
+}
+
+/// The prerequisites of the make rule `rule`, as `-MD` writes it: the words after the first
+/// one that ends with `:` (the target), where a backslash before a line break continues the
+/// line, and before a space or `#` makes it part of the word; `$$` is `$`.
+make_prerequisites :: fn(rule: string) -> List(string) needs Alloc {
+    words := list(string)
+    word := list(u8)
+    in_target := true
+    i: usize = 0
+    while i <= rule.len {
+        c: u8 = if i < rule.len { rule[i] } else { ' ' }
+        i += 1
+        if c is '\\' and i < rule.len {
+            n := rule[i]
+            if n is '\n' or (n is '\r' and i + 1 < rule.len and rule[i + 1] is '\n') {
+                i += if n is '\r' { 2 } else { 1 }
+                c = ' '
+            } else if n in (' ', '#', '\\') {
+                word.push(n)!
+                i += 1
+                continue
+            }
+        } else if c is '$' and i < rule.len and rule[i] is '$' {
+            word.push('$')!
+            i += 1
+            continue
+        }
+        if c in (' ', '\t', '\n', '\r') {
+            if word.items.len > 0 {
+                w := dupe(word.items)!
+                word.clear()
+                if in_target {
+                    if w.ends_with(":") { in_target = false }
+                } else {
+                    words.push(w)!
+                }
+            }
+            continue
+        }
+        word.push(c)!
+    }
+    return words
+}
+
+test "make prerequisites" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        words := make_prerequisites("x.o: a.c inc/a.h \\\n  b\\ c.h $$d.h\n")
+        expect_eq(words.items.len, 4)
+        expect_eq(words.items[0], "a.c")
+        expect_eq(words.items[1], "inc/a.h")
+        expect_eq(words.items[2], "b c.h")
+        expect_eq(words.items[3], "$d.h")
+        win := make_prerequisites("C:/t/x.o: C:/src/a.c \\\r\n C:/inc/a.h\r\n")
+        expect_eq(win.items.len, 2)
+        expect_eq(win.items[1], "C:/inc/a.h")
+    }
+}

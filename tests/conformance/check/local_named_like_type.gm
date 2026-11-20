@@ -20,7 +20,7 @@ main :: fn() {
     Name := "n" //~ ERROR `Name` names a type
     Buf :: []u8
     cont := 1 //~ ERROR `cont` is a reserved type name
-    f64 :: i32 //~ ERROR `f64` is a reserved type name
+    f64 :: i32 //~ ERROR `f64` names a type
     for bool in 0..3 {} //~ ERROR `bool` names a type
     if rune := maybe() {} //~ ERROR `rune` names a type
     // Other top-level and predeclared names may still be hidden.
@@ -33,3 +33,11 @@ main :: fn() {
 }
 
 maybe :: fn() -> ?u32 => null
+
+// Local aliases follow the same rule.
+aliases :: fn(T: type, x: T) -> T {
+    T :: u8 //~ ERROR `T` names a type
+    Point :: i32 //~ ERROR `Point` names a type
+    Name :: []u8 //~ ERROR `Name` names a type
+    return x
+}

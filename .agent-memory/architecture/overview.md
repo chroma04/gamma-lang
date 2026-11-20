@@ -15,6 +15,12 @@ The full, maintained map is docs/architecture.md (a test requires it to name eve
   (+ the n-way split for `--emit-c`), shared inline small fns (SHARED_SMALL_BYTES),
   outline.gm/chain.gm for huge functions (decisions/048, 065, 068, 069).
 - Tools: pkg/ testing/ fmt/ doc/ lint/ linting/ fix/ repl/ ide/ lsp/.
+  - `gamma lsp` = lsp/supervisor.gm, which spawns `gamma lsp --worker` (the real server,
+    lsp.command) and restarts it after a trap; test hook GAMMA_LSP_DEBUG_TRAP +
+    request `gamma/debugTrap`.
+  - `test/bench --backend=interp`: testing/run.gm re-runs gamma with the hidden flag
+    `--run-test=j` per test (driver.run_interp_entry); flags with `hidden: true` stay out
+    of the usage text.
 - `lib/core` (prelude, list, map, slice, complex) may use core-only intrinsics (@heap_*,
   @alloc_tag/@alloc_check, @copy_elems), prelude privates, `is`/@hash on params.
 - `bootstrap/seed/` = the build's C units (decisions/066), adopted by gamma0; `build.sh`,

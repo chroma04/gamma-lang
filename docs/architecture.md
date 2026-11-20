@@ -22,7 +22,7 @@ AST
   ▼
 TIR                          typed intermediate representation (tir/)
   ├─▶ eval/                  compile-time evaluation (spec §17)
-  ├─▶ interp/                interpreter: gamma run --backend=interp, gamma repl
+  ├─▶ interp/                interpreter: --backend=interp (run, test, bench), gamma repl
   └─▶ cgen/                  C code generation → system C compiler → executable
 ```
 
@@ -413,7 +413,7 @@ them into static storage and the interpreter lays them out in its memory.
 
 ## The interpreter
 
-`gamma run --backend=interp` and `gamma repl` run the program in the interpreter
+`--backend=interp` (`gamma run`, `test`, `bench`) and `gamma repl` run the program in the interpreter
 (`compiler/interp/`) instead of compiling it, and so need no C compiler. It implements the
 language exactly as the target would: target integer sizes, layouts and float semantics, with
 every checked operation checked.
@@ -684,7 +684,13 @@ How the runtime is linked depends on the build mode:
   cached executable also covers the size and modification time of the library
   files it links (the package's, those of `foreign` blocks, and those named by
   `-L` / `-l` in `$LDFLAGS`) and, for WASI, the version of `wasm-opt`. Leftover
-  temporary files of builds that died are removed after an hour.
+  temporary files of builds that died are removed after an hour. The objects of the
+  packages' C sources (`package_object`) are kept in `native/` as `obj-<key>.o`, the
+  key covering the file's path and text, the compiler and the flags; they are compiled
+  with `-MD`, and `obj-<key>.deps` lists every file the compiler read with a hash of
+  its text, which must all still match for the object to be used (a header is not in
+  the key). Without a cache they are compiled next to the executable and removed after
+  linking (`pkg.remove_objects`).
 - A large Debug build is split into translation units, compiled in parallel and
   then linked (`cgen/units.gm`); so is any build when `GAMMA_C_UNITS=<n>` with
   `n` > 1 forces a split (tests use it on small programs). The generator writes
@@ -1259,7 +1265,11 @@ change the value (integers and booleans; Fil-C and other types: a round trip thr
 `gamma test` and `gamma bench` (`compiler/testing/`) check the program as a library with its
 tests (the modules of the root's package that it imports; all of them with `--all`), compile
 the chosen tests into one executable whose `main` runs the test given by its first argument,
-and run it once per test with captured output. Both always compile through C. `run.gm`
+and run it once per test with captured output. With `--backend=interp` there is no
+executable: each test runs in a `gamma` process started with the same command line plus the
+hidden option `--run-test=j`, which checks the program again and interprets the `j`th
+selected test's entry (`driver.run_interp_entry`), so traps, exits and `--timeout` work as
+for an executable, and a test reaching foreign code or assembly is refused. `run.gm`
 selects the cases (`--filter`), runs them, on `--jobs` threads that only start processes, and
 prints the results in order; a test passes if its exit status is 0, and a trap's message and
 location reach the report from standard error. A test that exceeds `--timeout` is killed by a
@@ -1372,6 +1382,7 @@ pointed to [`lsp.md`](lsp.md). This section is about how it works.
 | `compiler/lsp/refs.gm` | find references and rename across the modules of a package |
 | `compiler/lsp/workspace.gm` | the modules of a package, and a cache of what was learned from checking each |
 | `compiler/lsp/server.gm` | open documents, when to analyze, and request dispatch |
+| `compiler/lsp/supervisor.gm` | runs the server in a child process and restarts it after a crash |
 | `compiler/ide/` | the index that the requests are answered from, built from a checked program |
 
 A second thread only reads messages and queues them. The main loop handles a message, and
@@ -1388,7 +1399,20 @@ errors do not stop it. Diagnostics are published for every open document of the 
 for every other file that has diagnostics. Files that had diagnostics before and have none now
 get an empty list. A diagnostic without a location goes to line 0 of the first open document.
 Labels become `relatedInformation`; the explanations that a diagnostic carries are appended to
-its message. A failure inside the checker ends the server, since traps cannot be caught.
+its message.
+
+**Crashes.** A trap cannot be caught in the process that traps, so `gamma lsp` is a
+supervisor: it runs the server as `gamma lsp --worker` and passes messages through,
+keeping the `initialize` request and the notifications that carry the session's state
+(`initialized`, configuration and workspace-folder changes, and per document its `didOpen`
+and its last full-text `didChange`; `didClose` drops the document's). If the child ends
+without an `exit`, the supervisor shows the trap's reason (`window/showMessage`, with the
+whole standard error in `window/logMessage`), answers the requests the child had not
+answered with `InternalError`, starts a new child and replays what it kept, dropping the
+answer to the replayed `initialize`. A child that crashes before the client sent anything
+new would crash again on the same state, so the next one starts with the next client
+message instead. `GAMMA_LSP_DEBUG_TRAP` makes the request `gamma/debugTrap` trap, for the
+tests.
 
 **The index** (`compiler/ide/`) reads the state of a finished run and adds no code to the
 checking passes, so ordinary compilation is unaffected.

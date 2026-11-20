@@ -1,7 +1,9 @@
 //! The language server behind `gamma lsp`: the Language Server Protocol over standard
 //! input and output.
 //!
-//! The server is single-threaded apart from a thread that reads messages. Each open
+//! `gamma lsp` runs the server in a child process behind a supervisor (`supervisor.gm`),
+//! which restarts it after an internal error. The server is single-threaded apart from a
+//! thread that reads messages. Each open
 //! document is kept as text, and the directory (module) that contains it is checked with
 //! the open documents standing in for the files on disk; see `docs/architecture.md`.
 
@@ -9,7 +11,8 @@
 VERSION :: "0.2.0"
 
 /// Serves LSP on standard input and output until the client says `exit` or closes the
-/// input. Returns the process exit code: 0 after `shutdown`, 1 otherwise.
+/// input (`gamma lsp --worker`, the supervisor's child). Returns the process exit code: 0
+/// after `shutdown`, 1 otherwise.
 pub command :: fn() -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     box := new(inbox())!
     _ = thread.spawn(reader, box) else {

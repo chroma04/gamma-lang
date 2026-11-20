@@ -187,20 +187,22 @@ pub command :: fn(tc: ^const Toolchain, flags: []const string, tail: []const str
 /// What the link step of a native build adds: compiled C sources and libraries.
 pub Link :: struct {
     pub objects: List(string)
+    /// The objects that were made for this build alone (not kept in a cache).
+    pub temporary: List(string)
     pub libs: []const string
     pub lib_dirs: []const string
 }
 
-pub no_link :: fn() -> Link needs Alloc => Link(objects: list(string), libs: empty_slice(string), lib_dirs: empty_slice(string))
+pub no_link :: fn() -> Link needs Alloc => Link(objects: list(string), temporary: list(string), libs: empty_slice(string), lib_dirs: empty_slice(string))
 
-/// Removes the objects `link_inputs` made.
+/// Removes the objects that were made for this build alone.
 pub remove_objects :: fn(link: ^const Link) needs Alloc + Fs {
-    for o in link.objects.items { _ = fs.remove_all(o) }
+    for o in link.temporary.items { _ = fs.remove_all(o) }
 }
 
 /// The compiler options for a package's C files in a build with `debug` checks and
 /// `debug_info`.
-object_flags :: fn(debug, debug_info: bool, src: ^const CSource) -> List(string) needs Alloc {
+pub object_flags :: fn(debug, debug_info: bool, src: ^const CSource) -> List(string) needs Alloc {
     flags := list(string)
     flags.push(if debug and debug_info { "-O0" } else if debug { "-Og" } else { "-O2" })!
     flags.push("-fPIC")!
@@ -210,30 +212,20 @@ object_flags :: fn(debug, debug_info: bool, src: ^const CSource) -> List(string)
     return flags
 }
 
-/// Compiles the C sources of `extras` to objects named after `exe` and returns what a
-/// build links. The objects are removed by `remove_objects`.
-pub link_inputs :: fn(extras: ^const Extras, tc: ^const Toolchain, exe: string, debug, debug_info: bool) -> string!Link needs Alloc + Fs + Proc {
-    link := no_link()
-    link.libs = extras.libs.items
-    link.lib_dirs = extras.lib_dirs.items
-    for i, src in enumerate(extras.sources.items) {
-        flags := object_flags(debug, debug_info, &src)
-        obj := str.format("{}.p{}.o", exe, i)!
-        tail := [3]string("-c", "-o", obj)
-        argv := command(tc, flags.items, tail[..])
-        argv.push(src.path)!
-        r := run(argv.items)
-        if r.code is 127 and r.out.len is 0 and not str.contains(r.err, "error") and r.err.len > 0 {
-            remove_objects(&link)
-            return !str.format("cannot run the C compiler `{}`: {}", display(tc), r.err)!
-        }
-        if not r.ok {
-            remove_objects(&link)
-            return !str.format("the C compiler failed on {}:\n{}", src.path, r.err)!
-        }
-        link.objects.push(obj)!
+/// The object of the `i`th C source of a build of `exe`, when it is made for the build alone.
+pub temporary_object :: fn(exe: string, i: usize) -> string needs Alloc => str.format("{}.p{}.o", exe, i)!
+
+/// Compiles the package C file `src` with `flags` to `obj`; the message if that fails.
+pub compile_source :: fn(tc: ^const Toolchain, src: ^const CSource, obj: string, flags: []const string) -> string!() needs Alloc + Proc {
+    tail := [3]string("-c", "-o", obj)
+    argv := command(tc, flags, tail[..])
+    argv.push(src.path)!
+    r := run(argv.items)
+    if r.code is 127 and r.out.len is 0 and not str.contains(r.err, "error") and r.err.len > 0 {
+        return !str.format("cannot run the C compiler `{}`: {}", display(tc), r.err)!
     }
-    return link
+    if not r.ok { return !str.format("the C compiler failed on {}:\n{}", src.path, r.err)! }
+    return ()
 }
 
 /// The linker arguments for the libraries: `-L` and run-time search directories, then

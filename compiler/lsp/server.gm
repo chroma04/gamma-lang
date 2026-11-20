@@ -636,6 +636,8 @@ request :: fn(srv: ^Server, id: Value, method: string, params: Value) needs Fx {
             }
             respond(id, r)
         }
+        // An internal error on demand, to test the supervisor: only with the variable set.
+        "gamma/debugTrap" if Env.var("GAMMA_LSP_DEBUG_TRAP") is not null => trap("gamma/debugTrap")
         _ => respond_error(id, METHOD_NOT_FOUND, str.format("method not found: {}", method)!)
     }
 }

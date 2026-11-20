@@ -166,7 +166,7 @@ pub run :: fn(s: ^sema.Sema, parsed: []const load.Parsed, program: bool, sc: ^Sc
         // are those of its text.
         p := &parsed[at.get(i.trunc(u32)) else continue]
         before := w.facts.whens.items.len
-        w.walk_file(&p.tree)
+        w.walk_file(&p.tree, p.tokens)
         names_in(p.tokens, w.facts.whens.items[before..], &when_names)
     }
     facts := &w.facts

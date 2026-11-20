@@ -31,8 +31,13 @@ pub Options :: struct {
     pub debug_info_given: bool = false
     /// `run`: the arguments after the file, for the program.
     pub program_args: []const string = empty_slice(string)
-    /// `run`: run the program in the interpreter instead of compiling it (`--backend=interp`).
+    /// `run`, `test`, `bench`: run the program in the interpreter instead of compiling it
+    /// (`--backend=interp`).
     pub interp: bool = false
+    /// `test`, `bench` with `--backend=interp`: the position among the selected tests of the
+    /// one test to run in this process (`--run-test=n`, which `gamma` passes to the
+    /// processes it starts for each test).
+    pub run_test: ?usize = null
     /// `run --backend=interp`: a program the interpreter cannot run (it calls foreign code
     /// or uses assembly) is compiled and run natively. A host without a C compiler turns
     /// this off, and such a program is refused.

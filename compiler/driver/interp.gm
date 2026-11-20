@@ -1,4 +1,4 @@
-// `gamma run --backend=interp`: runs the program in the interpreter (`interp/`).
+// `--backend=interp`: runs the program, or one of its tests, in the interpreter (`interp/`).
 
 hash_map :: import "std/collections/hash_map"
 interp :: import "../interp"
@@ -19,24 +19,45 @@ pub run_interp :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -
     // The interpreter cannot call foreign code or run assembly: such programs run
     // natively.
     if needs_native(&p, entry) {
-        if opts.native_fallback { return run(s, root, opts) }
+        if opts.native_fallback { return run(s, root, input, opts) }
         eprint("gamma: cannot run this program here: foreign code and assembly are not available on this host\n")
         return 1
     }
+    // The program sees the source path as its name.
+    args := list(string)
+    args.push(input)!
+    args.extend(opts.program_args)!
+    return interpret(&p, entry, opts, args.items)
+}
+
+/// Runs `entry` (a function of the program's ambient effects that returns the exit status,
+/// such as the entry of a test) in the interpreter, with `input` as the program's name;
+/// returns its exit status as `run_interp` does. A function that reaches foreign code or
+/// assembly is refused.
+pub run_interp_entry :: fn(s: ^sema.Sema, entry: u32, input: string, opts: Options) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    roots := [1]u32(entry)
+    if not check.prepare_codegen(s, roots[..]) { return 1 }
+    p := cgen.prog(s)
+    if needs_native(&p, entry) {
+        eprint("gamma: the interpreter cannot run this: it reaches foreign code or assembly (use `--backend=c`)\n")
+        return 1
+    }
+    args := [1]string(input)
+    return interpret(&p, entry, opts, args[..])
+}
+
+/// Runs `entry` of `p` in the interpreter in `opts.mode`, with the program arguments `args`.
+interpret :: fn(p: ^cgen.Prog, entry: u32, opts: Options, args: []const string) -> u8 needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     mode: interp.Mode = match opts.mode {
         .Debug => .Debug
         .Checked => .Checked
         .Safe => .Safe
         .Fast => .Fast
     }
-    // The program sees the source path as its name.
-    args := list(string)
-    args.push(input)!
-    args.extend(opts.program_args)!
-    match interp.run_entry(&p, entry, mode, args.items, null) {
+    match interp.run_entry(p, entry, mode, args, null) {
         .Exit(code) => return code
         .Trap(t) => {
-            eprint("trap: {}", interp.trap_report(&p, t))
+            eprint("trap: {}", interp.trap_report(p, t))
             // The status of a process terminated by `abort` (SIGABRT).
             return 134
         }

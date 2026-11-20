@@ -65,7 +65,7 @@ arguments_not_utf8 :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     return ()
 }
 
-/// What the program prints for its arguments: each on a line, as raw bytes.
+/// What the program prints for its arguments: each on a line, as raw bytes, after its name.
 arguments_as_bytes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     dir := try t.scratch("cli-bytes")
     file := kit.join(dir, "args.gm")
@@ -76,7 +76,8 @@ arguments_as_bytes :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     for backend in backends.items {
         out := try t.run(t.gamma([_]string("run", backend, file, "a\xff\xfeb", "plain")))
         try t.check(out.success(), "{}: {}", backend, out.err)
-        try t.check(str.strip_suffix(out.out, "a\xff\xfeb\nplain\n") is not null, "{}: {}", backend, kit.quote(out.out))
+        // Both back ends give the program the source path as its name.
+        try t.expect_text(backend, str.format("{}\na\xff\xfeb\nplain\n", file)!, out.out)
     }
     // Options of gamma itself must still be text.
     out := try t.run(t.gamma([_]string("run", "--mode=\xff", file)))

@@ -148,7 +148,7 @@ If a locked commit has disappeared from the repository (history was rewritten), 
 
 `gamma test --package=<name>` runs the tests of the dependency `name` instead of your own: of a direct dependency, or of a dependency of one, found by name. The library is tested with the revisions your `gamma.lock` holds for it and for its own dependencies, so you can check that the versions you locked work together. `--all`, `--filter` and the other options of `gamma test` apply as usual, and `gamma bench --package=<name>` runs its benchmarks the same way.
 
-Two options apply to `fetch`, `check`, `run`, `build` and `test` (`--profile=<name>`, described next, applies to the last four):
+Two options apply to `fetch` and to the commands that load a program, `check`, `run`, `build`, `test`, `bench`, `lint` and `fix` (`--profile=<name>`, described next, applies to all but `fetch`):
 
 - `--locked` fails if `gamma.lock` is missing or would change. Use it in CI to be sure the committed lock is complete.
 - `--offline` never uses the network. Everything must already be locked and in the cache; otherwise the command fails and says what is missing.
@@ -191,7 +191,7 @@ shim :: foreign "c" {
 
 - A build (`build`, `run`, `test`, `bench`) compiles each C file with `-O2` (`-Og` in Debug mode, `-O0 -g` with debug information), `-fPIC`, `-pthread`, the package's `-I` directories and then the `cflags`, and links the objects with the program. `libs` become `-l` options and `lib-dirs` become `-L` options, with a run-time search path (`-Wl,-rpath`) for the same directories so the executable finds shared libraries there.
 - The interpreter (`gamma run --backend=interp`) cannot call C, so a package with C sources runs only through C.
-- The C files are compiled again by every build, into a temporary directory; a program with C sources of its own is not kept in the cache of built programs either.
+- Each C file is compiled once and its object kept in the cache (`native/`), named after the file's text, the compiler and the flags; the files it includes are recorded with it, so editing the file or one of its headers compiles it again. Without a cache directory (`GAMMA_CACHE_DIR=`) the C files are compiled again by every build. A program with C sources of its own is not kept in the cache of built programs.
 
 ## Lint levels
 
