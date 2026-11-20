@@ -34,7 +34,6 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 ## 3. Testing and robustness
 - Fuzzing: sema fuzz targets + more differential coverage (tools/difftest); tree-sitter
   as a second parser.
-- `@stack_size` not verified against `cc -fstack-usage`.
 - Editors: Zed extension untried in real Zed; Emacs mode tested in batch only.
 
 ## 4. Language and library (only with evidence; check spec §22 for std additions)

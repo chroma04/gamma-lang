@@ -66,6 +66,7 @@ before lexing).
 
 ## Not done / next candidates
 - regrow_raw 1.2M calls (99 Ir) in check: long tail of small lists, no dominant caller.
+  s75: a first block of >= 64 bytes (64/size elements) saved only 0.3% Ir; dropped.
 - memcpy ~11M calls in emit-c (small appends); an inline small-copy in extend could help.
 - Lexer still ~430 Ir/token: emit is a full frame function (needs Alloc for errors).
 - Release single-unit build (068) still open.

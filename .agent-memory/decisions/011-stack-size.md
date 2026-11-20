@@ -16,7 +16,11 @@
   STACK_BASE 1024 + chain). Interp then never traps on a fiber sized by @stack_size.
 - C reality check (stack_size test, gcc -O2): real need 25–30 KB vs bound 47 KB. Factor 2 on
   locals matters: `[N]u8(fill: x)` makes gcc build a temp copy. Not formally sound (cc frame
-  sizes are unknowable before compiling); a `-fstack-usage` verification pass is a possible
-  M12 extra.
+  sizes are unknowable before compiling). Verified since s75 by the harness test
+  native_build/stack_size_covers_the_frames_gcc_reports (stack_usage.gm): gcc
+  `-fcallgraph-info=su -dumpdir`, deepest direct-call chain from a `#noinline` root vs
+  bound − 9216. gcc 13: debug 14864 / checked 14560 / fast 14344 bytes vs 15504 allowed
+  (tight: ~4% margin). Indirect calls have no edge in the graph, so the test uses direct
+  calls only.
 - core/slice introsort and sym_merge made iterative with fixed [64]usize stacks so sorting is
   usable under @stack_size.

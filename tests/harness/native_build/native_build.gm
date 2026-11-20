@@ -2,7 +2,8 @@
 //! compiled once and kept in the cache directory (`GAMMA_CACHE_DIR`); Checked and Fast
 //! builds, and Debug builds without a cache, compile it with the program. Each way must
 //! give the same program. Safe builds need Fil-C. Without a usable C compiler (or, for
-//! the Safe build itself, without Fil-C) the tests are skipped.
+//! the Safe build itself, without Fil-C) the tests are skipped. `stack_usage.gm` checks
+//! `@stack_size` against the frame sizes GCC reports.
 
 kit :: import "../kit"
 driver :: import "gammac/driver"
@@ -26,6 +27,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
         out.push(kit.Test(name: "run_relinks_when_a_foreign_library_changes", run: relinks_foreign_library))!
         out.push(kit.Test(name: "output_is_flushed_before_waiting", run: output_is_flushed_before_waiting))!
         out.push(kit.Test(name: "a_new_cache_directory_is_private", run: a_new_cache_directory_is_private))!
+        out.push(kit.Test(name: "stack_size_covers_the_frames_gcc_reports", run: stack_size_covers_the_frames_gcc_reports))!
     }
 }
 
