@@ -1563,6 +1563,8 @@ If `F` is a union type that has **exactly one** variant whose payload type is `E
 
 Lifting is one level: it does not search payloads of payloads. If two variants carry payload type `E`, lifting is ambiguous and a compile error; handle the error explicitly: `x else e => return !.Which(e)`.
 
+Only a union is a lifting target. An error type that is a struct (`CalcError :: struct { kind: ErrorKind, pos: usize }`) gets no lifting and no variant shorthand: its other fields are context that a lift would have to make up. Name the conversion in a function and call it where the context is known: `store(vars, v) else e => return !calc_error(.Memory(e), pos)` (C.8).
+
 ```
 LoadError :: union { Parse: ParseError, Io: IoError, Missing }
 
@@ -3646,6 +3648,7 @@ The first four already exist, each with its cost and its code visible where it i
 | `in` on library containers (`k in m`) | P5, one feature per job | a privilege the core's containers would have and no library container could; `m.contains(k)` reads as well and works the same way for every container |
 | More containers in the core library | §22.1 | the core holds what the language definition refers to; `List` is the one container it refers to (§21.5), and the others are library code that needs nothing a program lacks |
 | A packed set type over an enum | one feature per job | `[E]bool` is a set indexed by the enum (§5.6.1), a `#bits` struct packs named flags (§5.10.5), and the library has integer bit sets |
+| Lifting into a struct error type (the other fields from their defaults), or variant shorthand through a struct's union field (`!.Memory(e)` for `CalcError(kind: .Memory(e), pos: 0)`) | P4, P2 | a struct error's other fields are context, such as where the error happened, that the lift would make up, and the made-up value reads as a real one; a union variant adds nothing that is not there. A function that builds the error from what the site knows says what is filled in (§10.6) |
 
 ### C.9 Future directions
 

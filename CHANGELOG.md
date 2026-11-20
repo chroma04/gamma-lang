@@ -175,6 +175,10 @@ Versions and what each kind of change means are described in
 
 ### Documentation
 
+- **Spec §10.6 states that only a union is a lifting target**: an error type that is a
+  struct gets no lifting and no variant shorthand, since its other fields would be made up
+  (rationale in C.8). The guide shows the idiom, a function that builds the error, and the
+  error for `try` into a struct error type now says so and how to convert.
 - The idioms handbook is folded into the guide: its patterns (naming and module layout,
   scanners with `match`, binding optional payloads, when to trap, errors that unwind a
   recursive descent, an arena per phase, pointers into lists that grow, copies of lists and

@@ -183,7 +183,7 @@ LiftResult :: union {
 }
 
 lift_variant :: fn(cx: ^FnCx, e: Ty, f: Ty) -> LiftResult needs Alloc {
-    uv := cx.s.union_variants(f) else return .Err(str.format("cannot propagate an error of type `{}` from a function whose error type is `{}`", cx.show(e), cx.show(f))!)
+    uv := cx.s.union_variants(f) else return .Err(str.format("cannot propagate an error of type `{}` from a function whose error type is `{}`: only a union error type lifts (§10.6); convert it with `else e => return !…`", cx.show(e), cx.show(f))!)
     found: ?u32 = null
     count := 0
     for i, v in enumerate(uv.variants) {

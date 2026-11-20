@@ -28,6 +28,7 @@ joins (s48). Checked s50 as already working: `if .V(b) := x and n > 0` (§8.2 ch
 thread entries with fewer effects (subsumption), `?T`-in-variant diagnostic suggests `?x`,
 `<` and `sort` on strings (§7.5), sorted map = std/collections/ordered_map.
 By design / not worth conceding:
+- Lifting into struct-typed errors, `!.V` through a struct field (071; spec §10.6, C.8).
 - No shadowing (user, 045). `usize(u64)`/`.trunc` (§6.6, 32-bit targets).
 - `f :: fn` only (functions are constants, second-class literals). One namespace per
   module across files. Variant at the start of a line (`T.V(…)` reads fine; §2.8).

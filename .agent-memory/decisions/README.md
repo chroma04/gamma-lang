@@ -14,6 +14,7 @@ Status words: CURRENT (holds today), PARTLY (read with the later one), HISTORY (
 - 041 stdlib batch 1 · 044 s39 pain-point changes · 045 dangling addresses are errors;
   no shadowing stays · 047 `?x` pattern · 049 temp arrays as slices; flush before blocking
 - 054 pain-point sweep · 060 stale-element-pointer through struct pointers
+- 071 struct-typed errors: no lifting, no variant shorthand (REJECTED)
 - 061 spreads in tuple expressions
 
 ## Compiler architecture

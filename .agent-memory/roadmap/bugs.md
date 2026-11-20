@@ -12,9 +12,6 @@
   workaround; `gamma test --timeout` cannot stop a test blocked in a syscall other than
   sleep (documented).
 
-## Friction, by design for now
-- Struct-typed errors get no `!.Variant` shorthand / lifting.
-
 ## Allowed behaviour differences (documented)
 - `print("{}", bytes)` of `[]u8` prints raw bytes (§21.6.1).
 - Stack-overflow backtrace depth differs between back ends (frame sizes): no shared stderr
