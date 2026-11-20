@@ -35,6 +35,9 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Faster Debug builds on Windows.** The generated code of a Debug build no longer
+  includes `<windows.h>` and Winsock in every C unit; as on other systems it includes only
+  the few standard headers the runtime's declarations need.
 - **A function name or function literal written as a format value, or as an argument a type
   parameter is inferred from, is an error** (spec §16.2, §21.6.1). It converts to either
   kind of function type, and `print("{}", loc)` where a local `loc` was meant printed the

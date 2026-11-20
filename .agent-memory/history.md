@@ -30,3 +30,7 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
 - The idioms handbook was removed in s63 (user: directionless): learned patterns go into
   the guide chapter they belong to (01 naming/modules, 03 match, 05 trap-vs-return, 09
   arena/list pitfalls).
+- s75 (PR #131): struct-error lifting rejected (071); function values not formatted or
+  inferred (§16.2); `test --backend=interp` native fallback; foreign `#thread_local`;
+  constant-table fn tagging fix; linear complex chains; @stack_size vs gcc test; `lower`
+  fuzz target; guide for Zig programmers; Windows CI timing probe.

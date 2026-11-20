@@ -1,7 +1,7 @@
 # Gamma: agent memory INDEX (read first)
 
 ## State (2026-11-20)
-- `main` = PRs #1–#128 merged. Released: 0.1.0, 0.2.0 (CHANGELOG `## Unreleased` open).
+- `main` = PRs #1–#130 merged; PR #131 (s75) open. Released: 0.1.0, 0.2.0 (CHANGELOG `## Unreleased` open).
   Tag `rust-reference-final` marks the last Rust implementation.
 - The compiler is self-hosted: `compiler/` (Gamma) builds `gamma` from the C seed in
   `bootstrap/seed/` (= the build's C units; refresh with `tools/refresh-seed.sh` after
@@ -12,8 +12,9 @@
   bootstrap/build.sh then tools/test.sh (subsets for the Safe, s390x, aarch64, WASI
   lanes; Windows via cross-built gamma.exe + harness.exe), plus fuzz smoke, difftest,
   benchmarks, editors.
-- Last sessions: perf rounds 8–9 (decisions/068, 069): compiler check −41% then −13%,
-  emit-c −21%; const `@hash`. The whole memory folder was reorganized on 2026-11-20.
+- Last sessions: s74 tooling (070); s75 roadmap sweep (history.md s75; decision 071 struct
+  errors rejected). Windows CI test step ~23 min vs ~70 s on Linux for the same suites:
+  under investigation (see gotchas/platforms.md "Windows CI time").
 
 ## Next steps
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
