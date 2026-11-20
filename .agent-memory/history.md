@@ -1,0 +1,32 @@
+# Project history (compact; details in git log, decisions/ and the CHANGELOG)
+Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
+
+## Rust reference era (s1–s37, Oct 8–23 2026)
+- s1–s8: spec critical pass; Rust implementation M0–M12 (front end, sema, TIR, interpreter,
+  C back end, effects, generics, comptime, fibers, modules/tests, FFI, std); Safe mode via
+  Fil-C (017); stdlib policy §22 (018).
+- s9–s16: perf rounds, bytecode VM, tooling (packages, LSP, editors, release: 023),
+  design review → thesis + principles in spec §1 (025), `needs` effect syntax (026).
+- s17–s30: v0.1.0 prep and dogfood examples, fix-its (028), lint (033), wasm32-wasi (034),
+  coherence review (030), Cranelift back end (later removed).
+- s31–s37: website + playground (036), errors policy ch. 23 (037), HashMap to std (038),
+  complex + `#vec` (039), `#soa` (040, 042), stdlib batch (041).
+
+## Self-hosting (s38–s50, Oct 24–27)
+- s38–s42: gammac in compiler/ (043): lexer, parser, loader, declarations, checker to
+  800/800 parity with the reference; comptime evaluator (046); `?x` pattern (047).
+- s43–s46: C back end (048) and bootstrap; port of every `gamma` command; coverage (050);
+  interpreter (051).
+- s47–s50: Rust retired, C seed bootstrap (052; tag rust-reference-final); test harness in
+  Gamma (053); pain-point sweep (054).
+
+## Self-hosted era (s51–s73, Oct 28 – Nov 14)
+- Perf rounds: compiler (055, 057, 058, 062, 063, 068, 069), interpreter VM (056, 064, 067),
+  playground root stack (059), incremental C units (065), fast bootstrap (066).
+- Refactor rounds s64–s66 (done); stale-element-pointer lint (060); tuple spreads (061);
+  0.2.0 released (CHANGELOG 2026-10-30).
+- s72 (PR #127): perf round 8, compiler check −41%. s73 (PR #128): perf round 9 (copy
+  elision in cgen, fmt memo, const `@hash`).
+- The idioms handbook was removed in s63 (user: directionless): learned patterns go into
+  the guide chapter they belong to (01 naming/modules, 03 match, 05 trap-vs-return, 09
+  arena/list pitfalls).

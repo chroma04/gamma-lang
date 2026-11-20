@@ -1,0 +1,50 @@
+# Platforms and C compilers: pitfalls
+
+## gcc vs clang (macOS CI uses Apple clang; local `cc` is gcc 13, clang 18 installed)
+- Run the suites with `CC=clang` before pushing back-end changes. clang rejects things gcc
+  accepts: `(T){0}` for a zero-member struct (use `(T){}`); numeric/unknown escapes in
+  `_Static_assert` messages (cgen's `assert_message` handles it).
+- Newer clang: `apt-get install clang-19 clang-20`. Clang ≥19 (Apple ≥17) is ~cubic on long
+  op chains: functions with > 2,000 names get `optnone,noinline` (GM_LONG_FN).
+- C compilers are superlinear in the size of ONE function: keep generated functions small
+  (cgen outlines statement runs and chains; decisions/031).
+- macOS: `qsort_r` argument order and qsort comparison order differ from glibc; tests must
+  not depend on either. gcc may CSE pure recursive calls (fib is no benchmark).
+- gcc `-fstack-clash-protection` probes fault before GM_STACK_CHECK → SIGSEGV handler.
+
+## AArch64 (`apt-get install gcc-aarch64-linux-gnu qemu-user`;
+## `GAMMA_TEST_LANE=aarch64 target/bootstrap/harness -j 4 lanes/`, ~1 min)
+- AArch64 GCC without a stack protector keeps the frame record at the BOTTOM of the frame,
+  so `__builtin_frame_address(0)` is not above the locals; GM_STACK_CHECK picks its form by
+  `#if`. Run this lane for anything touching frames or C flags.
+- Debug under qemu: `qemu-aarch64 -g 12345 exe & gdb-multiarch -ex "target remote :12345"`.
+
+## s390x (big-endian): `apt-get update && apt-get install -y gcc-s390x-linux-gnu qemu-user`,
+`GAMMA_TEST_LANE=s390x target/bootstrap/harness -j 4 lanes/` (~1 min).
+
+## Windows
+- Windows-only code (`when target.os is .Windows`) is not checked on Linux: run
+  `CC=clang gamma check --target=x86_64-w64-mingw32 f.gm` (no mingw needed).
+  `when … { return a }` then `return b` is "unreachable code" on Windows only: use `else`.
+- Local run: `apt-get update; apt-get install gcc-mingw-w64-x86-64 wine64`;
+  `gamma build compiler --target=x86_64-w64-mingw32 -o x.exe`;
+  `WINEDEBUG=-all wine x.exe run --backend=interp f.gm`.
+- Windows cannot rename over a file another process has open: cache writes treat
+  "rename failed but destination exists" as success (content-keyed). Never open a cached
+  executable for writing (parallel cases run it; macOS gave SIGKILL).
+
+## WASI: `apt-get install clang-18 lld-18 wasi-libc libclang-rt-18-dev-wasm32 binaryen`;
+wasmtime from its GitHub release tarball. It needs `--dir=.` and
+`-W max-wasm-stack=268435456`; several preopens incl. "/" misbehave (harness uses a
+relative TMPDIR). gamma links WASI unoptimized (clang would run wasm-opt itself).
+
+## Fil-C (Safe mode)
+- Install: release tarball `optfil-0.686-linux-x86_64.tar.xz` from github.com/pizlonator/
+  fil-c; `tar xf` the inner `fil.tar.xz -C /opt` (that is all `setup.sh -u` does; the
+  classifier may refuse setup.sh). Panics exit 134. valgrind works on its binaries.
+- Never put /opt/fil/bin first on PATH (gcc then uses Fil-C's ld); the Safe lane finds
+  `/opt/fil/bin/filcc` itself (`GAMMA_TEST_SAFE=1`).
+- It rejects top-level asm and pointer operands in inline asm; casts via integers lose the
+  capability; at -O2 SROA turns a word read both as int and pointer into inttoptr (why
+  blobs are typed per word, decisions/032). Test Safe traps at -O2: filcc drops accesses
+  it can prove fail. filcc is superlinear in function size.

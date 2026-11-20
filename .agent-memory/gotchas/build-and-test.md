@@ -1,0 +1,44 @@
+# Building and testing: pitfalls on this machine
+
+## Resources (cloud box: ~15 GB RAM, no swap, 4 cores, ~40 GB disk allowance)
+- One compiler build = gamma ~2.3 GB + up to 8 cc1 at ~800 MB. Three or more parallel
+  builds / `tools/test.sh` runs get OOM-killed (exit 137, often with empty stderr): run
+  at most two at once, or serialize them with `flock <scratchpad>/build.lock`.
+- Remove finished git worktrees and big downloads (wine, llvm-mingw, Fil-C) promptly.
+- Never time anything while another build or test runs in the background; wall time here
+  is ±5–30% noisy anyway: compare callgrind Ir instead (recipe: docs/contributing.md
+  "Profiling the compiler").
+
+## Rebuilding and re-running
+- `target/bootstrap/gamma` is the OLD compiler until `tools/test.sh` (or a manual
+  `gamma build compiler`) rebuilds it: a compiler fix does not show in `gamma check` before.
+- Re-run tests without rebuilding: `GAMMA_TEST_COMPILER=target/bootstrap/gamma
+  GAMMA_TEST_HARNESS=target/bootstrap/harness tools/test.sh PREFIX` (instant, no lock).
+- Do not edit `compiler/`, `lib/` or `runtime/` while `bootstrap/build.sh` or a
+  `selfhost` run is going: they read sources mid-run (a fixed-point test then fails
+  spuriously because stage 1 and 2 saw different trees).
+- Packages that import gammac and break when a `pub` goes away: `tests/harness`,
+  `fuzz/*.gm`, `web/gen`, `web/play` (check each; `gamma test web/gen`). `gamma lint
+  compiler` has no auto-fix for needless-pub.
+- `gamma lint lib/std` fails ("no .gm files"): lint per module dir (`gamma lint lib/std/math`).
+
+## Diagnosing failures
+- A spurious failure that names a source file ("core module X does not declare Y"): check
+  whether some test WRITES into the tree (`find lib tests -newermt …`, or
+  `strace -f -e trace=openat harness SUITE | grep O_WRONLY`). Tests must never do that.
+- Silent exit 1 from `gamma run` = look for an unreported `.Failed`/`false` path (unit
+  object cache, `gm_proc_kill` on Windows).
+- Timing loops over `gamma run` of a program that reads stdin hang: redirect `</dev/null`.
+- Tests run as root here; CI does not. Permission bugs (read-only checkouts) hide
+  locally: run such tests as `runuser -u nobody -- env HOME=/tmp/x TMPDIR=/tmp …`.
+- NEVER `pkill -f` / `pgrep -f` with a pattern that occurs in your own command line (it
+  kills your shell, exit 144) or in other builds (it kills them). Use
+  `ps -eo pid,comm | awk '$2 ~ /^name/'`.
+- Find which gcc pass breaks generated C: `-fno-<pass>` one by one, then bisect functions
+  with `__attribute__((optimize("no-…")))`.
+
+## Git / GitHub
+- No `gh` CLI for PRs: use the GitHub MCP tools. CI job logs: `get_job_logs` with
+  `tail_lines` (the download-URL form is 403 here).
+- Force-push is refused by the permission classifier.
+- Check CI after each push; read PR notifications before assuming green.
