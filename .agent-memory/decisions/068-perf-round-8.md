@@ -29,8 +29,8 @@ Upper bound for cross-unit inlining measured at the start: single-unit build
    fold(hi^lo) of (h^x)*0x9E3779B97F4A7C15 as u128; ints by value in one word (128-bit:
    two), `[]u8`/`[N]u8` eight bytes per word (`gm_mix_bytes`, LE), scalars inlined into
    the composite helper (`hash_scalar`/`hash_step`/`hash_elems`). interp/builtins.gm
-   `hash_u64/hash_bytes/hash_int` mirror it. `@hash` is NOT constant-evaluable in gammac
-   ("cannot check the builtin .Hash at compile time yet"), so the test
+   `hash_u64/hash_bytes/hash_int` mirror it. Then `@hash` was not constant-evaluable
+   (it is since s73: eval/ops.gm hash_value, a third copy of the algorithm), so the test
    conformance/run/hash_structure.gm pins printed values (both lanes share .stdout).
    No golden output elsewhere changed (maps iterate in insertion order / tests sort).
 4. FLAKE ROOT CAUSE (not perf): "core module `complex` does not declare `Complex`" was
@@ -86,5 +86,5 @@ GAMMA_TEST_LANE=s390x harness lanes/ → 495 pass, 48 s).
   memcpy 13M, sink stubs gm_pf* 340M, regrow_raw 3.2M calls. `@write` to a closure
   literal could call the closure's function directly (stub per closure instead of the
   shared indirect one): est. −5..7% of emit-c. Not done.
-- `@hash` is not constant-evaluable in gammac although §16.8 says it is (roadmap/bugs-open).
+- (`@hash` constant evaluation: done in s73.)
 - HashMap find ~150 Ir self per lookup (hash + probe + eq inlined): fine.

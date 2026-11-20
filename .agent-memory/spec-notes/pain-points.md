@@ -1,12 +1,26 @@
-# Repeated usability pain points (candidates for language/library improvements)
-Standing user rule: Gamma is evidence-driven; a pain point hit more than once while writing
-Gamma gets flagged here (and to the user) as a possible improvement. Note how often and where.
+# Recurring usability pain points (candidates for language/library changes)
+Log a pain point when it recurs while writing Gamma: where, how often, and the candidate
+fix. Flag it to the user. Minor ones with a clear design get implemented (CLAUDE.md).
+Before flagging, check "Settled" below: those are decided.
 
-s50 (user: "discard what is done or not an issue, design + implement the rest") triaged the
-whole list; decisions/054 records the designs. Only OPEN items stay below this header.
+## Open
+- Adding an intrinsic that the prelude uses needs a 2-stage build + seed refresh (s50 sys
+  worker); procedure now in docs/contributing.md. Watch.
+- A function name used as a format argument compiles and prints the function's address
+  (`str.format("…{}", loc)` where a local `loc` was meant but missing: the method `loc` of
+  the same module was found). Hit once (s55, moving cgen arms into helpers; the C compiler
+  caught it). Candidate: formatting a function value is an error or a lint.
+- Code size of format templates (s56, measured): `template :: string` is a comptime
+  parameter, so every function taking one has an instance per template, and every
+  forwarding wrapper (str.format → List.write, kit.check → str.format) multiplies them.
+  In the compiler: ~1,540 str.format templates; their instances were ~20% of the generated
+  C before s56 (reduced by shared @write helpers and str.format writing itself). Possible
+  language change: a checked template VALUE (type checked at the call site against the
+  args, passed at run time as pieces + specs), so wrappers instantiate per arg types only.
+  Not urgent; flagged to the user.
 
 ## Settled — do not re-flag (reason)
-Done earlier: dangling-address lint + errors (044/045), pub(package) (044), composite keys
+Done: stale-element-pointer through struct pointers (060), dangling-address lint + errors (044/045), pub(package) (044), composite keys
 (044), `?x` (047), `[a, b]` note (045), mutated-copy lint, if-branch join (s45), flush before
 blocking (049), temp array slicing (049), process-group kill + SpawnOptions env (053), `in`
 joins (s48). Checked s50 as already working: `if .V(b) := x and n > 0` (§8.2 chains),
@@ -30,26 +44,7 @@ By design / not worth conceding:
 - getpid (unique names come from `Rand`), env var set (unsafe with threads; child env via
   SpawnOptions), `Test.fail` loc (`expect(false, msg)`), `make_dir` mode (set_mode after).
 
-Done s58: stale-element-pointer follows growth through struct-pointer calls (decisions/060).
-
-## Implemented in s50 (decisions/054)
-`else` join, const-adding coercions in `?`/`!`, array joins (if/match/for-tuple), contextual
+Implemented in s50 (decisions/054): `else` join, const-adding coercions in `?`/`!`, array joins (if/match/for-tuple), contextual
 `needs`/`handler`/`foreign`, `{0}` + `{:q}`, local struct/union, lint stale-element-pointer,
 std/text Unicode trim/fields, Channel drained, Fs canonical/read_link/symlink/set_mode/
 set_modified, Proc try_wait + SpawnOptions.program, pub handles, Env on threads.
-
-## Open
-- Adding an intrinsic that the prelude uses needs a 2-stage build + seed refresh (s50 sys
-  worker); procedure now in docs/contributing.md. Watch.
-- A function name used as a format argument compiles and prints the function's address
-  (`str.format("…{}", loc)` where a local `loc` was meant but missing: the method `loc` of
-  the same module was found). Hit once (s55, moving cgen arms into helpers; the C compiler
-  caught it). Candidate: formatting a function value is an error or a lint.
-- Code size of format templates (s56, measured): `template :: string` is a comptime
-  parameter, so every function taking one has an instance per template, and every
-  forwarding wrapper (str.format → List.write, kit.check → str.format) multiplies them.
-  In the compiler: ~1,540 str.format templates; their instances were ~20% of the generated
-  C before s56 (reduced by shared @write helpers and str.format writing itself). Possible
-  language change: a checked template VALUE (type checked at the call site against the
-  args, passed at run time as pieces + specs), so wrappers instantiate per arg types only.
-  Not urgent; flagged to the user.

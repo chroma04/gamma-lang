@@ -1,4 +1,4 @@
-# 031 Statement-run outlining (s29, bugs-open #48)
+# 031 Statement-run outlining (s29; C compilers superlinear in one huge function)
 
 - cgen/outline.rs. Trigger: fn body > LONG_BODY=1500 TIR expr nodes (outline::long_body,
   also forces frame_locals all-in-frame). Blocks with > RUN_WEIGHT=400 nodes: greedy runs
