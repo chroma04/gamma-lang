@@ -9,8 +9,7 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 - Regenerate `docs/std` after std changes: `gamma doc lib/std --all -o docs/std`.
 
 ## 1. Tooling gaps
-- Package manager: no package C-source object cache; several versions of one repository
-  in one graph.
+- Package manager: several versions of one repository in one graph.
 - `test --backend=interp`: a test reaching foreign code is refused (could fall back to
   C per test, as `run` does); each test process re-checks the program (~1 s for the
   compiler package; a shared checked-program cache would remove it).

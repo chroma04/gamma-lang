@@ -684,7 +684,13 @@ How the runtime is linked depends on the build mode:
   cached executable also covers the size and modification time of the library
   files it links (the package's, those of `foreign` blocks, and those named by
   `-L` / `-l` in `$LDFLAGS`) and, for WASI, the version of `wasm-opt`. Leftover
-  temporary files of builds that died are removed after an hour.
+  temporary files of builds that died are removed after an hour. The objects of the
+  packages' C sources (`package_object`) are kept in `native/` as `obj-<key>.o`, the
+  key covering the file's path and text, the compiler and the flags; they are compiled
+  with `-MD`, and `obj-<key>.deps` lists every file the compiler read with a hash of
+  its text, which must all still match for the object to be used (a header is not in
+  the key). Without a cache they are compiled next to the executable and removed after
+  linking (`pkg.remove_objects`).
 - A large Debug build is split into translation units, compiled in parallel and
   then linked (`cgen/units.gm`); so is any build when `GAMMA_C_UNITS=<n>` with
   `n` > 1 forces a split (tests use it on small programs). The generator writes

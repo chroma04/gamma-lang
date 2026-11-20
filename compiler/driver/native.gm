@@ -194,7 +194,7 @@ compile_built :: fn(b: ^const Built, exe: string, opts: Options) -> bool needs A
     extras := opts.extras else pkg.extras()
     link := pkg.no_link()
     if not pkg.is_empty(&extras) {
-        link = pkg.link_inputs(&extras, &tc, exe, opts.mode is .Debug, opts.debug_info) else e => {
+        link = package_link(&extras, &tc, exe, opts.mode is .Debug, opts.debug_info) else e => {
             eprint("{}\n", e)
             return false
         }

@@ -32,6 +32,9 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **The C sources of packages are compiled once**, and their objects kept in the cache
+  (`native/`), instead of by every build. An object is used again only while the file
+  and every header it includes are unchanged.
 - **`gamma run` gives the program its source path as its name** (`argv[0]`), as the
   interpreter does, instead of the path of the temporary or cached executable.
 - **Incremental native builds.** A large program is now split into one C translation unit
