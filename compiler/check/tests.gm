@@ -49,9 +49,8 @@ check_tests :: fn(s: ^Sema, root: usize) needs Load {
 /// The ambient effects of the core library (§12.9), with `Test` if `test`.
 ambient_effects :: fn(s: ^Sema, test: bool) -> EffectSet needs Load {
     out := list(EffectRef)
-    names := [12]string("Out", "Err", "Env", "Sys", "Alloc", "In", "Clock", "Rand", "Fs", "Net", "Proc", "Test")
-    for i, name in enumerate(names) {
-        if i is 11 and not test { break }
+    for name in sema.CORE_EFFECTS {
+        if name is "Test" and not test { continue }
         eref := s.prelude_effect(name) else continue
         out.push(eref)!
     }

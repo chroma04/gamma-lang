@@ -2317,6 +2317,7 @@ At a call, type parameters may be omitted when they can be **inferred** from the
 - In a method call (§7.10), the receiver is matched first, and the type parameters it determines are fixed: an argument whose parameter type mentions no other type parameter is coerced to that type (§6.4) instead of taking part in inference. With `names: List(string)`, `names.push(buf[..])` pushes a `string` even though `buf[..]` is a `[]u8`.
 - Untyped literal arguments do not determine a type parameter; they take the inferred type. A type parameter that nothing but untyped literals could determine takes their fallback types (§6.1): with `log :: fn(A: type, template :: string, args: ..A)`, `log("{}", 5)` has `A = i32` and `log("{} {}", 5, 1.5)` has `A = (i32, f64)`.
 - Writing an inferable parameter by name fixes it: the run-time arguments are then coerced to the types it gives, as at any coercion site (§6.4).
+- A named function, or a function literal, written as an argument whose parameter type is still to be inferred determines nothing and is a compile error: it converts to either kind of function type (§5.14), so it has no type of its own. Passed to `args: ..A`, it would be formatted as its address, which is almost never what was meant. Give it a function pointer type first (`p: ^fn() -> i32 = f`) to pass its address, or call it.
 
 ```
 biggest := max(scores) else 0        // T = i32, from scores: []i32 (coerced to []const T)
@@ -2973,7 +2974,7 @@ index       = '0' | digit19 {digit}          (a decimal number, at most 65536, w
 | arrays, slices | `[a, b, …]`; a `string` or `[]u8` anywhere other than as an argument itself (inside an aggregate, optional or result) is written quoted with escapes |
 | `?T` | the value, or `null` |
 | `E!T` | the value, or `!` followed by the error |
-| pointers of every kind (including `cstring`), function pointers | `0x` and the address in hexadecimal; to print a C string, slice it: `s[0..s.cstr_len()]` |
+| pointers of every kind (including `cstring`), function pointers | `0x` and the address in hexadecimal; to print a C string, slice it: `s[0..s.cstr_len()]`. A named function written as a value is a compile error (as for inference, §16.2): give it a function pointer type first |
 | `#c_union`, `cont`, `Allocator` internals | `<TypeName>` |
 
 The rules are fixed and not extensible: there is no way for a type to customize its formatting. A type that wants a particular presentation provides a function that produces it (`date.iso(d, &buf)`), and the caller passes the result as a `string`.

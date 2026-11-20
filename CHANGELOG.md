@@ -33,6 +33,10 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **A function name or function literal written as a format value, or as an argument a type
+  parameter is inferred from, is an error** (spec §16.2, §21.6.1). It converts to either
+  kind of function type, and `print("{}", loc)` where a local `loc` was meant printed the
+  address of a function `loc`. Give it a function pointer type first to print its address.
 - **A cache directory that `gamma` creates is private to the user** (mode 0700), since builds
   link the objects and run the executables it holds. An existing directory keeps its mode.
 - **The C sources of packages are compiled once**, and their objects kept in the cache
@@ -141,6 +145,10 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **Long complex-number chains check in linear time.** `1j + y + y + …` was quadratic
+  (20000 links: 6.9 s, now 0.3 s): the operator nodes are classified once, and the names
+  the compiler gives the operands of each complex operation no longer pile up in the
+  enclosing scope.
 - **A local type alias named like a visible type is an error**, as §4.6 says for every
   local: `Point :: i32` inside a function with a top-level `Point` (or a type parameter
   `T`, or a predeclared type name) was accepted and hid the type.

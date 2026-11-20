@@ -7,23 +7,38 @@ expr :: fn(cx: ^FnCx, e: ^const ast.Expr, expect: ?Ty) -> ^Expr needs Load {
     // `3 + 4j`: an untyped complex constant expression is evaluated exactly (§6.2). The
     // operands of an operator that mentions no complex constant mention none either, so the
     // question is asked once per tree of operators, not once per operator.
+    // Within a tree that mentions one, each operator node is classified once, when the
+    // outermost operator is reached (`classify_complex`), so a long chain such as
+    // `1j + y + y + …` is not walked again at every operator.
     if e.kind is .Binary(_) or e.kind is .Unary(_) {
         if cx.complex_free { return cx.expr_kind(e, expect) }
-        if not cx.mentions_complex_constant(e) {
-            cx.complex_free = true
-            r := cx.expr_kind(e, expect)
-            cx.complex_free = false
-            return r
+        constant := false
+        outermost := false
+        if c := cx.complex_nodes.get(e) {
+            constant = c
+        } else {
+            if not cx.mentions_complex_constant(e) {
+                cx.complex_free = true
+                r := cx.expr_kind(e, expect)
+                cx.complex_free = false
+                return r
+            }
+            outermost = cx.complex_nodes.len() is 0
+            constant = cx.classify_complex(e, false).constant
         }
-        if e.kind is .Binary(_) or e.kind is .Unary(.Neg, _) {
-            if r := cx.try_untyped(e) {
-                match r {
-                    .Ok(v) => return cx.untyped_literal(&v, e.span)
-                    .Failed => return error_expr(cx.s, e.span)
+        r: ?^Expr = null
+        if constant and (e.kind is .Binary(_) or e.kind is .Unary(.Neg, _)) {
+            if u := cx.try_untyped(e) {
+                r = match u {
+                    .Ok(v) => cx.untyped_literal(&v, e.span)
+                    .Failed => error_expr(cx.s, e.span)
                 }
             }
         }
-        return cx.expr_kind(e, expect)
+        result := r else cx.expr_kind(e, expect)
+        // The nodes are named by address, so they are forgotten once their tree is done.
+        if outermost { cx.complex_nodes.clear() }
+        return result
     }
     if cx.complex_free and e.kind is not .Paren(_) {
         cx.complex_free = false

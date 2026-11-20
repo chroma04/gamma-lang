@@ -205,6 +205,7 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
         cx.temp_ref_arg = is_const_ref_arg(cx.s, &arg, p.ty)
         v := cx.expr(&arg, if not unbound or partial { expect } else { null })
         cx.temp_ref_arg = false
+        if unbound and not partial { cx.no_inference_from_fn(&arg, v) }
         if lit is null and cx.iterator_call_as_value(&arg, v, p.ty) { return error_expr(cx.s, span) }
         v = cx.array_as_slice(v, p.ty)
         mentions_free := false
@@ -255,6 +256,29 @@ generic_call_packed :: fn(cx: ^FnCx, f: u32, receiver: ?^Expr, args: []const ast
     inst := cx.s.instantiate(f, targs, span)
     call := tir.mk(cx.s.subst(sig.ret, map.items), .Call(.Fn(inst), out.items), span)
     return cx.finish_call(pre, call, false)
+}
+
+/// Reports a named function (or a tuple of rest arguments holding one) as the argument a
+/// type parameter is inferred from: it converts to either kind of function type (§5.14),
+/// so it has no type of its own, and printed it would be its address (§16.2).
+no_inference_from_fn :: fn(cx: ^FnCx, arg: ^const ast.Expr, v: ^const Expr) needs Load {
+    match v.kind {
+        .FnRef(_) => {
+            name := fn_name_at(cx, v.span) else {
+                d := diag.error(v.span, "a type parameter cannot be inferred from a function literal: it converts to either kind of function type (§16.2)")
+                d.add_note("give it a function pointer type first: `p: ^fn(…) = fn(…) …`")
+                cx.s.emit(d)
+                return
+            }
+            d := diag.error(v.span, str.format("a type parameter cannot be inferred from the function `{}`: it converts to either kind of function type (§16.2)", name)!)
+            d.add_note(str.format("to pass its result, call it: `{}(…)`; to pass its address, give it a function pointer type first: `p: ^fn(…) = {}`", name, name)!)
+            cx.s.emit(d)
+        }
+        .Aggregate(elems) => if arg.kind is .Tuple(_) {
+            for el in elems { cx.no_inference_from_fn(arg, &el) }
+        }
+        _ => {}
+    }
 }
 
 /// Reports too many positional arguments to a generic function taking `ntargets` besides

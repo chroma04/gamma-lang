@@ -9,7 +9,10 @@ which `long_expressions/native_long_sum` alone 24 min (CPU), long chains ~30 min
   leaves) ran at EVERY operator node → O(n²) (cubic-ish with lookups). Now `FnCx.complex_free`
   is set while checking the operands of an operator tree that mentions no complex constant;
   any non-operator node (call, block, …) clears it for its insides (wrapper `expr` →
-  `expr_kind`). Remaining quadratic case: `1j + y + y + …` (true at root, try_untyped null).
+  `expr_kind`). `1j + y + y + …` (s75): `FnCx.complex_nodes` memoizes each operator node of a
+  complex-mentioning tree (classify_complex, keyed by AST pointer, cleared at the outermost
+  operator); core_call_values' `<argN>` names now live in their own scope (they piled up in
+  the enclosing scope: lookup_local was 70% of Ir). 20000 links: 6.9 s → 0.29 s.
 - check/expr.gm `module_of`: walked the whole `.c.c.c` chain per access → O(n²). Now finds the
   root name with a loop and memoizes the last non-module path in `FnCx.value_path` (pointer
   identity, `p is e`; hit when asked again for it or for its base).
@@ -69,4 +72,3 @@ read lib/core). `--tree=caller` is very slow on big profiles. Debug -g builds (-
   `run` tests (interp lane) are now most of the suite's CPU (std_text_utf8 ~65 s alone).
 - Debug-mode generated C is ~62 MB for the compiler (B.file/line per call, poison, unwind
   checks); smaller Debug C = faster Debug builds of big programs.
-- `1j + y + y + …` chains are still quadratic (complex root, non-constant).

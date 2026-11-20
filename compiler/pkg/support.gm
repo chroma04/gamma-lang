@@ -95,7 +95,7 @@ pub run :: fn(argv: []const string) -> Ran needs Alloc + Proc {
 }
 
 /// Makes `dir` and its parents, or says why not.
-pub make_dirs :: fn(dir: string) -> string!() needs Alloc + Fs {
+make_dirs :: fn(dir: string) -> string!() needs Alloc + Fs {
     fs.make_dir_all(dir) else e => { return !str.format("cannot create {}: {}", dir, io_message(e))! }
     return ()
 }

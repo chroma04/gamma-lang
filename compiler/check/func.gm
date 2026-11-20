@@ -250,6 +250,9 @@ pub FnCx :: struct {
     /// Set while checking the operands of an operator that mentions no complex constant
     /// (see `expr`).
     complex_free: bool
+    /// The operator nodes inside the operator tree being checked that mention a complex
+    /// constant, and whether each is an untyped constant expression (see `expr`).
+    complex_nodes: hash_map.HashMap(^const ast.Expr, bool)
     /// The last path found not to start with a module name (see `module_of`).
     value_path: ?^const ast.Expr
 }
@@ -322,6 +325,7 @@ fn_cx :: fn(s: ^Sema, module: usize, ret: Ty, declared: EffectSet) -> FnCx needs
         const_init: false,
         iterator_args: list(source.Span),
         complex_free: false,
+        complex_nodes: hash_map.hash_map(^const ast.Expr, bool),
         value_path: null,
     )
 }

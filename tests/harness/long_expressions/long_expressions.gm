@@ -13,6 +13,7 @@ str :: import "std/str"
 pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "long_constant_chain", run: long_constant_chain))!
     out.push(kit.Test(name: "long_run_time_chain", run: long_run_time_chain))!
+    out.push(kit.Test(name: "long_complex_chain", run: long_complex_chain))!
     out.push(kit.Test(name: "long_field_chain", run: long_field_chain))!
     out.push(kit.Test(name: "long_method_chain", run: long_method_chain))!
     out.push(kit.Test(name: "long_builtin_method_chain", run: long_builtin_method_chain))!
@@ -70,6 +71,15 @@ long_constant_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
 
 long_run_time_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     return t.expect_text("the output", "20000 1\n", try run_sum(t, "run_time", 20000, "y"))
+}
+
+// A chain that starts with a complex constant and goes on with variables: the operator
+// nodes are classified as constant or not once, not once per enclosing operator.
+long_complex_chain :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    src := cat([_]string("main :: fn() needs Out {\n    y := 2j\n    x := 1j", repeat(" + y", 20000), "\n    print(\"{}\\n\", x)\n}\n"))
+    path := try write_program(t, "complex", src)
+    out := try t.run_ok(t.gamma([_]string("run", "--backend=interp", path)))
+    return t.expect_text("the output", "Complex(re: 0, im: 40001)\n", out.out)
 }
 
 /// What `gamma <command>` ended with: the exit status (null if a signal ended it, as a stack
