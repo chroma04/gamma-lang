@@ -13,8 +13,9 @@
   lanes; Windows via cross-built gamma.exe + harness.exe), plus fuzz smoke, difftest,
   benchmarks, editors.
 - Last sessions: s74 tooling (070); s75 roadmap sweep (history.md s75; decision 071 struct
-  errors rejected). Windows CI test step ~23 min vs ~70 s on Linux for the same suites:
-  under investigation (see gotchas/platforms.md "Windows CI time").
+  errors rejected). Windows CI test step ~23 min vs ~70 s on Linux: cause found and fixed
+  in s75 (Windows headers in every Debug unit); confirm on the next Windows CI run
+  (gotchas/platforms.md "Windows CI time").
 
 ## Next steps
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
