@@ -32,6 +32,8 @@ Status words: CURRENT (holds today), PARTLY (read with the later one), HISTORY (
 ## Tooling
 - 023 packages, LSP, editors, release · 028 fix-its · 033 lint · 036 website + playground
   · 053 Gamma test harness, SpawnOptions env + process groups · 059 playground root stack
+  · 070 s74: tests in the interpreter, LSP supervisor, package C object cache; one
+    revision per repository stays
 
 ## Performance rounds (measured; each lists what was tried and dropped)
 - 032 Safe new/destroy (Fil-C blob typing lesson) · 055 compiler perf baseline ·
