@@ -17,12 +17,13 @@
   measured); s78 shared template bodies (073, check/share.gm); s79 LLVM back end and
   LLVM JIT re-evaluated with measurements (074): stay on C, wins listed in next.md §2;
   cheap C wins done (clang for optimized builds, ThinLTO, union switch hint); lowered IR
-  (075) P0 done: compiler/lir + `gamma lir` + suite `lir`; P1 (VM from LIR) is next.
+  (075) P0 done: compiler/lir + `gamma lir` + suite `lir`; s80 P1a: interp compiles
+  word-only bodies from LIR (interp/vm_lir.gm, default on); rest of P1 next.
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
 ## Next steps
-0. LIR P1 (decisions/075 "State after P0"): the user asked for this plan; do it first.
+0. LIR P1 (decisions/075 "State after P1a"): the user asked for this plan; do it first.
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
    gaps), testing, language. Performance §2 now lists only structural changes.
 2. roadmap/bugs.md: small open bugs, good for a short session.

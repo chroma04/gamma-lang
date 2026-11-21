@@ -30,6 +30,7 @@
 bigint :: import "../bigint"
 cgen :: import "../cgen"
 hash_map :: import "std/collections/hash_map"
+lir :: import "../lir"
 load :: import "../load"
 sema :: import "../sema"
 source :: import "../source"
@@ -234,6 +235,12 @@ pub Machine :: struct {
     /// The `CtxNode.gen` of the last context made.
     ctx_gen: u64 = 0
     infos: List(?^FnInfo)
+    /// Whether bodies are compiled from their LIR where `vm_lir.gm` covers them (unless
+    /// `GAMMA_INTERP_LIR=0`), and the context of lowering them to LIR, made for a program
+    /// of `lir_defs` functions.
+    use_lir: bool = false
+    lir_cx: ?^lir.Ctx = null
+    lir_defs: usize = 0
     next_frame: u64
     depth: u32
     /// The lowest address of the host stack the evaluation may use.
@@ -465,6 +472,7 @@ pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string, filt
     return with heap_allocator() {
         m := machine(p, mode, args)
         m.filter = filter
+        m.use_lir = (Env.var("GAMMA_INTERP_LIR") else "1") is not "0"
         mp := &m
         run :: fn() -> Outcome needs Run {
             cx: u32 = 0

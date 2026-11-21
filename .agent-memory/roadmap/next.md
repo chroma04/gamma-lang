@@ -22,8 +22,8 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 s77 (decisions/072) measured every item of the old list: kept the cheap wins, closed the
 rest with numbers. What is left needs a structural change; do it only if asked:
 - Lowered IR (decisions/075; user approved the detour, P5/LLVM dropped). P0 done (s79:
-  compiler/lir, `gamma lir`, suite `lir`). NEXT: P1, the VM runs from LIR (see 075
-  "State after P0"). The interp items below would mostly be absorbed by it.
+  compiler/lir, `gamma lir`, suite `lir`); P1a done (s80: interp compiles word-only bodies
+  from LIR, default on). NEXT: rest of P1 (075 "State after P1a"). The interp items below would mostly be absorbed by it.
 - Interp: push without copying constants (consts as immediates in Bc) and without the
   frame memset (needs proof registers are written before read); `with … on` and value
   loops still run on the tree evaluator; `with` re-resolves its perform site per ctx.
