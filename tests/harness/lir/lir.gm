@@ -8,7 +8,8 @@
 //!   A program the checker rejects (a test of a compile error) is skipped. Each program is a
 //!   test, named `lowers/<path>`.
 //! - Every single-file program of `tests/conformance/run/` (but the `native:` and Safe
-//!   ones) runs in the interpreter twice, compiled from LIR where that covers a function
+//!   ones, those for another architecture or system, and those with foreign code or
+//!   assembly, which the interpreter hands to the C back end) runs in the interpreter twice, compiled from LIR where that covers a function
 //!   (the default) and only from the lowered tree (`GAMMA_INTERP_LIR=0`), and the two runs
 //!   must print the same and exit alike (`interp/<name>`).
 
@@ -96,6 +97,14 @@ interp_one :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     dir := t.repo("tests/conformance/run")
     text := try t.read(kit.join(dir, t.param))
     if marker(text, "native") is not null { return !t.skip("runs natively only") }
+    if arch := marker(text, "arch") {
+        if arch is not t.cfg.arch { return !t.skip("for {} only", arch) }
+    }
+    if os := marker(text, "os") {
+        if os is not t.cfg.os_kind { return !t.skip("for {} only", os) }
+    }
+    // The interpreter hands a program with foreign code or assembly to the C back end.
+    if str.contains(text, "foreign") or str.contains(text, "@asm") { return !t.skip("runs through the C back end") }
     mode := marker(text, "mode") else "debug"
     if mode is "safe" { return !t.skip("a Safe build test") }
     flag := str.format("--mode={}", mode)!
