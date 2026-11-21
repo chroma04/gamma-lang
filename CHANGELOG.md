@@ -8,6 +8,10 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
+- **The interpreter compiles the functions it can from LIR**: those on words (integers,
+  floats, booleans, pointers) with places, arithmetic, calls, loops and bounds checks, about
+  one in eight so far; it runs them as fast as before, and loops over slices about 15%
+  faster. `GAMMA_INTERP_LIR=0` compiles everything the old way.
 - **`gamma lir`** prints a program's functions in LIR, the lowered form that the
   interpreter and the C back end are to share: instructions on numbered temporaries,
   with the order of evaluation, bounds checks and the tests of patterns written out. No

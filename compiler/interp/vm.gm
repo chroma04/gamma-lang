@@ -144,6 +144,8 @@ Ins :: union {
     /// checked or (`wrap`) wrapping: the common operators without `int_word`'s generality.
     Arith64: (op: u8, signed: bool, wrap: bool, r: u32, a: u32, b: u32, n: ^Node)
     Arith32: (op: u8, signed: bool, wrap: bool, bits: u32, r: u32, a: u32, b: u32, n: ^Node)
+    /// Traps unless the index in register `i` is below the length in register `len`.
+    Bounds: (i: u32, len: u32, n: ^Node)
     /// Jumps to `to` unless the comparison (or `is`) of two registers holds.
     JCmp: (op: tir.BinOp, how: WordCmp, a: u32, b: u32, to: u32)
     JEq: (how: WordCmp, negated: bool, a: u32, b: u32, to: u32)
@@ -1203,6 +1205,11 @@ vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: [
             regs[usize(ri)] = i * esz
         }
         .AddR(r, x) => { regs[usize(r)] +%= regs[usize(x)] }
+        .Bounds(ri, rl, n) => {
+            i := regs[usize(ri)]
+            len := regs[usize(rl)]
+            if i >= len { return !m.bounds_trap(n, i, len) }
+        }
         .Bit(op, r, ra, rb) => {
             p := regs[usize(ra)]
             q := regs[usize(rb)]

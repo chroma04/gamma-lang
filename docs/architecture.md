@@ -21,7 +21,8 @@ AST
   │                          exhaustiveness
   ▼
 TIR                          typed intermediate representation (tir/)
-  ├─▶ lir/                   lowered function bodies for the back ends (not yet consumed)
+  ├─▶ lir/                   lowered function bodies for the back ends (the interpreter's
+  │                          register machine compiles the bodies it covers from it)
   ├─▶ eval/                  compile-time evaluation (spec §17)
   ├─▶ interp/                interpreter: --backend=interp (run, test, bench), gamma repl
   └─▶ cgen/                  C code generation → system C compiler → executable
@@ -97,7 +98,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/check/` | checking function bodies and lowering them to TIR: expressions, calls, methods, patterns, `match`, exhaustiveness, literal inference, effects, handlers, iterators, generics, escape and dangling-pointer checks, continuations, `@stack_size`, format templates, vectors; the `gamma tir` dump |
 | `compiler/tir/` | the typed intermediate representation, compile-time values, deep copies for generic instances |
 | `compiler/eval/` | compile-time evaluation (spec §17) over TIR |
-| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends: its instructions (`lir.gm`), the lowering (`lower.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
+| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends (the interpreter compiles from it in `interp/vm_lir.gm`): its instructions (`lir.gm`), the lowering (`lower.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
 | `compiler/interp/` | the interpreter |
 | `compiler/cgen/` | the C back end |
 | `compiler/driver/` | the C toolchain and target selection, native builds, the cache of runtimes and programs, library paths, the interpreter entry, the options and the table of command-line options (`flags.gm`), from which the usage text is generated |
@@ -433,9 +434,11 @@ them into static storage and the interpreter lays them out in its memory.
 The interpreter and the C back end each lower function bodies from TIR themselves, with
 analyses of their own. `compiler/lir/` is the lowering they are being moved onto: one form
 of a checked, monomorphic body that both can run or translate directly, and on which
-analyses such as the removal of checks a loop's range proves can be done once. No back end
-consumes it yet; `gamma lir` prints it, and the `lir` suite checks that every conformance
-program and example lowers to well-formed LIR.
+analyses such as the removal of checks a loop's range proves can be done once. The
+interpreter's register machine compiles from it the bodies it covers (`interp/vm_lir.gm`,
+below); the C back end does not use it yet. `gamma lir` prints it, and the `lir` suite
+checks that every conformance program and example lowers to well-formed LIR and that the
+interpreter runs each conformance program alike with and without it.
 
 - **Structure** (`lir.gm`). A body is a list of instructions, structured as in
   WebAssembly: `Block`, `Loop` and `If` hold lists of their own, and control leaves a
@@ -538,6 +541,19 @@ every checked operation checked.
     in machine registers. Everything else about the body that is running is in its
     record (`CallRec`).
 
+  - *From LIR.* A body whose LIR holds only words and what `vm_lir.gm` covers (places in
+    locals, upvars and memory, arithmetic, comparisons and integer conversions on words,
+    direct calls, blocks, loops, `if`, branches, returns and bounds checks) is compiled
+    from its LIR instead, to the same instructions, and gets no tree. Each temporary
+    takes a register when it is written and gives it back after its last read, or after
+    the loop it is read in when it was written before that loop; a temporary loaded from
+    a local in a register shares that register while nothing stores to the local, a value
+    stored straight into such a local is computed there, a comparison read only by the
+    branch after it becomes a compare-and-jump, and a bounds check followed by the access
+    it guards becomes `SliceLd`/`SliceSt`. On the benchmarks this runs as fast as the
+    compilation from the tree (a slice loop 15% faster); lowering the bodies it then
+    does not cover costs short runs about 1% more. About one body in eight is covered.
+    `GAMMA_INTERP_LIR=0` turns it off.
   A `break` or `continue` that a subtree raises to a loop of the machine jumps to it;
   other flows leave the body as they would leave the tree's.
   - *Calls* stay in the loop: a call does not run the loop again on the host stack. The
