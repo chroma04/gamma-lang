@@ -206,6 +206,27 @@ static inline void gm_store_u128(void *p, size_t size, unsigned __int128 v) {
     for (size_t i = 0; i < size; i++) *gm_ibp(p, size, i) = (uint8_t)(v >> (8 * i));
 }
 
+/* a * b on __int128, wrapping, into *r; returns whether the product overflowed. Clang
+ * turns __builtin_mul_overflow on signed __int128 into a call of compiler-rt's __muloti4,
+ * which libgcc (the library Linux links) lacks: this uses 64 x 64-bit products only. */
+static inline bool gm_mul_ovf_i128(__int128 a, __int128 b, __int128 *r) {
+    unsigned __int128 ua = a < 0 ? -(unsigned __int128)a : (unsigned __int128)a;
+    unsigned __int128 ub = b < 0 ? -(unsigned __int128)b : (unsigned __int128)b;
+    uint64_t ah = (uint64_t)(ua >> 64), al = (uint64_t)ua, bh = (uint64_t)(ub >> 64), bl = (uint64_t)ub;
+    bool o = ah != 0 && bh != 0;
+    unsigned __int128 c1 = (unsigned __int128)ah * bl, c2 = (unsigned __int128)al * bh;
+    unsigned __int128 cross = c1 + c2;
+    if ((c1 >> 64) || (c2 >> 64) || (cross >> 64)) o = true;
+    unsigned __int128 lo = (unsigned __int128)al * bl;
+    unsigned __int128 m = lo + (cross << 64);
+    if (m < lo) o = true;
+    bool neg = (a < 0) != (b < 0);
+    unsigned __int128 lim = (unsigned __int128)1 << 127;
+    if (neg ? m > lim : m >= lim) o = true;
+    *r = (__int128)(neg ? -m : m);
+    return o;
+}
+
 /* ---- memory helpers ------------------------------------------------------ */
 
 /* GM_LD loads a value of C type T from address p (any alignment); GM_ST stores the value

@@ -396,7 +396,15 @@ GM_POW_FN(gm_pow_i32, int32_t)
 GM_POW_FN(gm_pow_u64, uint64_t)
 GM_POW_FN(gm_pow_i64, int64_t)
 GM_POW_FN(gm_pow_u128, unsigned __int128)
-GM_POW_FN(gm_pow_i128, __int128)
+static __int128 gm_pow_i128(__int128 b, uint64_t e, bool *o) {
+    __int128 r = 1;
+    for (;;) {
+        if ((e & 1) && gm_mul_ovf_i128(r, b, &r)) *o = true;
+        e >>= 1;
+        if (!e) return r;
+        if (gm_mul_ovf_i128(b, b, &b)) *o = true;
+    }
+}
 /* Bit counts of the low `bits` bits of x (the caller masks the rest). */
 static unsigned __int128 gm_clz(unsigned __int128 x, int bits) {
     uint64_t hi = (uint64_t)(x >> 64), lo = (uint64_t)x;

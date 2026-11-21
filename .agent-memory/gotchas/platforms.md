@@ -62,3 +62,5 @@ relative TMPDIR). gamma links WASI unoptimized (clang would run wasm-opt itself)
   it can prove fail. filcc is superlinear in function size.
 - wasm32: frames and locals are only 4-aligned; a test casting a local `[N]i32` to
   `[^]u64` traps there by stack-layout luck (pointer_arith.gm, s83).
+- clang lowers `__builtin_mul_overflow` on signed `__int128` to compiler-rt `__muloti4`,
+  missing from libgcc (aarch64 bootstrap link failed, s83): cgen uses gm_mul_ovf_i128.

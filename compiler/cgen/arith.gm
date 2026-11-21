@@ -110,7 +110,12 @@ int_binary :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.BinOp, lt: Ty, a:
             }
             r := str.format("r{}", fg.fresh())!
             o := str.format("o{}", fg.fresh())!
-            fg.linef("{} {}; bool {} = __builtin_{}_overflow({}, {}, &{});", c, r, o, name, a, b, r)
+            if name is "mul" and ii.signed and c is "__int128" {
+                // Not `__builtin_mul_overflow`: Clang calls compiler-rt for it (`gm_rt.h`).
+                fg.linef("{} {}; bool {} = gm_mul_ovf_i128({}, {}, &{});", c, r, o, a, b, r)
+            } else {
+                fg.linef("{} {}; bool {} = __builtin_{}_overflow({}, {}, &{});", c, r, o, name, a, b, r)
+            }
             if not ii_exact(ii) {
                 min := fg.int_lit(lt, ii_min(ii))
                 max := fg.int_lit(lt, ii_max(ii))
