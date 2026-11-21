@@ -1,0 +1,519 @@
+fn range@checks.gm:5:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 t: i64
+  local 2 <tmp>: usize
+  local 3 <tmp>: usize
+  local 4 i: usize
+  temp 0: usize
+  temp 1: usize
+  temp 2: usize
+  temp 3: bool
+  temp 4: usize
+  temp 5: i64
+  temp 6: [^]const i64
+  temp 7: usize
+  temp 8: usize
+  temp 9: i64
+  temp 10: i64
+  temp 11: usize
+  temp 12: usize
+  temp 13: i64
+  ret i64
+  store l1, 0:i64
+  store l3, 0:usize
+  %0 = load l0.1@8
+  store l2, %0
+  block @0
+    loop @1
+      %1 = load l3
+      %2 = load l2
+      %3 = Lt %1, %2
+      br-unless %3 @0
+      block @2
+        block @3
+          block @4
+            %4 = load l3
+            store l4, %4
+            %5 = load l1
+            %6 = load l0.0@0
+            %7 = load l0.1@8
+            %8 = load l4
+            %9 = load *%6+[%8 *8]
+            %10 = Add(Checked) %5, %9
+            store l1, %10
+            br @3
+          no-arm
+      %11 = load l3
+      %12 = Add(Wrap) %11, 1:usize
+      store l3, %12
+  %13 = load l1
+  return %13
+fn array@checks.gm:11:1 escapes 0
+  local 0 a: [8]i64
+  local 1 t: i64
+  local 2 <tmp>: usize
+  local 3 <tmp>: usize
+  local 4 i: usize
+  local 5 i: usize
+  temp 0: [8]i64
+  temp 1: usize
+  temp 2: usize
+  temp 3: bool
+  temp 4: usize
+  temp 5: i64
+  temp 6: usize
+  temp 7: i64
+  temp 8: i64
+  temp 9: usize
+  temp 10: usize
+  temp 11: usize
+  temp 12: bool
+  temp 13: i64
+  temp 14: usize
+  temp 15: i64
+  temp 16: i64
+  temp 17: usize
+  temp 18: usize
+  temp 19: i64
+  temp 20: i64
+  temp 21: i64
+  ret i64
+  %0 = fill 3:i64
+  store l0, %0
+  store l1, 0:i64
+  store l3, 0:usize
+  store l2, 8:usize
+  block @0
+    loop @1
+      %1 = load l3
+      %2 = load l2
+      %3 = Lt %1, %2
+      br-unless %3 @0
+      block @2
+        block @3
+          block @4
+            %4 = load l3
+            store l4, %4
+            %5 = load l1
+            %6 = load l4
+            %7 = load l0[%6 *8]
+            %8 = Add(Checked) %5, %7
+            store l1, %8
+            br @3
+          no-arm
+      %9 = load l3
+      %10 = Add(Wrap) %9, 1:usize
+      store l3, %10
+  store l5, 0:usize
+  block @5
+    loop @6
+      %11 = load l5
+      %12 = Lt %11, 8:usize
+      br-unless %12 @5
+      block @7
+        %13 = load l1
+        %14 = load l5
+        %15 = load l0[%14 *8]
+        %16 = Add(Checked) %13, %15
+        store l1, %16
+        %17 = load l5
+        %18 = Add(Checked) %17, 1:usize
+        store l5, %18
+  %19 = load l1
+  %20 = load l0[7:usize *8]
+  %21 = Add(Checked) %19, %20
+  return %21
+fn shorter@checks.gm:24:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 n: usize param
+  local 2 t: i64
+  local 3 <tmp>: usize
+  local 4 <tmp>: usize
+  local 5 i: usize
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: usize
+  temp 4: usize
+  temp 5: usize
+  temp 6: bool
+  temp 7: usize
+  temp 8: i64
+  temp 9: [^]const i64
+  temp 10: usize
+  temp 11: usize
+  temp 12: i64
+  temp 13: i64
+  temp 14: usize
+  temp 15: usize
+  temp 16: i64
+  ret i64
+  %0 = load l1
+  %1 = load l0.1@8
+  %2 = Gt %0, %1
+  if %2
+    return 0:i64
+  store l2, 0:i64
+  store l4, 0:usize
+  %3 = load l1
+  store l3, %3
+  block @0
+    loop @1
+      %4 = load l4
+      %5 = load l3
+      %6 = Lt %4, %5
+      br-unless %6 @0
+      block @2
+        block @3
+          block @4
+            %7 = load l4
+            store l5, %7
+            %8 = load l2
+            %9 = load l0.0@0
+            %10 = load l0.1@8
+            %11 = load l5
+            %12 = load *%9+[%11 *8]
+            %13 = Add(Checked) %8, %12
+            store l2, %13
+            br @3
+          no-arm
+      %14 = load l4
+      %15 = Add(Wrap) %14, 1:usize
+      store l4, %15
+  %16 = load l2
+  return %16
+fn grow@checks.gm:34:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 t: i64
+  local 2 n: usize
+  local 3 i: usize
+  temp 0: usize
+  temp 1: usize
+  temp 2: usize
+  temp 3: bool
+  temp 4: usize
+  temp 5: usize
+  temp 6: i64
+  temp 7: [^]const i64
+  temp 8: usize
+  temp 9: usize
+  temp 10: i64
+  temp 11: i64
+  temp 12: usize
+  temp 13: usize
+  temp 14: i64
+  ret i64
+  store l1, 0:i64
+  %0 = load l0.1@8
+  store l2, %0
+  store l3, 0:usize
+  block @0
+    loop @1
+      %1 = load l3
+      %2 = load l2
+      %3 = Lt %1, %2
+      br-unless %3 @0
+      block @2
+        %4 = load l2
+        %5 = Add(Checked) %4, 1:usize
+        store l2, %5
+        %6 = load l1
+        %7 = load l0.0@0
+        %8 = load l0.1@8
+        %9 = load l3
+        check bounds %9 < %8
+        %10 = load *%7+[%9 *8]
+        %11 = Add(Checked) %6, %10
+        store l1, %11
+        %12 = load l3
+        %13 = Add(Checked) %12, 1:usize
+        store l3, %13
+  %14 = load l1
+  return %14
+fn reassign@checks.gm:47:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 ys: []const i64 param
+  local 2 t: i64
+  local 3 s: []const i64
+  local 4 <tmp>: usize
+  local 5 <tmp>: usize
+  local 6 i: usize
+  temp 0: []const i64
+  temp 1: usize
+  temp 2: usize
+  temp 3: usize
+  temp 4: bool
+  temp 5: usize
+  temp 6: []const i64
+  temp 7: i64
+  temp 8: [^]const i64
+  temp 9: usize
+  temp 10: usize
+  temp 11: i64
+  temp 12: i64
+  temp 13: usize
+  temp 14: usize
+  temp 15: i64
+  ret i64
+  store l2, 0:i64
+  %0 = load l0
+  store l3, %0
+  store l5, 0:usize
+  %1 = load l3.1@8
+  store l4, %1
+  block @0
+    loop @1
+      %2 = load l5
+      %3 = load l4
+      %4 = Lt %2, %3
+      br-unless %4 @0
+      block @2
+        block @3
+          block @4
+            %5 = load l5
+            store l6, %5
+            %6 = load l1
+            store l3, %6
+            %7 = load l2
+            %8 = load l3.0@0
+            %9 = load l3.1@8
+            %10 = load l6
+            check bounds %10 < %9
+            %11 = load *%8+[%10 *8]
+            %12 = Add(Checked) %7, %11
+            store l2, %12
+            br @3
+          no-arm
+      %13 = load l5
+      %14 = Add(Wrap) %13, 1:usize
+      store l5, %14
+  %15 = load l2
+  return %15
+fn maybe@checks.gm:58:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 c: bool param
+  local 2 i: usize
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: bool
+  temp 4: [^]const i64
+  temp 5: usize
+  temp 6: usize
+  temp 7: i64
+  ret i64
+  store l2, 0:usize
+  %0 = load l2
+  %1 = load l0.1@8
+  %2 = Lt %0, %1
+  if %2
+    %3 = load l1
+    if %3
+      store l2, 100:usize
+    %4 = load l0.0@0
+    %5 = load l0.1@8
+    %6 = load l2
+    check bounds %6 < %5
+    %7 = load *%4+[%6 *8]
+    return %7
+  return 0:i64
+fn other@checks.gm:68:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 i: u8 param
+  temp 0: u8
+  temp 1: bool
+  temp 2: [^]const i64
+  temp 3: usize
+  temp 4: u8
+  temp 5: i64
+  ret i64
+  %0 = load l1
+  %1 = Lt %0, 3:u8
+  if %1
+    %2 = load l0.0@0
+    %3 = load l0.1@8
+    %4 = load l1
+    check bounds %4 < %3
+    %5 = load *%2+[%4 *8]
+    return %5
+  return 0:i64
+fn after@checks.gm:74:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 i: usize
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: usize
+  temp 4: usize
+  temp 5: [^]const i64
+  temp 6: usize
+  temp 7: usize
+  temp 8: i64
+  ret i64
+  store l1, 0:usize
+  block @0
+    loop @1
+      %0 = load l1
+      %1 = load l0.1@8
+      %2 = Lt %0, %1
+      br-unless %2 @0
+      block @2
+        %3 = load l1
+        %4 = Add(Checked) %3, 1:usize
+        store l1, %4
+  %5 = load l0.0@0
+  %6 = load l0.1@8
+  %7 = load l1
+  check bounds %7 < %6
+  %8 = load *%5+[%7 *8]
+  return %8
+fn addressed@checks.gm:81:1 escapes 0
+  local 0 xs: []const i64 param
+  local 1 i: usize addressed
+  local 2 p: ^usize
+  local 3 t: i64
+  temp 0: ^usize
+  temp 1: usize
+  temp 2: usize
+  temp 3: bool
+  temp 4: ^usize
+  temp 5: i64
+  temp 6: [^]const i64
+  temp 7: usize
+  temp 8: usize
+  temp 9: i64
+  temp 10: i64
+  temp 11: usize
+  temp 12: usize
+  temp 13: i64
+  ret i64
+  store l1, 0:usize
+  %0 = addr l1
+  store l2, %0
+  store l3, 0:i64
+  block @0
+    loop @1
+      %1 = load l1
+      %2 = load l0.1@8
+      %3 = Lt %1, %2
+      br-unless %3 @0
+      block @2
+        %4 = load l2
+        store *%4, 9:usize
+        %5 = load l3
+        %6 = load l0.0@0
+        %7 = load l0.1@8
+        %8 = load l1
+        check bounds %8 < %7
+        %9 = load *%6+[%8 *8]
+        %10 = Add(Checked) %5, %9
+        store l3, %10
+        %11 = load l1
+        %12 = Add(Checked) %11, 1:usize
+        store l1, %12
+  %13 = load l3
+  return %13
+fn main@checks.gm:93:1 escapes 0
+  local 0 xs: [3]i64 addressed
+  temp 0: [3]i64
+  temp 1: [^]i64
+  temp 2: []i64
+  temp 3: []const i64
+  temp 4: i64
+  temp 5: i64
+  temp 6: i64
+  temp 7: [^]i64
+  temp 8: []i64
+  temp 9: []const i64
+  temp 10: i64
+  temp 11: i64
+  temp 12: [^]i64
+  temp 13: []i64
+  temp 14: []const i64
+  temp 15: i64
+  temp 16: i64
+  temp 17: [^]i64
+  temp 18: []i64
+  temp 19: []const i64
+  temp 20: [^]i64
+  temp 21: []i64
+  temp 22: []const i64
+  temp 23: i64
+  temp 24: i64
+  temp 25: [^]i64
+  temp 26: []i64
+  temp 27: []const i64
+  temp 28: i64
+  temp 29: i64
+  temp 30: [^]i64
+  temp 31: []i64
+  temp 32: []const i64
+  temp 33: i64
+  temp 34: i64
+  temp 35: [^]i64
+  temp 36: []i64
+  temp 37: []const i64
+  temp 38: i64
+  temp 39: i64
+  temp 40: [^]i64
+  temp 41: []i64
+  temp 42: []const i64
+  temp 43: i64
+  temp 44: i64
+  ret ()
+  %0 = aggregate (1:i64, 2:i64, 3:i64)
+  store l0, %0
+  %1 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %2 = slice %1 0:usize..3:usize *8
+  %3 = coerce PtrToPtr %2
+  %4 = call fn range (%3)
+  %5 = call fn array ()
+  %6 = Add(Checked) %4, %5
+  %7 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %8 = slice %7 0:usize..3:usize *8
+  %9 = coerce PtrToPtr %8
+  %10 = call fn shorter (%9, 2:usize)
+  %11 = Add(Checked) %6, %10
+  %12 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %13 = slice %12 0:usize..3:usize *8
+  %14 = coerce PtrToPtr %13
+  %15 = call fn grow (%14)
+  %16 = Add(Checked) %11, %15
+  %17 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %18 = slice %17 0:usize..3:usize *8
+  %19 = coerce PtrToPtr %18
+  %20 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %21 = slice %20 0:usize..3:usize *8
+  %22 = coerce PtrToPtr %21
+  %23 = call fn reassign (%19, %22)
+  %24 = Add(Checked) %16, %23
+  %25 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %26 = slice %25 0:usize..3:usize *8
+  %27 = coerce PtrToPtr %26
+  %28 = call fn maybe (%27, 0:bool)
+  %29 = Add(Checked) %24, %28
+  %30 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %31 = slice %30 0:usize..3:usize *8
+  %32 = coerce PtrToPtr %31
+  %33 = call fn other (%32, 1:u8)
+  %34 = Add(Checked) %29, %33
+  %35 = addr l0
+  check range 0:usize..0:usize len 3:usize
+  %36 = slice %35 0:usize..0:usize *8
+  %37 = coerce PtrToPtr %36
+  %38 = call fn after (%37)
+  %39 = Add(Checked) %34, %38
+  %40 = addr l0
+  check range 0:usize..3:usize len 3:usize
+  %41 = slice %40 0:usize..3:usize *8
+  %42 = coerce PtrToPtr %41
+  %43 = call fn addressed (%42)
+  %44 = Add(Checked) %39, %43
+  return zero:()

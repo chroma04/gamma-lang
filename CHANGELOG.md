@@ -13,6 +13,12 @@ Versions and what each kind of change means are described in
   of function literals and clauses, `defer`, continuations, 128-bit integers and values of
   any size. Its tree-walking evaluator and the old compiler of bodies are gone. The
   benchmarks run 5–13% fewer instructions.
+- **Bounds checks that a comparison proves are removed** (spec D.7): in
+  `for i in 0..xs.len { xs[i] }`, `while i < a.len { a[i] … }` and after
+  `if n > xs.len { return }`, indexing no longer checks. The interpreter does this now,
+  and loads and stores an element through a slice or many-pointer in one instruction
+  whether checked or not (`for x in xs` included): 0.5–3% fewer instructions on the
+  benchmarks and examples.
 - **`gamma lir`** prints a program's functions in LIR, the lowered form that the
   interpreter compiles from and that the C back end is to share: instructions on
   numbered temporaries, with the order of evaluation, bounds checks, the tests of

@@ -38,7 +38,6 @@ fn sum@places.gm:5:1 escapes 0
             %6 = load l0.0@0
             %7 = load l0.1@8
             %8 = load l4
-            check bounds %8 < %7
             %9 = load *%6+[%8 *4]
             %10 = Add(Checked) %5, %9
             store l1, %10
@@ -61,11 +60,9 @@ fn poke@places.gm:11:1 escapes 0
   ret ()
   %0 = load l0
   %1 = load l1
-  check bounds 2:usize < 4:usize
   %2 = load *%1[2:usize *4]
   store *%0.1@4, %2
   %3 = load l1
-  check bounds 0:usize < 4:usize
   %4 = load l0
   %5 = load *%4.0@0
   store *%3[0:usize *4], %5

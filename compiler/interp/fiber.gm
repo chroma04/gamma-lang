@@ -169,7 +169,6 @@ FState :: union {
 /// What belongs to a running coroutine, saved while it does not run.
 Saved :: struct {
     scratch: Scratch
-    temps: List(u64)
     argv: List([]u8)
     depth: u32
     fiber_stack: u64
@@ -219,10 +218,8 @@ fibers :: fn() -> Fibers needs Alloc => Fibers(cur: 0, coros: list(CoroRec), wit
 /// Ends the coroutine `id` of a thread whose function returned, and lets the other threads
 /// run.
 end_thread :: fn(m: ^Machine, id: u32) needs Run {
-    m.kill_temps(0)
     for c in m.scratch.chunks.items { free(c) }
     m.scratch.chunks.deinit()
-    m.temps.deinit()
     m.argv.deinit()
     rec := &m.fib.coros.items[usize(id)]
     rec.finished = true
@@ -275,7 +272,6 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
     m.set_stack_floor(rec.host_stack.len)
     m.scratch = Scratch(chunks: list([]u8), cur: 0, top: 0)
     m.scratch.chunks.push(make_fill(FIBER_CHUNK, u8(0))!)!
-    m.temps = list(u64)
     m.argv = list([]u8)
     m.depth = 0
     m.fiber_stack = rec.stack
@@ -305,10 +301,8 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
         .Cancel => { flow = .Cancel }
         _ => { flow = aborted() }
     }
-    m.kill_temps(0)
     for c in m.scratch.chunks.items { free(c) }
     m.scratch.chunks.deinit()
-    m.temps.deinit()
     m.argv.deinit()
     rec = &m.fib.coros.items[us(id)]
     rec.finished = true
@@ -324,13 +318,12 @@ aborted :: fn() -> Flow needs Alloc => .Trap(new(Trap(message: "internal error: 
 /// Passes control to coroutine `to` with `msg` and waits until a message comes back.
 handoff :: fn(m: ^Machine, to: u32, msg: Msg) -> Msg needs Run {
     me := m.fib.cur
-    m.fib.coros.items[usize(me)].saved = Saved(scratch: m.scratch, temps: m.temps, argv: m.argv, depth: m.depth, fiber_stack: m.fiber_stack, stack_floor: m.stack_floor)
+    m.fib.coros.items[usize(me)].saved = Saved(scratch: m.scratch, argv: m.argv, depth: m.depth, fiber_stack: m.fiber_stack, stack_floor: m.stack_floor)
     m.fib.mail = msg
     Coro.transfer(to)
     s := m.fib.coros.items[usize(me)].saved else return .None
     m.fib.coros.items[usize(me)].saved = null
     m.scratch = s.scratch
-    m.temps = s.temps
     m.argv = s.argv
     m.depth = s.depth
     m.fiber_stack = s.fiber_stack

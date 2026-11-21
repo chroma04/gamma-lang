@@ -60,7 +60,6 @@ enter :: fn(m: ^Machine, span: source.Span, f: u32, info: ^FnInfo, store: []u8, 
     if m.threads.list.items.len > 1 { try m.tick(span) }
     on_fiber := m.fiber_stack is not ~u64(0)
     if on_fiber and info.cost > m.fiber_stack and not m.fast() { return !m.trap(span, "stack overflow on a fiber stack") }
-    tm := m.temps.items.len
     fr := m.new_frame(f, info, dst, env, store)
     fr.installing = installing
     fr.is_clause_lit = is_clause_lit
@@ -83,7 +82,6 @@ enter :: fn(m: ^Machine, span: source.Span, f: u32, info: ^FnInfo, store: []u8, 
     r := m.vm_run(Act(fr: fr, cx: cx), code, dst)
     m.depth -= 1
     if on_fiber { m.fiber_stack += info.cost }
-    if m.temps.items.len > tm { m.kill_temps(tm) }
     id := fr.id
     m.end_frame(fr)
     r else fl => {

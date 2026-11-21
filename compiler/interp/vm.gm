@@ -114,6 +114,11 @@ Ins :: union {
     /// from `v`; traps if `i` is out of bounds.
     SliceLd: (r: u32, p: u32, len: u32, i: u32, esz: u64, size: u32, align: u32, n: ^Node)
     SliceSt: (p: u32, len: u32, i: u32, esz: u64, size: u32, align: u32, v: u32, n: ^Node)
+    /// Element `i` (a register) of the sequence the pointer in register `p` starts, of
+    /// `size` bytes aligned to `align`, unchecked: read into `r`, or (`StepSt`) written
+    /// from `v`.
+    StepLd: (r: u32, p: u32, i: u32, esz: u64, size: u32, align: u32, n: ^Node)
+    StepSt: (p: u32, i: u32, esz: u64, size: u32, align: u32, v: u32, n: ^Node)
     /// The address of element `i` of the many-pointer in `p`, into `p`.
     PtrIdx: (p: u32, i: u32, esz: u64)
     /// Adds a constant to a register (an address).
@@ -270,7 +275,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     // keeps only them and the index of the instruction in variables of its own; the rest
     // of what is running is in its record `cur`: this one for the body, and one in
     // scratch memory for each call made in the loop.
-    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), tm: 0, dbase: if body.sub { a.fr.defers.items.len } else { 0 })
+    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), dbase: if body.sub { a.fr.defers.items.len } else { 0 })
     cur := &base
     regs := cur.regs
     bc := body.bc.ptr
@@ -435,15 +440,15 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     p := m.vm_view(regs[usize(i.a)] +% u64(i.c), 8, u64(i.w), true) else break
                     st8(p, regs[usize(i.b)])
                 }
-                .SliceLd => {
+                .SliceLd, .StepLd => {
                     k := regs[usize(i.c)]
-                    if k >= regs[usize(i.b) + 1] { break }
+                    if i.op is .SliceLd and k >= regs[usize(i.b) + 1] { break }
                     p := m.vm_view(regs[usize(i.b)] +% k *% u64(i.w), u64(i.f), u64(i.f), false) else break
                     regs[usize(i.a)] = ldn(p, i.f)
                 }
-                .SliceSt => {
+                .SliceSt, .StepSt => {
                     k := regs[usize(i.c)]
-                    if k >= regs[usize(i.a) + 1] { break }
+                    if i.op is .SliceSt and k >= regs[usize(i.a) + 1] { break }
                     p := m.vm_view(regs[usize(i.a)] +% k *% u64(i.w), u64(i.f), u64(i.f), true) else break
                     stn(p, i.f, regs[usize(i.b)])
                 }
@@ -632,7 +637,6 @@ vm_ret :: fn(m: ^Machine, r: ^CallRec, word: bool, v: u64) -> Flow!^CallRec need
         if word { m.wr_word(r.dst, v) }
         res: Flow!() = ()
         if fr.defers.items.len is not 0 or r.cx is not r.base_cx { res = m.vm_return(Act(fr: fr, cx: r.cx), r.base_cx, r.dst) }
-        if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
         m.end_frame(fr)
         m.vm_pop(r)
         res else g => {
@@ -683,7 +687,6 @@ vm_raise :: fn(m: ^Machine, start: ^CallRec, flow: Flow) -> Flow!^CallRec needs 
         returned := false
         if fr := r.fr {
             if .Return(frame, _) := f and frame is fr.id { returned = true }
-            if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
             m.end_frame(fr)
         }
         if not returned {
@@ -967,7 +970,6 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite, cx
     n.ret_reg = s.ret_reg
     n.buf = [8]u8(fill: 0)
     n.mark = Mark(cur: sc.cur, top: sc.top)
-    n.tm = m.temps.items.len
     n.dst = if s.out_kind is 0 { n.buf[0..usize(s.out_size)] } else if s.out_kind is 1 { fat(regs, usize(s.out_at))[0..usize(s.out_size)] } else { cur.dst }
     sc.top = top +% head +% s.frame_size
     vm_consts(callee, frame)
@@ -1050,7 +1052,6 @@ vm_push_fn :: fn(m: ^Machine, cur: ^CallRec, pc: usize, f: u32, env: ?^Frame, ca
     r.pc = 0
     r.f = f
     r.mark = mk
-    r.tm = m.temps.items.len
     if e := env and callee.env_reg is not NO_REG { r.regs[usize(callee.env_reg)] = u64(e.addr()) }
     r.ret_reg = NO_REG
     size := us(n.size)
@@ -1187,6 +1188,14 @@ vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: [
             len := regs[usize(x.len)]
             if i >= len { return !m.bounds_trap(x.n, i, len) }
             b := m.mem.write_view(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            m.wr_word(b, regs[usize(x.v)])
+        }
+        .StepLd(x) => {
+            b := m.mem.read(regs[usize(x.p)] +% regs[usize(x.i)] *% x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            regs[usize(x.r)] = m.rd_word(b)
+        }
+        .StepSt(x) => {
+            b := m.mem.write_view(regs[usize(x.p)] +% regs[usize(x.i)] *% x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
             m.wr_word(b, regs[usize(x.v)])
         }
         .PtrIdx(x) => {
@@ -1532,11 +1541,9 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
     while fr.defers.items.len > height {
         d := fr.defers.pop() else break
         if d.is_err and not run_err { continue }
-        tm := m.temps.items.len
         mk := m.mark()
         r := m.vm_sub(Act(fr: fr, cx: d.cx), d.code)
         span := source.DUMMY
-        m.kill_temps(tm)
         m.release(mk)
         r else f => {
             if f is .Trap(_) { return !f }
@@ -1563,12 +1570,10 @@ vm_call :: fn(m: ^Machine, cx: u32, caller: ^const Code, f: u32, args: []Arg, ds
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
     direct := m.vm_direct(caller, dst, regs)
     d := m.vm_dest(dst, direct, n, regs, ret, b[..])
-    tm := m.temps.items.len
     callee := m.new_frame(f, info, d, null, store)
     m.depth += 1
     r := m.vm_run(Act(fr: callee, cx: cx), code, d)
     m.depth -= 1
-    if m.temps.items.len > tm { m.kill_temps(tm) }
     id := callee.id
     m.end_frame(callee)
     m.release(mk)

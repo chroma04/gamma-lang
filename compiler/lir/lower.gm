@@ -20,7 +20,8 @@ pub context :: fn(s: ^Sema) -> Ctx needs Alloc {
 }
 
 /// The LIR of function `f`, whose body is checked and monomorphic (not the body of a
-/// generic function, which only its instances have in lowerable form).
+/// generic function, which only its instances have in lowerable form), with the checks
+/// it proves removed (`elide_checks`).
 #allow("needless-pub")
 pub lower :: fn(cx: ^Ctx, f: u32) -> Func needs Alloc {
     s := cx.s
@@ -36,7 +37,9 @@ pub lower :: fn(cx: ^Ctx, f: u32) -> Func needs Alloc {
         v := lw.expr(b)
         if not lw.diverges(b) { lw.emit(.Return(v), b.span) }
     }
-    return Func(fn_id: f, locals: lw.locals.items, temps: lw.temps.items, ret: ret, body: lw.cur.items, labels: lw.labels, loops: lw.loops.items, escapes: lw.escapes)
+    func := Func(fn_id: f, locals: lw.locals.items, temps: lw.temps.items, ret: ret, body: lw.cur.items, labels: lw.labels, loops: lw.loops.items, escapes: lw.escapes)
+    if lw.bounds > 0 { _ = elide_checks(s, &func) }
+    return func
 }
 
 /// The state of lowering one function.
@@ -52,6 +55,8 @@ Lw :: struct {
     escapes: u32
     /// For each TIR label (by index): the local a `break` with a value stores it in.
     results: List(?u32)
+    /// How many bounds checks the body has.
+    bounds: u32 = 0
 }
 
 emit :: fn(lw: ^Lw, op: Op, span: source.Span) needs Alloc {
@@ -602,7 +607,7 @@ index_place :: fn(lw: ^Lw, e: ^Expr, base, index: ^Expr, checked: bool) -> ?Plac
         .Array(len, _, _) => {
             p := lw.operand_place(base) else return null
             i := lw.expr(index)
-            if checked { lw.emit(.Check(.Bounds(i, .Word(usize_ty, len))), e.span) }
+            if checked { lw.check_bounds(i, .Word(usize_ty, len), e.span) }
             return project(p, .Elem(i, esz))
         }
         .Slice(is_const, elem) => {
@@ -610,7 +615,7 @@ index_place :: fn(lw: ^Lw, e: ^Expr, base, index: ^Expr, checked: bool) -> ?Plac
             ptr := lw.load(project(p, .Field(0, 0)), s.tys.intern(.ManyPtr(is_const, elem)), e.span)
             len := lw.load(project(p, .Field(1, lw.ptr_size())), usize_ty, e.span)
             i := lw.expr(index)
-            if checked { lw.emit(.Check(.Bounds(i, len)), e.span) }
+            if checked { lw.check_bounds(i, len, e.span) }
             .Temp(t) := ptr else return null
             return Place(base: .Deref(t), proj: one(.Step(i, esz)))
         }
@@ -623,11 +628,16 @@ index_place :: fn(lw: ^Lw, e: ^Expr, base, index: ^Expr, checked: bool) -> ?Plac
             .Array(len, _, _) := s.tys.kind(pointee) else return null
             ptr := lw.expr(base)
             i := lw.expr(index)
-            if checked { lw.emit(.Check(.Bounds(i, .Word(usize_ty, len))), e.span) }
+            if checked { lw.check_bounds(i, .Word(usize_ty, len), e.span) }
             return Place(base: .Deref(lw.in_temp(ptr, base.ty, base.span)), proj: one(.Elem(i, esz)))
         }
         _ => return null
     }
+}
+
+check_bounds :: fn(lw: ^Lw, index, len: Value, span: source.Span) needs Alloc {
+    lw.bounds += 1
+    lw.emit(.Check(.Bounds(index, len)), span)
 }
 
 one :: fn(x: Proj) -> []Proj needs Alloc {
