@@ -122,7 +122,7 @@ generate_program :: fn(s: ^sema.Sema, roots_in: []const u32, entries: []const u3
     // `GAMMA_CGEN_LIR` (`1`, or `report` to list the bodies still generated from TIR):
     // function bodies are generated from LIR where the back end translates it (cgen/lirc.gm).
     lir_mode := Env.var("GAMMA_CGEN_LIR") else ""
-    copts.lir = lir_mode.len > 0 and lir_mode is not "0"
+    copts.lir = lir_mode is not "0"
     // With debug information on an ELF target, the executable carries the gdb printers (Fil-C
     // compiles no top-level assembly).
     if opts.debug_info and p.target.os in ("Linux", "FreeBSD") and not p.target.filc {

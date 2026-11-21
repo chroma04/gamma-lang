@@ -9,7 +9,9 @@
 //! runs the ladder of the `with` itself.
 
 sema :: import "../sema"
+source :: import "../source"
 str :: import "std/str"
+types :: import "../types"
 
 /// Generates a C function from the code `emit` produces, with its own scopes and handler
 /// context `cx`. Returns the function's text.
@@ -178,14 +180,19 @@ fiber_builtin :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs se
         .FnPtr(s) => s
         _ => return !unsupported(e.span, "`@fiber` with this function")
     }
-    hidden := not fg.g.within_sys(&sig.effects)
     f := try fg.expr(&args[0])
     a := try fg.expr(&args[1])
     s := try fg.expr(&args[2])
-    sa := fg.addr_of(args[2].ty, s)
+    return fg.fiber_values(e.span, e.ty, &sig, f, args[1].ty, a, args[2].ty, s)
+}
+
+/// `@fiber(f, a, s)` of type `t`, for the function pointer `f` of signature `sig`, the
+/// argument `a` of type `aty` and the stack `s` of type `sty`.
+fiber_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, sig: ^const types.FnTy, f: string, aty: Ty, a: string, sty: Ty, s: string) -> string needs sema.Load {
+    hidden := not fg.g.within_sys(&sig.effects)
+    sa := fg.addr_of(sty, s)
     p := slice_ptr(sa)
     l := fg.slice_len(sa)
-    aty := args[1].ty
     ac := fg.g.ty.cty(aty)
     size := fg.g.ty.size(aty)
     k := fg.fresh()
@@ -199,10 +206,10 @@ fiber_builtin :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs se
         _ = fg.call_indirect("fb->fn", "NULL", "fb->cx", vals[..], tys[..], never_t, hidden, false)
         fg.out.extend("}\n")!
     }
-    text := try detached(fg, str.format("static void {}(gm_fiber *fb)", start)!, "fb->cx", emit)
+    text := detached(fg, str.format("static void {}(gm_fiber *fb)", start)!, "fb->cx", emit) else ""
     fg.g.protos.write("static void {}(gm_fiber *fb);\n", start)!
     fg.g.bodies.extend(text)!
-    loc := fg.loc(e)
+    loc := fg.g.src_loc(span)
     fb := str.format("nf{}", fg.fresh())!
     fg.linef("gm_fiber *{} = gm_fiber_new(inst->fw, (uint8_t *){}, {}, {}, {}, {});", fb, p, l, start, size, loc)
     fg.linef("{}->fn = (void *){}; {}->cx = inst->fw->body_cx;", fb, f, fb)
@@ -211,6 +218,6 @@ fiber_builtin :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs se
     }
     kc := str.format("kc{}", fg.fresh())!
     fg.linef("gm_cont {} = gm_fiber_cont(inst->fw, {});", kc, fb)
-    c := fg.g.ty.cty(e.ty)
-    return fg.tmp(e.ty, str.format("GM_LD({}, &{})", c, kc)!)
+    c := fg.g.ty.cty(t)
+    return fg.tmp(t, str.format("GM_LD({}, &{})", c, kc)!)
 }

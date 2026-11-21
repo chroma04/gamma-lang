@@ -241,7 +241,11 @@ call_fn :: fn(fg: ^FnGen, rt: Ty, e: ?^const Expr, f: u32, vals: []const string)
         }
     }
     name := ""
-    if sc := fg.spec_call {
+    if sn := fg.spec_next {
+        fg.spec_next = null
+        name = fg.g.queue_spec(f, sn)
+    }
+    if sc := fg.spec_call and name.len is 0 {
         if x := e and sc.call is x {
             fg.spec_call = null
             name = fg.g.queue_spec(f, sc.spec)

@@ -82,6 +82,12 @@ gen_fn :: fn(g: ^Gen, f: u32, spec: ?u32) -> Unsup!() needs sema.Load {
             frame.write("    {} l{}; /* {} */\n", c, i, l.name)!
         }
     }
+    // The body of a `with … on` from LIR is a C function of its own, which reaches the
+    // locals lowering adds through the frame too.
+    if g.opts.lir and lir_framed(g, f, body) {
+        lf := g.lir_of(f)
+        for i in def.locals.len..lf.locals.len { frame.write("    {} l{};\n", g.ty.cty(lf.locals[i].ty), i)! }
+    }
     frame.write("    {} ret;\n", g.ty.cty(def.ret))!
     withs := list(WithSlot)
     collect_withs(body, &withs)
@@ -131,7 +137,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     split_runs := not g.opts.debug_info and long_body(g, f)
     // The body from LIR, when `lirc.gm` translates all of it (see there).
     lf: ?lir.Func = null
-    if g.opts.lir and spec is null and not split_runs and not g.opts.debug_info {
+    if g.opts.lir {
         func := g.lir_of(f)
         if why := g.lir_unsupported(f, &func) {
             g.lir_fallbacks.push(str.format("{}: {}", def.name, why)!)!
@@ -140,7 +146,8 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
             // The locals lowering adds are C locals.
             all := list(bool)
             all.extend(in_frame)!
-            while all.items.len < func.locals.len { all.push(false)! }
+            framed := lir_framed(g, f, body)
+            while all.items.len < func.locals.len { all.push(framed)! }
             in_frame = all.items
             lf = func
         }
@@ -1307,6 +1314,11 @@ captured_locals :: fn(g: ^Gen) -> hash_map.HashMap((u32, u32), bool) needs Alloc
     g.captured = set
     return set
 }
+
+/// Whether the locals that LIR adds to function `f` (of body `body`) live in the frame:
+/// with its other locals, when code that reaches them may be a C function of its own (the
+/// body of a `with … on`, a run of a long function).
+lir_framed :: fn(g: ^Gen, f: u32, body: ^Expr) -> bool needs Alloc => has_fiber_with(body) or outlines(g, f) or g.opts.debug or g.opts.debug_info
 
 /// Whether `e` contains a `with … on` (excluding nested functions).
 has_fiber_with :: fn(e: ^Expr) -> bool {

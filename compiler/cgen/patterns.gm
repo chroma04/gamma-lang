@@ -184,18 +184,23 @@ calls_in_scan :: fn(fg: ^FnGen, et: Ty, n: string, p: string, x: string, r: stri
 in_expr :: fn(fg: ^FnGen, elem: ^Expr, container: ^Expr, negated: bool) -> Unsup!string needs sema.Load {
     x := try fg.expr(elem)
     c := try fg.expr(container)
-    ca := fg.addr_of(container.ty, c)
+    return try fg.in_values(container.span, elem.ty, container.ty, x, c, negated)
+}
+
+/// `x in c` (`negated`: `not in`) for the element `x` of type `et` and the container `c`
+/// of type `ct`; an unsupported container is reported at `span`.
+in_values :: fn(fg: ^FnGen, span: source.Span, et: Ty, ct: Ty, x: string, c: string, negated: bool) -> Unsup!string needs sema.Load {
+    ca := fg.addr_of(ct, c)
     r := fg.tmp(fg.g.ty.bool_ty(), "0")
-    match fg.g.ty.kind(container.ty) {
-        .Array(len, et, _) => fg.calls_in_scan(et, str.format("{}", len)!, ca, x, r)
-        .Slice(_, et) => {
+    match fg.g.ty.kind(ct) {
+        .Array(len, at, _) => fg.calls_in_scan(at, str.format("{}", len)!, ca, x, r)
+        .Slice(_, st) => {
             p := slice_ptr(ca)
             l := fg.slice_len(ca)
-            fg.calls_in_scan(et, l, str.format("((uint8_t *){})", p)!, x, r)
+            fg.calls_in_scan(st, l, str.format("((uint8_t *){})", p)!, x, r)
         }
         .Tuple(elems, _) => {
-            offs := fg.g.ty.offsets(container.ty)
-            et := elem.ty
+            offs := fg.g.ty.offsets(ct)
             xa := fg.addr_of(et, x)
             eq := fg.g.helpers.eq_fn(&fg.g.ty, et)
             for i in 0..elems.len {
@@ -203,17 +208,17 @@ in_expr :: fn(fg: ^FnGen, elem: ^Expr, container: ^Expr, negated: bool) -> Unsup
             }
         }
         .Adt(_, _) => {
-            def := fg.adt_def(container.ty)
+            def := fg.adt_def(ct)
             incl := false
             if def.name is "Range" {
                 incl = false
             } else if def.name is "RangeIncl" {
                 incl = true
             } else {
-                return !unsupported(container.span, "`in` on this type")
+                return !unsupported(span, "`in` on this type")
             }
-            offs := fg.g.ty.offsets(container.ty)
-            lt := elem.ty
+            offs := fg.g.ty.offsets(ct)
+            lt := et
             lo := fg.load(lt, str.format("({} + {})", ca, offs[0])!)
             hi := fg.load(lt, str.format("({} + {})", ca, offs[1])!)
             op := if incl { "<=" } else { "<" }
@@ -221,7 +226,7 @@ in_expr :: fn(fg: ^FnGen, elem: ^Expr, container: ^Expr, negated: bool) -> Unsup
             below := str.format("({} {} {})", x, op, hi)!
             fg.linef("{} = {} && {};", r, ge, below)
         }
-        _ => return !unsupported(container.span, "`in` on this type")
+        _ => return !unsupported(span, "`in` on this type")
     }
     return fg.tmp(fg.g.ty.bool_ty(), str.format("(uint8_t)({}{})", if negated { "!" } else { "" }, r)!)
 }

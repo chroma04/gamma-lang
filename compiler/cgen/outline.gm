@@ -203,6 +203,11 @@ outline_stmts :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
 
 /// Moves the statements `stmts` into a helper and calls it (see the file's comment).
 outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
+    try fg.outline_code(fn() -> Unsup!() needs sema.Load => fg.outline_stmts(stmts))
+}
+
+/// Moves the code `emit` generates into a helper and calls it (see the file's comment).
+outline_code :: fn(fg: ^FnGen, emit: fn() -> Unsup!() needs sema.Load) -> Unsup!() needs sema.Load {
     k := fg.fresh()
     name := str.format("gm_c{}_{}", fg.tag, k)!
     outer_cx := fg.cx
@@ -215,7 +220,7 @@ outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
     fg.names = 0
     if not own_cx { fg.cx = "gm_hcx" }
     fg.runs.push(Run(depth: fg.scopes.items.len, exits: list(RunExit)))!
-    r := fg.outline_stmts(stmts)
+    r := emit()
     fg.end_lines()
     run := fg.runs.pop()?
     body := fg.out

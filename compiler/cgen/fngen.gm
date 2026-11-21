@@ -76,6 +76,8 @@ pub FnGen :: struct {
     pub spec: ?u32 = null
     /// The call that a `with` being generated specializes for its handler.
     pub spec_call: ?SpecCall = null
+    /// The clone the next direct call (`call_fn`) runs, chosen by a `with` from LIR.
+    pub spec_next: ?u32 = null
     /// The link of a long chain being emitted; see `chain.gm`.
     pub spine: ?Spine = null
     /// The call expression whose large result goes straight into a destination, and that

@@ -493,14 +493,33 @@ return_expr :: fn(fg: ^FnGen, e: ^Expr, levels: u32, value: ^Expr) -> Unsup!stri
 
 /// A field of a `#bits` struct: a range of bits of its integer (§5.10.5).
 bits_field :: fn(fg: ^FnGen, base: ^Expr, index: u32) -> Unsup!string needs sema.Load {
-    bl := fg.g.ty.bits_layout(base.ty)?
-    f := bl.fields[usize(index)]
     v := try fg.expr(base)
-    a := fg.addr_of(base.ty, v)
+    return fg.bits_get(base.ty, v, index)
+}
+
+/// Field `index` of the value `v` of `#bits` struct type `t`.
+bits_get :: fn(fg: ^FnGen, t: Ty, v: string, index: u32) -> string needs sema.Load {
+    bl := fg.g.ty.bits_layout(t)?
+    f := bl.fields[usize(index)]
+    a := fg.addr_of(t, v)
     uc := fg.g.ty.cty(bl.int_ty)
     raw := str.format("((((unsigned __int128)GM_LD({}, {})) >> {}) & {})", uc, a, f.off, mask(f.width))!
     raw2 := fg.tmp(fg.g.ty.int_ty(false, 128), raw)
     return fg.bits_value(f.ty, raw2)
+}
+
+/// The value `whole` of `#bits` struct type `t` with field `index` set to `v` (of type
+/// `vt`).
+bits_set :: fn(fg: ^FnGen, t: Ty, whole: string, index: u32, vt: Ty, v: string) -> string needs sema.Load {
+    bl := fg.g.ty.bits_layout(t)?
+    f := bl.fields[usize(index)]
+    a := fg.addr_of(t, whole)
+    uc := fg.g.ty.cty(bl.int_ty)
+    raw := fg.bits_raw(vt, v)
+    m := mask(f.width)
+    b := fg.blob(t)
+    fg.linef("GM_ST({}, (uint8_t *)&{}, ({})(((unsigned __int128)GM_LD({}, {}) & ~({} << {})) | ((({}) & {}) << {})));", uc, b, uc, uc, a, m, f.off, raw, m, f.off)
+    return b
 }
 
 /// `lhs and rhs` (or `lhs or rhs`), which evaluates `rhs` only if needed.
@@ -522,14 +541,22 @@ logic :: fn(fg: ^FnGen, is_and: bool, lhs: ^Expr, rhs: ^Expr) -> Unsup!string ne
 
 /// A `#bits` struct value: its fields packed into its integer.
 bits_aggregate :: fn(fg: ^FnGen, e: ^Expr, elems: []Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
-    bl := fg.g.ty.bits_layout(t)?
     vals := list(string)
-    for i in 0..elems.len { vals.push(try fg.expr(&elems[i]))! }
-    acc := fg.tmp(fg.g.ty.int_ty(false, 128), "0")
+    tys := list(Ty)
     for i in 0..elems.len {
+        vals.push(try fg.expr(&elems[i]))!
+        tys.push(elems[i].ty)!
+    }
+    return fg.bits_pack(e.ty, tys.items, vals.items)
+}
+
+/// The value of `#bits` struct type `t` of the fields `vals` (of types `tys`).
+bits_pack :: fn(fg: ^FnGen, t: Ty, tys: []const Ty, vals: []const string) -> string needs sema.Load {
+    bl := fg.g.ty.bits_layout(t)?
+    acc := fg.tmp(fg.g.ty.int_ty(false, 128), "0")
+    for i in 0..vals.len {
         f := bl.fields[i]
-        raw := fg.bits_raw(elems[i].ty, vals.items[i])
+        raw := fg.bits_raw(tys[i], vals[i])
         fg.linef("{} |= (({}) & {}) << {};", acc, raw, mask(f.width), f.off)
     }
     b := fg.blob(t)
