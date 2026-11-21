@@ -19,7 +19,8 @@ Status words: CURRENT (holds today), PARTLY (read with the later one), HISTORY (
 
 ## Compiler architecture
 - 002 pipeline · 074 LLVM back end / LLVM JIT revisited with measurements: stay on C;
-  cheap C-path wins; shared lowered IR is the structural option · 043 self-hosting plan (HISTORY) · 046 compile-time
+  cheap C-path wins; shared lowered IR is the structural option · 075 lowered IR (LIR)
+  under TIR: scope, design choices, phased plan (PROPOSED) · 043 self-hosting plan (HISTORY) · 046 compile-time
   evaluator (structured values) · 052 retiring Rust, C seed bootstrap · 066 fast bootstrap
   (seed = the build's units)
 - C back end: 008 design · 009 FFI/#global/callconv · 010 fibers · 011 @stack_size ·
