@@ -1,0 +1,23 @@
+// Local constants evaluated at compile time (§17.2) that call functions of the core
+// library (here through `std/str`), whose bodies are checked only when something needs
+// them, and that order booleans, enums, tuples, arrays and strings (§7.5). Each constant
+// is the value the same expression has at run time.
+str :: import "std/str"
+
+Dir :: union(u8) { N = 5, S = 1 }
+
+main :: fn() needs Out {
+    p: bool : "abc".starts_with("ab")
+    q: ?string : str.strip_prefix("abc", "a")
+    a: bool : "x1" > (str.strip_prefix("a", "12") else "a")
+    b: bool : "abc" < "abd"
+    c: bool : (1, "z") <= (1, "a")
+    d: bool : [3]i32(1, 2, 3) >= [3]i32(1, 2, 3)
+    e: bool : false < true
+    f: bool : Dir.S < Dir.N
+    g: bool : "ab" < "abc"
+    h: bool : [2]f64(1.0, 0.0 / 0.0) < [2]f64(1.0, 2.0)
+    print("{} {} {} {} {} {} {} {} {} {}\n", p, q, a, b, c, d, e, f, g, h)
+    x := "x1"
+    print("{} {} {} {} {} {} {} {} {} {}\n", x.starts_with("x"), str.strip_prefix(x, "x"), x > (str.strip_prefix("a", "12") else "a"), "abc" < "abd", (1, "z") <= (1, "a"), [3]i32(1, 2, 3) >= [3]i32(1, 2, 3), false < true, Dir.S < Dir.N, "ab" < "abc", [2]f64(1.0, 0.0 / 0.0) < [2]f64(1.0, 2.0))
+}

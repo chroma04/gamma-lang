@@ -28,6 +28,17 @@ Versions and what each kind of change means are described in
   own C is 0.9% smaller), and Debug builds name the file of each call site through the
   static string trap reports already use instead of repeating its path.
 
+### Fixed
+
+- **A local constant that called the core library could fail to evaluate**, depending on
+  the order in which the compiler checked function bodies: `b: bool : s.starts_with("ab")`
+  in `main`, or a call of a standard library function that uses such a method, reported
+  that core library calls cannot be evaluated at compile time. The core library's bodies
+  now stay available while the program's own bodies are checked.
+- **`< <= > >=` on booleans, enums, tuples, arrays and strings in a constant** (§7.5) were
+  rejected as operators the compiler cannot evaluate; they now give the value the same
+  comparison has at run time.
+
 ## 0.3.0 - 2026-11-21
 
 This release makes builds, the compiler and the interpreter much faster (incremental

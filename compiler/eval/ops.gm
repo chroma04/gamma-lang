@@ -120,6 +120,15 @@ binary :: fn(m: ^Machine, op: tir.BinOp, a, b: Value, lt, rt: Ty, span: source.S
 }
 
 scalar_binary :: fn(m: ^Machine, op: tir.BinOp, a, b: Value, lt, rt: Ty, span: source.Span) -> Flow!Value needs Load {
+    // Booleans, enums, tuples, arrays and slices are ordered too (§7.5).
+    if op in (tir.BinOp.Lt, .Le, .Gt, .Ge) and not (a is .Int(_)) and not (a is .Float(_)) {
+        return .Bool(match op {
+            .Lt => try m.less(a, b, lt, span)
+            .Le => (try m.less(a, b, lt, span)) or (try m.equal(a, b, lt, span))
+            .Gt => try m.less(b, a, lt, span)
+            _ => (try m.less(b, a, lt, span)) or (try m.equal(a, b, lt, span))
+        })
+    }
     match a {
         .Int(x) => {
             .Int(y) := b else return !m.unsupported(span, "this operator")
@@ -895,6 +904,47 @@ equal :: fn(m: ^Machine, a, b: Value, t: Ty, span: source.Span) -> Flow!bool nee
         .Ptr(x) => {
             .Ptr(y) := b else return false
             return same_place(x, y)
+        }
+        _ => return !m.unsupported(span, "this comparison at compile time")
+    }
+}
+
+/// `a < b` for values of type `t` (§7.5): integers, floats, booleans, enums by tag value,
+/// and tuples, arrays and slices lexicographically.
+less :: fn(m: ^Machine, a, b: Value, t: Ty, span: source.Span) -> Flow!bool needs Load {
+    tys := &m.s.tys
+    match a {
+        .Int(_), .Float(_) => {
+            .Bool(r) := (try m.scalar_binary(.Lt, a, b, t, t, span)) else return !m.unsupported(span, "this comparison")
+            return r
+        }
+        .Bool(x) => {
+            .Bool(y) := b else return !m.unsupported(span, "this comparison")
+            return not x and y
+        }
+        .Variant(i, _) => {
+            .Variant(j, _) := b else return !m.unsupported(span, "this comparison")
+            ti := m.variant_tag(t, i) else return !m.unsupported(span, "this comparison")
+            tj := m.variant_tag(t, j) else return !m.unsupported(span, "this comparison")
+            return ti.cmp(tj) < 0
+        }
+        .Agg(x) => {
+            .Agg(y) := b else return !m.unsupported(span, "this comparison")
+            elems := m.field_tys(t, x.elems.len) else return !m.unsupported(span, "this comparison")
+            for i in 0..x.elems.len.min(y.elems.len) {
+                if not try m.equal(x.elems[i], y.elems[i], elems[i], span) { return m.less(x.elems[i], y.elems[i], elems[i], span) }
+            }
+            return x.elems.len < y.elems.len
+        }
+        .Slice(x) => {
+            .Slice(y) := b else return !m.unsupported(span, "this comparison")
+            .Slice(_, et) := tys.kind(t) else return !m.unsupported(span, "this comparison")
+            for i in 0..x.len.min(y.len) {
+                p := m.load(offset(x.start, i))
+                q := m.load(offset(y.start, i))
+                if not try m.equal(p, q, et, span) { return m.less(p, q, et, span) }
+            }
+            return x.len < y.len
         }
         _ => return !m.unsupported(span, "this comparison at compile time")
     }
