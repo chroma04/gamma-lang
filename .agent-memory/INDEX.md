@@ -13,8 +13,8 @@
   bootstrap/build.sh then tools/test.sh (subsets for the Safe, s390x, aarch64, WASI
   lanes; Windows via cross-built gamma.exe + harness.exe), plus fuzz smoke, difftest,
   benchmarks, editors.
-- Last sessions: s75 roadmap sweep (071 struct errors rejected); s76 0.3.0 prep; s77
-  perf round 10 (072: every remaining perf item measured; kept/dropped/closed).
+- Last sessions: s76 0.3.0 prep; s77 perf round 10 (072: every remaining perf item
+  measured); s78 shared template bodies (073, check/share.gm).
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
@@ -36,7 +36,7 @@
                   platforms.md (clang, aarch64, s390x, Windows, WASI, Fil-C) ·
                   codegen.md (generated C, runtime, host stack) ·
                   parallel-agents.md (worktree workers: stale bases, limits)
-- history.md      compact project history, s1–s77
+- history.md      compact project history, s1–s78
 
 ## Conventions in Gamma code (quick reminders; the guide is the reference)
 - Effects: `fn() -> T needs Alloc + Out`; effect-set args `Sched(Out + Clock)`; pure

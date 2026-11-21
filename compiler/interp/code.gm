@@ -132,7 +132,9 @@ Op :: union {
     Trap: ^Node
     Resume: (k: ^Node, v: ^Node)
     Cancel: ^Node
-    Write: (sink: Sink, pieces: []const []const u8, specs: []const tir.FmtSpec, args: []^Node)
+    /// With `table`, the template is the one that word names (`Machine.templates`), and
+    /// `pieces` and `specs` are empty (`tir.WriteExpr.table`).
+    Write: (sink: Sink, pieces: []const []const u8, specs: []const tir.FmtSpec, args: []^Node, table: ?^Node)
     With: With
     /// What checking leaves only in generic bodies.
     Leftover
@@ -381,7 +383,13 @@ expr :: fn(lw: ^Lower, e: ^Expr) -> ^Node needs Alloc {
                 .Perform(effect_, op) => .Perform(effect_, op)
                 .Fn(x) => .Fn(lw.expr(x))
             }
-            Op.Write(sink, w.pieces, w.specs, lw.exprs(w.args))
+            Op.Write(sink, w.pieces, w.specs, lw.exprs(w.args), lw.opt_expr(w.table))
+        }
+        // A template given to a shared body: its number in the machine's list (not 0, so
+        // that it is not a null pointer).
+        .Template(t) => {
+            m.templates.push(t)!
+            Op.Word(u64(m.templates.items.len))
         }
         .With(w) => {
             hs := list(Handler)

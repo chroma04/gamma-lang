@@ -4,7 +4,7 @@
 // is reserved for generated code and not listed.
 
 /// The runtime's `gm_` identifiers that do not end in a digit, sorted.
-RUNTIME_NAMES :: [302]string(
+RUNTIME_NAMES :: [304]string(
     "gm_alloc_check", "gm_alloc_tag", "gm_altstack_free", "gm_altstack_init", "gm_altstack_key",
     "gm_altstack_keyed", "gm_args", "gm_asyncify_start_rewind", "gm_asyncify_start_unwind",
     "gm_asyncify_stop_rewind", "gm_asyncify_stop_unwind", "gm_atag", "gm_atag_cap", "gm_atag_find",
@@ -51,7 +51,8 @@ RUNTIME_NAMES :: [302]string(
     "gm_strlen", "gm_susp_link", "gm_susp_unlink", "gm_sys_read", "gm_sys_write", "gm_table",
     "gm_table_add", "gm_table_get", "gm_table_take", "gm_test_index", "gm_thread",
     "gm_thread_detach", "gm_thread_join", "gm_thread_main", "gm_thread_spawn", "gm_thread_stack",
-    "gm_thread_stack_limit", "gm_thread_take", "gm_thread_yield", "gm_threads", "gm_trap",
+    "gm_thread_stack_limit", "gm_thread_take", "gm_thread_yield", "gm_threads", "gm_tmpl",
+    "gm_tmpl_piece", "gm_trap",
     "gm_trap_bytes", "gm_trap_hook_call", "gm_trap_index", "gm_trap_lanes", "gm_trap_misaligned",
     "gm_trap_pow", "gm_trap_shift", "gm_trap_slice", "gm_trap_unwrap", "gm_type", "gm_u128_dec", "gm_u64_dec",
     "gm_unit", "gm_unw", "gm_unwind", "gm_utf8_arg", "gm_utf8_seq_ok", "gm_variant", "gm_veh",

@@ -1,0 +1,71 @@
+// Generic functions whose `template :: string` parameter is written by `@write` share
+// one body for calls with the same value types, whatever the template (§16.1, §21.6.1):
+// every template writes exactly what it says, with numbered placeholders, specs, no
+// values, a template used as a run-time string as well, a sink that is a function value
+// or the ambient output, and the effects of the sink.
+str :: import "std/str"
+
+/// Counts the bytes a template writes, beside the template's own length.
+measure :: fn(A: type, template :: string, args: ..A) -> (written: usize, len: usize) {
+    n: usize = 0
+    @write(fn(b) { n += b.len }, template, ..args)
+    return (written: n, len: template.len)
+}
+
+/// Writes to the ambient output, twice: through `print` and through `@write`.
+log :: fn(A: type, template :: string, args: ..A) needs Out {
+    print(template, ..args)
+    @write(fn(b) { Out.write(b) }, template, ..args)
+}
+
+/// A sink that is not a function literal.
+into :: fn(A: type, out: ^List(u8), sink: fn(l: ^List(u8), b: []const u8), template :: string, args: ..A) {
+    @write(fn(b) { sink(out, b) }, template, ..args)
+}
+
+Fail :: effect {
+    fail: esc(why: string) -> never
+}
+
+/// A sink that performs: the write stops where it fails.
+strict :: fn(A: type, template :: string, args: ..A) -> u32 needs Fail {
+    pieces: u32 = 0
+    @write(fn(b) {
+        if b is "!" { Fail.fail("bang") }
+        pieces += 1
+    }, template, ..args)
+    return pieces
+}
+
+Pair :: struct { a: i32, b: string }
+
+main :: fn() needs Out + Alloc {
+    print("{} {}\n", measure("x={} y={}", 1, 22), measure("{1}{0}{1}", 7, 800))
+    print("{} {}\n", measure("no values"), measure(""))
+    a := str.format("{:>6}|{:<4}|{:^5}|{:+}", 42, "ab", true, 9)!
+    b := str.format("{1:x} {0:08.3} {1:#b}", 3.25, 10)!
+    c := str.format("{} {{literal}} {}", Pair(a: -1, b: "q"), [3]u8(1, 2, 3))!
+    d := str.format("{}", "just a string")!
+    e := str.format("{}{}", "", "")!
+    print("{}\n{}\n{}\n{}\n[{}]\n", a, b, c, d, e)
+    log("log {} {}\n", "one", 2)
+    log("log {1}-{0}\n", "one", 2)
+    out := list(u8)
+    defer out.deinit()
+    into(&out, fn(l, bytes) { l.extend(bytes)! }, "<{}:{:03}>", "k", 5)
+    into(&out, fn(l, bytes) { l.extend(bytes)! }, "<{}>", "plain")
+    print("{}\n", string(out.items))
+    for t in [2]u32(0, 1) {
+        r: u32 = 0
+        stop :: handler Fail {
+            fail(why) => {
+                print("failed: {}\n", why)
+                break
+            }
+        }
+        with stop {
+            r = if t is 0 { strict("a{}b{}c", "1", "2") } else { strict("a{}{}c", "1", "!") }
+        }
+        print("{}\n", r)
+    }
+}

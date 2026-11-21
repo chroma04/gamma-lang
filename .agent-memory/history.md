@@ -39,3 +39,5 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
 - s77: perf round 10 (072): interp hash/alloc-tag/u128/string-literal fast paths
   (map_insert −19%, new_destroy −30%, primes −31%), exhaustiveness by variant index,
   erased HashMap growth, GM_BT_AT; dropped gm_copy, consts block copy, single-unit release.
+- s78: template sharing (073): one body per value types for template-parameter functions
+  (str.format, List.write, print wrappers); compiler C −13%, cold build −8%.

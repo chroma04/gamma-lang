@@ -781,8 +781,8 @@ pub write :: fn(A: type, b: ^Builder, template :: string, args: ..A) {
 /// `free`): `str.format("{}-{:03}", name, n)`. To append to a list instead, use
 /// `List(u8).write`.
 pub format :: fn(A: type, template :: string, args: ..A) -> AllocError![]u8 needs Alloc {
-    // As `List(u8).write`, written out: this function has an instance per template, and
-    // one function per template instead of two keeps programs smaller.
+    // As `List(u8).write`, written out: one function instead of two keeps programs
+    // smaller. Calls with the same value types share this body whatever their templates.
     l := list(u8)
     // Room for the template's text and a guess at the arguments' (their size as values:
     // 16 bytes for a string), so that most results are allocated once.

@@ -429,7 +429,8 @@ expr_node :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
         .Trap(message) => return fg.trap(e, message)
         .WriteDeferred(_) => return !unsupported(e.span, "a template in a generic function that was not instantiated")
         .SoaDeferred(_) => return !unsupported(e.span, "a `#soa` operation in a generic function that was not instantiated")
-        .Write(w) => return fg.write(e, w)
+        .Write(w) => return if w.table is null { fg.write(e, w) } else { fg.write_table(e, w) }
+        .Template(tb) => return str.format("((void *)&{})", fg.g.template_table(tb))!
         .SizeOf(_), .TypeIs(_), .IntLimit(_), .TypeName(_), .UntypedFloat(_), .UntypedComplex(_), .ValueParam(_) => return !unsupported(e.span, "an expression left over from generic checking")
     }
 }
@@ -902,6 +903,147 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
             try fg.emit_buf(w.sink, sink_v, b, e)
         }
     }
+    return fg.unit()
+}
+
+/// A write whose template is a run-time table (`tir.WriteExpr.table`, a `gm_tmpl`): a loop
+/// over its pieces and placeholders, each formatting the value it names, through the same
+/// helpers as a write of a known template.
+write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs sema.Load {
+    sink_v: ?ValTy = null
+    if .Fn(sx) := w.sink { sink_v = ValTy(v: try fg.expr(sx), ty: sx.ty) }
+    tv := try fg.expr(w.table?)
+    str_ty := fg.g.ty.string_ty()
+    ptrs := list(string)
+    descs := list(string)
+    strs := list(string)
+    for i in 0..w.args.len {
+        v := try fg.expr(&w.args[i])
+        ptrs.push(str.format("(const void *)({})", fg.addr_of(w.args[i].ty, v))!)!
+        descs.push(fg.g.ty.desc(w.args[i].ty))!
+        strs.push(if w.args[i].ty is str_ty { "1" } else { "0" })!
+    }
+    k := fg.fresh()
+    t := str.format("tp{}", k)!
+    fg.linef("const gm_tmpl *{} = (const gm_tmpl *)({});", t, tv)
+    if w.args.len > 0 {
+        fg.linef("const void *vp{}[] = {{{}}};", k, str.join(ptrs.items, ", ")!)
+        fg.linef("const gm_type *vd{}[] = {{{}}};", k, str.join(descs.items, ", ")!)
+        fg.linef("static const uint8_t vs{}[] = {{{}}};", k, str.join(strs.items, ", ")!)
+    }
+    piece := str.format("{}->text[k{}]", t, k)!
+    // The value of placeholder `k`, its spec, and whether it is a string written as it is.
+    v := str.format("vp{}[j{}]", k, k)!
+    d := str.format("vd{}[j{}]", k, k)!
+    sp := str.format("{}->fmt[k{}]", t, k)!
+    plain := str.format("(!{} && vs{}[j{}])", sp, k, k)!
+    p := fg.ptr_bytes()
+    stub: ?string = null
+    if .Perform(effect_, op) := w.sink {
+        id := fg.g.effect_id(&effect_)
+        tys := [1]Ty(str_ty)
+        stub = fg.out_stub(&effect_, id, op, tys[..], fg.g.ty.unit_ty())
+    }
+    if .Fn(_) := w.sink and not fg.g.ty.by_ref(str_ty) {
+        cv := sink_v?
+        .Fn(sig) := fg.g.ty.kind(cv.ty) else @unreachable()
+        c := fg.tmp(cv.ty, cv.v)
+        ccx := str.format("ccx{}", fg.fresh())!
+        fg.linef("gm_node *{} = {}.cx;", ccx, c)
+        for eff in sig.effects.effects {
+            id := fg.g.effect_id(&eff)
+            n := str.format("cn{}", fg.fresh())!
+            fg.linef("gm_node {}; {{ gm_node *f = gm_find({}, {}); if (f) {{ {} = *f; {}.next = {}; {} = &{}; }} }}", n, fg.cx, id, n, n, ccx, ccx, n)
+        }
+        fs := fg.fn_sink_stub(str_ty)
+        ff := fg.fn_format_stub(fs)
+        // A function literal is called directly, where the C compiler can inline it.
+        direct: ?string = null
+        if .Fn(sx) := w.sink {
+            if .Closure(f) := sx.kind { direct = fg.g.fn_name(f) }
+        }
+        fg.linef("for (uint32_t k{} = 0;; k{}++) {{", k, k)
+        fg.indent += 1
+        if dn := direct {
+            fg.linef("if ({}.len != 0) {{", piece)
+            fg.indent += 1
+            sl := fg.make_slice(str_ty, str.format("{}.ptr", piece)!, str.format("{}.len", piece)!)
+            fg.linef("{}({}.env, {}, NULL, {});", dn, c, ccx, sl)
+            fg.check_unwind()
+            fg.indent -= 1
+            fg.line("}")
+        } else {
+            fg.unwind_call(str.format("({}.len != 0 && {}({}.code, {}.env, {}, {}.ptr, {}.len))", piece, fs, c, c, ccx, piece, piece)!)
+        }
+        fg.linef("if (k{} == {}->n) break;", k, t)
+        if w.args.len > 0 {
+            fg.linef("uint32_t j{} = {}->arg[k{}];", k, t, k)
+            if dn := direct {
+                fg.linef("if ({}) {{", plain)
+                fg.indent += 1
+                fg.linef("if (GM_LD(uintptr_t, (const uint8_t *){} + {}) != 0) {{", v, p)
+                fg.indent += 1
+                fg.linef("{}({}.env, {}, NULL, GM_LD({}, {}));", dn, c, ccx, fg.g.ty.cty(str_ty), v)
+                fg.check_unwind()
+                fg.indent -= 1
+                fg.line("}")
+                fg.indent -= 1
+                fg.line("} else {")
+                fg.indent += 1
+                fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {}, {})", ff, c, c, ccx, d, v, sp)!)
+                fg.indent -= 1
+                fg.line("}")
+            } else {
+                fg.unwind_call(str.format("({} ? (GM_LD(uintptr_t, (const uint8_t *){} + {}) != 0 && {}({}.code, {}.env, {}, GM_LD(void *, {}), GM_LD(uintptr_t, (const uint8_t *){} + {}))) : {}({}.code, {}.env, {}, {}, {}, {}))", plain, v, p, fs, c, c, ccx, v, v, p, ff, c, c, ccx, d, v, sp)!)
+            }
+        }
+        fg.indent -= 1
+        fg.line("}")
+        return fg.unit()
+    }
+    fg.linef("for (uint32_t k{} = 0;; k{}++) {{", k, k)
+    fg.indent += 1
+    if core := stub {
+        ps := fg.piece_stub(core, 's', str_ty)
+        pf := fg.piece_stub(core, 'f', str_ty)
+        at := fg.loc(e)
+        fg.unwind_call(str.format("({}.len != 0 && {}({}, {}.ptr, {}.len, {}))", piece, ps, fg.cx, piece, piece, at)!)
+        fg.linef("if (k{} == {}->n) break;", k, t)
+        if w.args.len > 0 {
+            fg.linef("uint32_t j{} = {}->arg[k{}];", k, t, k)
+            fg.linef("if ({}) {{", sp)
+            fg.indent += 1
+            b := str.format("b{}", fg.fresh())!
+            fg.linef("gm_buf {} = {{0}};", b)
+            fg.linef("gm_format_spec(&{}, {}, {}, {});", b, d, v, sp)
+            try fg.emit_buf(w.sink, sink_v, b, e)
+            fg.indent -= 1
+            fg.line("} else {")
+            fg.indent += 1
+            fg.unwind_call(str.format("({} ? (GM_LD(uintptr_t, (const uint8_t *){} + {}) != 0 && {}({}, GM_LD(void *, {}), GM_LD(uintptr_t, (const uint8_t *){} + {}), {})) : {}({}, {}, {}, {}))", plain, v, p, ps, fg.cx, v, v, p, at, pf, fg.cx, d, v, at)!)
+            fg.indent -= 1
+            fg.line("}")
+        }
+        fg.indent -= 1
+        fg.line("}")
+        return fg.unit()
+    }
+    fg.linef("if ({}.len != 0) {{", piece)
+    fg.indent += 1
+    sl := fg.make_slice(str_ty, str.format("{}.ptr", piece)!, str.format("{}.len", piece)!)
+    try fg.emit_to(w.sink, sink_v, sl, e)
+    fg.indent -= 1
+    fg.line("}")
+    fg.linef("if (k{} == {}->n) break;", k, t)
+    if w.args.len > 0 {
+        b := str.format("b{}", fg.fresh())!
+        fg.linef("gm_buf {} = {{0}};", b)
+        fg.linef("uint32_t j{} = {}->arg[k{}];", k, t, k)
+        fg.linef("if ({}) gm_format_spec(&{}, {}, {}, {}); else gm_format(&{}, {}, {}, true);", sp, b, d, v, sp, b, d, v)
+        try fg.emit_buf(w.sink, sink_v, b, e)
+    }
+    fg.indent -= 1
+    fg.line("}")
     return fg.unit()
 }
 

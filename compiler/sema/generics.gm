@@ -261,6 +261,20 @@ pub FnInstance :: struct {
     pub args: []const Ty
 }
 
+/// The body that the instances of a generic function share whatever the templates they
+/// write (`check/share.gm`): the function, and its writes by the template parameter each
+/// writes and the type of the values it is given (`null`: none).
+pub SharedWrite :: struct {
+    pub id: u32
+    pub sites: []const (param: u32, args: ?Ty)
+}
+
+/// Adds the function of a shared body with signature `sig`; its definition comes later.
+pub add_shared_fn :: fn(s: ^Sema, sig: FnSig, kind: tir.FnKind) -> u32 needs Alloc => s.add_fn(sig, bodiless_def(kind))
+
+/// The argument that stands for every template in the key of a shared body.
+pub template_marker :: fn(s: ^Sema) -> Ty needs Alloc => s.tys.intern(.Value(.Str("{template}")))
+
 /// How deeply generic instantiations may nest (§16.7).
 MAX_MONO_DEPTH: u32 : 256
 

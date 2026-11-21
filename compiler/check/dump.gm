@@ -316,8 +316,28 @@ write_expr :: fn(d: ^Dump, depth: usize, e: ^Expr) needs Alloc {
         }
         .Write(w) => {
             if .Fn(x) := w.sink { kids.push(x)! }
+            if t := w.table { kids.push(t)! }
             for i in 0..w.args.len { kids.push(&w.args[i])! }
-            d.write_text(w^)
+            if w.table is null { d.write_text(w^) } else { str.format("write {} table", d.sink_text(w.sink))! }
+        }
+        .Template(t) => {
+            h := list(u8)
+            h.extend("template")!
+            for i in 0..t.pieces.len {
+                h.push(' ')!
+                syntax.escape_bytes(t.pieces[i], &h)
+                if i < t.specs.len {
+                    h.write(" {{{}", t.index[i])!
+                    if tir.is_default_spec(&t.specs[i]) {
+                        h.push('}')!
+                    } else {
+                        h.push(' ')!
+                        spec_text(&t.specs[i], &h)
+                        h.push('}')!
+                    }
+                }
+            }
+            h.items
         }
         .WriteDeferred(w) => {
             if .Fn(x) := w.sink { kids.push(x)! }

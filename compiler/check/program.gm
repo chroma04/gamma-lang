@@ -65,13 +65,15 @@ monomorphize :: fn(s: ^Sema) needs Load {
 produce_instance :: fn(s: ^Sema, req: sema.MonoRequest) needs Load {
     def := s.defs.items[usize(req.generic)]
     body := def.body else return
+    tps := template_params(s, req.generic)
+    if tps.len > 0 and share_instance(s, req, tps) { return }
     map := list(sema.Subst)
     for i, g in enumerate(s.fns.items[usize(req.generic)].generics) { map.push(sema.Subst(param: g, ty: req.args[i]))! }
     outer := s.mono_depth
     s.mono_depth = req.depth
     s.check_len_exprs(map.items, req.span)
     locals := list(tir.LocalDecl)
-    mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false, locals: &locals)
+    mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false, locals: &locals, erased: empty_slice((param: u32, table: u32, text: u32)), sites: null)
     mc.fn_map.push(FnPair(from: req.generic, to: req.instance))!
     for l in def.locals {
         x := l
@@ -102,6 +104,10 @@ MonoCx :: struct {
     copying: bool
     /// The locals of the instance, which expanding an operation may add to.
     locals: ^List(tir.LocalDecl)
+    /// In a body shared whatever the templates (`check/share.gm`): the template
+    /// parameters, the hidden parameters that hold them, and the writes made so far.
+    erased: []const (param: u32, table: u32, text: u32)
+    sites: ?^List((param: u32, args: ?Ty))
 }
 
 FnPair :: struct {
@@ -123,8 +129,14 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     e.ty = mono_ty(s, mc, e.ty)
     t := e.ty
     span := mc.span
-    // A compile-time value parameter becomes its argument (§16.5).
+    // A compile-time value parameter becomes its argument (§16.5); a template of a shared
+    // body, the hidden parameter that holds it.
     if .ValueParam(p) := e.kind {
+        for x in mc.erased {
+            if x.param is not p { continue }
+            e.kind = .Local(x.text)
+            return
+        }
         for b in mc.map {
             if b.param is not p { continue }
             .Value(k) := s.tys.kind(b.ty) else break
@@ -197,6 +209,12 @@ mono_expr :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
             if .Decl(_, value) := w.handlers[i] {
                 w.handlers[i] = .Decl(handlers_of_type(s, s.subst(value.ty, mc.map)), value)
             }
+        }
+    }
+    // A write of a template of a shared body looks it up in its table.
+    if .WriteDeferred(w) := e.kind and .ValueParam(p) := w.template.kind {
+        for x in mc.erased {
+            if x.param is p { w.template = tir.mk(s.tys.intern(.Rawptr), .Local(x.table), w.template.span) }
         }
     }
     match e.kind {

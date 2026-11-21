@@ -402,6 +402,12 @@ pub Sema :: struct {
     /// deeply instantiations nest at the one being followed (§16.7).
     pub mono_queue: List(MonoRequest)
     pub mono_depth: u32
+    /// For each generic function, the compile-time `string` parameters that it uses only
+    /// as `@write` templates (§21.6.1), worked out on first use (`check/share.gm`).
+    pub template_params: hash_map.HashMap(u32, []const u32)
+    /// The bodies that the instances of such functions share, by the generic function
+    /// and its arguments with each such template replaced by `template_marker`.
+    pub shared_writes: hash_map.HashMap((u32, []const Ty), SharedWrite)
     /// Set while resolving the signature of a foreign function, which may be variadic.
     allow_variadic: bool
     /// The variadic foreign functions (§19.2).
@@ -529,6 +535,8 @@ pub sema :: fn(l: ^load.Loader) -> Sema needs Alloc {
         fn_instances: hash_map.hash_map((u32, []const Ty), u32),
         mono_queue: list(MonoRequest),
         mono_depth: 0,
+        template_params: hash_map.hash_map(u32, []const u32),
+        shared_writes: hash_map.hash_map((u32, []const Ty), SharedWrite),
         allow_variadic: false,
         variadic_fns: list(u32),
         foreign_fns: list(ForeignFn),

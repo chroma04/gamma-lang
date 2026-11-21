@@ -40,4 +40,5 @@ Status words: CURRENT (holds today), PARTLY (read with the later one), HISTORY (
 - 032 Safe new/destroy (Fil-C blob typing lesson) · 055 compiler perf baseline ·
   057 round 4 · 058 round 5 (C size) · 062 round 6 · 063 round 7 · 068 round 8
   (compiler −41%; measuring recipe) · 069 round 9 (copy elision) · 072 round 10
-  (every remaining roadmap item measured: kept / dropped / closed; scripts)
+  (every remaining roadmap item measured: kept / dropped / closed; scripts) · 073 shared
+  bodies for `@write` template parameters (compiler C −13%)

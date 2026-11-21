@@ -450,6 +450,23 @@ typedef struct {
 /* Appends the value of type t at address v as a placeholder with the spec s. */
 GM_API void gm_format_spec(gm_buf *out, const gm_type *t, const void *v, const gm_spec *s);
 
+/* A template known when the write runs (the one body that the instances of a generic
+ * function share whatever their templates, §21.6.1): its n placeholders, the n + 1 pieces
+ * of text around them, and for each placeholder the argument it writes and its spec (fmt,
+ * NULL for the default). The tables are static data of the generated code. The field names
+ * are words the runtime uses already: an exported Gamma function may not take a name that
+ * the runtime uses (§19.4). */
+typedef struct {
+    const uint8_t *ptr;
+    size_t len;
+} gm_tmpl_piece;
+typedef struct {
+    uint32_t n;
+    const gm_tmpl_piece *text;
+    const uint32_t *arg;
+    const gm_spec *const *fmt;
+} gm_tmpl;
+
 /* ---- ambient effects ---------------------------------------------------------- */
 
 GM_API void gm_write_out(const uint8_t *p, size_t len);  /* buffered stdout */

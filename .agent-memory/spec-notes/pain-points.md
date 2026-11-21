@@ -6,24 +6,9 @@ Before flagging, check "Settled" below: those are decided.
 ## Open
 - Adding an intrinsic that the prelude uses needs a 2-stage build + seed refresh (s50 sys
   worker); procedure now in docs/contributing.md. Watch.
-- Code size of format templates (s56, measured): `template :: string` is a comptime
-  parameter, so every function taking one has an instance per template, and every
-  forwarding wrapper (str.format → List.write, kit.check → str.format) multiplies them.
-  In the compiler: ~1,540 str.format templates; their instances were ~20% of the generated
-  C before s56 (reduced by shared @write helpers and str.format writing itself). Possible
-  language change: a checked template VALUE (type checked at the call site against the
-  args, passed at run time as pieces + specs), so wrappers instantiate per arg types only.
-  Not urgent; flagged to the user.
-  s77 measured (compiler's emit-c, Debug; scratch tmpl.py groups instances by the C type of
-  the `args` local + the type descriptors the body uses): str.format 1,422 instances =
-  8.84 MB with their sink closures (18% of 49.2 MB function text) fall in 69 type groups
-  (largest: `(string,)` 590, `(string, string)` 277); one body per group = 0.47 MB, saves
-  ~8.4 MB. List.write 279 → 40 groups (−0.95 MB), cgen linef 175 → 24 (−0.66 MB).
-  Recommended to the user: implementation-only sharing (template passed as a static
-  piece table to one body per arg types; no spec change), not the language change.
 
 ## Settled — do not re-flag (reason)
-Done: function value as a format value / inferred type argument is an error (s75, §16.2), stale-element-pointer through struct pointers (060), dangling-address lint + errors (044/045), pub(package) (044), composite keys
+Done: format template code size (s78, decisions/073: shared bodies, no language change), function value as a format value / inferred type argument is an error (s75, §16.2), stale-element-pointer through struct pointers (060), dangling-address lint + errors (044/045), pub(package) (044), composite keys
 (044), `?x` (047), `[a, b]` note (045), mutated-copy lint, if-branch join (s45), flush before
 blocking (049), temp array slicing (049), process-group kill + SpawnOptions env (053), `in`
 joins (s48). Checked s50 as already working: `if .V(b) := x and n > 0` (§8.2 chains),

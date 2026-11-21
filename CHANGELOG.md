@@ -8,6 +8,13 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
+- **Formatting functions no longer get a copy per template.** A generic function whose
+  `template :: string` parameter is the template of its `@write`s (and is otherwise used
+  only as a run-time string), such as `str.format`, `List(u8).write` or a logging wrapper,
+  now has one body for each set of value types, which reads the template from a static
+  table when it runs; each call is still checked against its own template, with the same
+  errors as before. The compiler's own C is 13% smaller and it builds 8% faster from
+  scratch; formatting in a program is as fast as before or slightly faster.
 - **The interpreter is faster on hash maps, allocation and 128-bit integers**: `@hash` of
   an integer, comparisons and shifts of 128-bit integers, signed 128-bit division,
   widening to and truncating from 128 bits, and string literals no longer leave the

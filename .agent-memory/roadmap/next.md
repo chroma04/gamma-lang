@@ -25,8 +25,9 @@ rest with numbers. What is left needs a structural change; do it only if asked:
   frame memset (needs proof registers are written before read); `with … on` and value
   loops still run on the tree evaluator; `with` re-resolves its perform site per ctx.
 - cgen: build results in place (068: `Abort!ast.Expr` copied 2–3x per parser level).
-- Generated C: `str.format` instances are 14% of the compiler's C (pain point "template
-  code size", §4 below).
+- Template sharing follow-ups (decisions/073): forward a template to another template
+  parameter (kit.check → str.format, cgen linef → str.format); thunks without the
+  generic's unused locals.
 
 ## 3. Testing and robustness
 - Fuzzing: more differential coverage (tools/difftest); tree-sitter as a second parser.
@@ -35,7 +36,6 @@ rest with numbers. What is left needs a structural change; do it only if asked:
 - Editors: Zed extension untried in real Zed; Emacs mode tested in batch only.
 
 ## 4. Language and library (only with evidence; check spec §22 for std additions)
-- spec-notes/pain-points.md "Open": template code size (checked template values).
 - Vector follow-ups if asked: lane sqrt, two-input shuffles, lane trunc/round to ints.
 - Platforms: FreeBSD, a freestanding/embedded profile. Docs: Rosetta-style examples.
 
