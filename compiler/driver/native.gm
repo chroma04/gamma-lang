@@ -320,11 +320,13 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
     }
     separate := debug or opts.target.filc or n > 1
     // The keys of cached objects include the compiler's version, which also tells whether
-    // it is gcc (for `debug_flags`).
+    // it is gcc (for `debug_flags`) or Clang (for `thin_lto`).
     version: ?string = if separate { compiler_version(tc) } else { null }
+    lto := not debug and n > 1 and thin_lto(tc, &opts, version)
     runtime: ?string = null
     if separate {
         flags := rt_flags(&opts)
+        if lto { flags.push(LTO_FLAG)! }
         runtime = runtime_object(tc, flags.items, runtime_source(b), "gm_rt", version)
     }
     sources := list(string)
@@ -336,6 +338,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
             sources = unit_sources(b, &split)
             uflags := build_flags(&opts, version)
             uflags.push("-Werror=implicit-function-declaration")!
+            if lto { uflags.push(LTO_FLAG)! }
             match unit_objects(tc, uflags.items, sources.items, version, cpus, opts.debug_info) {
                 .Objects(objs) => { cached = objs }
                 .Failed => return false
@@ -397,6 +400,7 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
         if not (wasi and f is opt) { link_flags.push(f)! }
     }
     if wasi { link_flags.extend(cgen.wasi_link_flags())! }
+    if lto { link_flags.extend(lto_link_flags().items)! }
     tail := list(string)
     tail.push("-o")!
     tail.push(exe)!
@@ -419,6 +423,34 @@ compile_c :: fn(b: ^const Built, tc: ^const pkg.Toolchain, link: ^const pkg.Link
         }
     }
     return true
+}
+
+/// The option that compiles a unit to bitcode for ThinLTO (`thin_lto`).
+LTO_FLAG :: "-flto=thin"
+
+/// Whether an optimized build split into units links them with ThinLTO, which optimizes
+/// across units as one translation unit would (the compiler, split this way, then runs 8%
+/// fewer instructions). It needs Clang with lld, compiling for the host (not Windows, WASI
+/// or Fil-C), and the cache, where lld keeps what it compiled for each unit so that a link
+/// after an edit compiles little again (about a second for the compiler, against 23 s from
+/// nothing). `version` is the compiler's `compiler_version`.
+thin_lto :: fn(tc: ^const pkg.Toolchain, opts: ^const Options, version: ?string) -> bool needs Alloc + Env + Fs {
+    if opts.target.filc or opts.target.os in ("Windows", "Wasi") or not is_default(tc) { return false }
+    if not is_clang(version) or pkg.cache_dir() is null { return false }
+    return load.program_on_path("ld.lld")
+}
+
+/// The options that link a ThinLTO build with lld, keeping its cache (at most 1 GiB, entries
+/// unused for a week removed) in the cache directory.
+lto_link_flags :: fn() -> List(string) needs Alloc + Env {
+    flags := list(string)
+    flags.push(LTO_FLAG)!
+    flags.push("-fuse-ld=lld")!
+    if dir := pkg.cache_dir() {
+        flags.push(str.format("-Wl,--thinlto-cache-dir={}", load.join(dir, "thinlto"))!)!
+        flags.push("-Wl,--thinlto-cache-policy=cache_size_bytes=1g:prune_after=168h")!
+    }
+    return flags
 }
 
 /// The C compiler's options of a build with `opts` (`version` is the compiler's): the base

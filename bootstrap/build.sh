@@ -16,7 +16,16 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
 out=${1:-$root/target/bootstrap}
-cc=${CC:-cc}
+# Without CC, the compiler an optimized build of the compiler uses: clang if it is on PATH,
+# else cc (OPTIMIZING_CC in compiler/driver/toolchain.gm), so that the seed's objects are
+# the ones the build would make.
+if [ -n "${CC:-}" ]; then
+    cc=$CC
+elif command -v clang >/dev/null 2>&1; then
+    cc=clang
+else
+    cc=cc
+fi
 jobs=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)

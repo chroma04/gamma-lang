@@ -102,7 +102,7 @@ environment:
   GAMMA_STD      the standard library (default: lib/gamma/std next to bin/)
   GAMMA_CORE     the core library (default: core next to the standard library)
   GAMMA_RUNTIME  the runtime's C sources (default: runtime two levels above the standard library)
-  CC             the C compiler (default: cc), with its arguments
+  CC             the C compiler (default: cc; clang for checked and fast builds if found), with its arguments
   CFLAGS         flags for every C compile, LDFLAGS flags for the link (after those of gamma.toml)
   GAMMA_CACHE_DIR
                  the package store (default: the user's cache directory; empty turns it off)

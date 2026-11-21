@@ -7,11 +7,12 @@
 //     last time a build used the tree;
 //   - `git/db/<repo>/`, bare mirrors of repositories;
 //   - `run/prog-*` (cached executables), `native/*` (compiled C sources) and `gm_rt-*` (the
-//     compiled runtime), whose modification times are their last use.
+//     compiled runtime), whose modification times are their last use;
+//   - `thinlto/`, lld's cache of ThinLTO links, which lld prunes itself.
 //
 // A clean removes the trees unused for the given time, the mirrors that no checkout is left
 // for, the builds unused for that time and any half-written temporary file older than a day;
-// with `all` it removes all of them.
+// with `all` it removes all of them, and lld's cache.
 
 arena :: import "std/arena"
 fs :: import "std/fs"
@@ -230,7 +231,7 @@ clean :: fn(dir: string, policy: Policy) -> CleanReport needs Alloc + Clock + Fs
     builds(&c, join(dir, "native"), [2]string("obj-", "lib-")[..])
     builds(&c, dir, [1]string("gm_rt-")[..])
     if policy.all and not policy.dry_run {
-        for sub in ("git", "run", "native") {
+        for sub in ("git", "run", "native", "thinlto") {
             d := join(dir, sub)
             if fs.exists(d) {
                 remove_tree(d) else e => {

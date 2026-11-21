@@ -8,6 +8,15 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
+- **Optimized builds use Clang when it is installed.** Without `CC`, Checked and Fast
+  builds (and `bootstrap/build.sh`) now compile with `clang` if it is on `PATH`, except on
+  Windows; Debug builds keep `cc`. The compiler built this way is 19% smaller and checks
+  programs 15% faster. Set `CC` to choose the compiler yourself.
+- **Very large optimized programs are optimized across their units.** A Checked or Fast
+  build that is split into units (the compiler itself) is compiled for ThinLTO and linked
+  with lld when it uses Clang and `ld.lld` is installed, with lld's cache in the cache
+  directory: the compiler runs 8% fewer instructions. Building it from nothing takes about
+  10 s longer; after an edit, the link redoes only what changed.
 - **Formatting functions no longer get a copy per template.** A generic function whose
   `template :: string` parameter is the template of its `@write`s (and is otherwise used
   only as a run-time string), such as `str.format`, `List(u8).write` or a logging wrapper,

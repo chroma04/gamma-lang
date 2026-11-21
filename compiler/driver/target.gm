@@ -42,7 +42,7 @@ chosen_toolchain :: fn(opts: ^Options) -> string!Toolchain needs Alloc + Env + F
         opts.target = tg
         return t
     }
-    t := with_manifest_flags(try from_env(), opts.manifest_cflags, opts.manifest_ldflags)
+    t := with_manifest_flags(try host_from_env(opts.mode in (Mode.Checked, Mode.Fast)), opts.manifest_cflags, opts.manifest_ldflags)
     opts.target = try target(&t)
     return t
 }

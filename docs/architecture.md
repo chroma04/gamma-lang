@@ -562,15 +562,21 @@ every translation unit of a split build.
 
 `gamma build` and `gamma run` translate the checked program to C (`compiler/cgen/`) and
 compile it, with the runtime (`runtime/gm_rt.h`, `runtime/gm_rt.c`), using the system C
-compiler (`$CC`, default `cc`, plus `$CFLAGS` and `$LDFLAGS`; `driver/toolchain.gm`) in GNU
+compiler (`$CC`, plus `$CFLAGS` and `$LDFLAGS`; `driver/toolchain.gm`) in GNU
 C11 mode, with `-fwrapv` and `-fno-strict-aliasing` (Gamma memory is untyped bytes), and
 with `-fno-stack-protector`: where the system's compiler adds a stack canary to every
 function with an array by default, nearly every generated function would get one, since
 every value that is not a scalar is an array of bytes in C. `$CFLAGS` come after these
 options and can turn the protector on again; C sources of a package are compiled with the
-compiler's defaults. The
+compiler's defaults. Without `$CC` the compiler is `cc`, except that Checked and Fast
+builds use `clang` when it is on `PATH` (not on Windows; `OPTIMIZING_CC`): at `-O2` it
+compiled the compiler's C in 32 s instead of gcc's 46 s, and that compiler checked
+programs 15% faster, wrote C 4% faster and was 19% smaller. On small programs the two were within 15% of each
+other either way. Debug builds keep `cc`, because Clang's `-Og` is close to `-O1` and
+compiled small programs 13–50% slower than gcc's. `bootstrap/build.sh` makes the same choice.
+The
 compilation target is decided before semantic analysis, because layouts and the `target`
-module depend on it: the default compiler means the host, and any other toolchain is asked
+module depend on it: the default compiler (`cc`, or the `clang` chosen this way) means the host, and any other toolchain is asked
 for its predefined macros (`$CC $CFLAGS -dM -E`). `--target=<triple>` chooses the compiler for
 a triple (`<triple>-gcc`, else `clang --target=<triple>`, or `$CC` with the option added if it
 is clang or `zig cc`) and then checks the probed target against the triple (architecture,
@@ -676,7 +682,14 @@ How the runtime is linked depends on the build mode:
   compiler itself) is split into units like a large Debug build (below) and
   linked with the cached runtime: as one unit, gcc takes over five minutes on
   the compiler's C, and the split build, at about 40 s on four cores from an
-  empty cache, runs as fast.
+  empty cache, runs as fast. With Clang compiling for the host and `ld.lld`
+  installed (`thin_lto` in `driver/native.gm`), the units and the runtime object
+  are compiled for ThinLTO (`-flto=thin`) and linked with lld, which optimizes
+  across them as one unit would: the compiler runs 8% fewer instructions and
+  writes C about 4% faster. lld keeps what it compiled for each unit in
+  `thinlto/` in the cache (at most 1 GiB, entries unused for a week removed),
+  so the link after an edit takes about a second instead of the 23 s of a link
+  from nothing. Building the compiler from an empty cache takes about 10 s longer.
 - Debug builds favor turnaround. Compiling the runtime is most of the work of
   compiling a small program, so it is compiled once on its own (with
   `GM_RT_SEPARATE` defined, which gives the declarations marked `GM_API` external
