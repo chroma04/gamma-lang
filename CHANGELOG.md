@@ -13,6 +13,9 @@ Versions and what each kind of change means are described in
   of function literals and clauses, `defer`, continuations, 128-bit integers and values of
   any size. Its tree-walking evaluator and the old compiler of bodies are gone. The
   benchmarks run 5–13% fewer instructions.
+- **The C back end can generate function bodies from LIR** (`GAMMA_CGEN_LIR=1`, for now an
+  option for testing): 97% of the bodies of the compiler and the test programs, which run
+  as before. The rest are generated as before, from the checked tree.
 - **Bounds checks that a comparison proves are removed** (spec D.7): in
   `for i in 0..xs.len { xs[i] }`, `while i < a.len { a[i] … }` and after
   `if n > xs.len { return }`, indexing no longer checks. The interpreter does this now,

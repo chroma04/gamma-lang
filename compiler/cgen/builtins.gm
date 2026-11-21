@@ -78,11 +78,22 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
         _ => {}
     }
     vals := list(string)
-    for i in 0..args.len { vals.push(try fg.expr(&args[i]))! }
-    v0 := vals.items[0]
-    at := args[0].ty
+    arg_tys := list(Ty)
+    for i in 0..args.len {
+        vals.push(try fg.expr(&args[i]))!
+        arg_tys.push(args[i].ty)!
+    }
+    return try fg.builtin_values(e.span, t, op, arg_tys.items, vals.items)
+}
+
+/// Builtin `op`, of type `t`, of the values `vals` of types `tys`: the builtins whose
+/// arguments are plain values.
+builtin_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys: []const Ty, vals: []const string) -> Unsup!string needs sema.Load {
+    loc := fg.g.src_loc(span)
+    v0 := vals[0]
+    at := tys[0]
     match op {
-        .Convert, .Trunc, .Round, .Floor, .Ceil, .Checked, .Sat => return try fg.convert(e, op, at, v0)
+        .Convert, .Trunc, .Round, .Floor, .Ceil, .Checked, .Sat => return try fg.convert(span, t, op, at, v0)
         .Bits => {
             a := fg.addr_of(at, v0)
             r := fg.tmp_uninit(t)
@@ -110,7 +121,7 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
             .ManyPtr(_, elem) := fg.g.ty.kind(at) else @unreachable()
             stride := fg.g.ty.size(elem)
             p := v0
-            x := vals.items[1]
+            x := vals[1]
             if op is .PtrDiff {
                 if stride is 0 { return fg.tmp(t, "0") }
                 return fg.tmp(t, str.format("(intptr_t)((uintptr_t){} - (uintptr_t){}) / (intptr_t){}", p, x, stride)!)
@@ -122,20 +133,20 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
             a := fg.addr_of(at, v0)
             return fg.load(t, a)
         }
-        .FromTag => return fg.from_tag(e, at, v0)
+        .FromTag => return fg.from_tag(span, t, at, v0)
         .Min, .Max => {
             gt := if op is .Min { "<" } else { ">" }
             if fg.g.ty.repr(at) is .Float(_) {
                 f := if op is .Min { "gm_fmin" } else { "gm_fmax" }
-                r := fg.float_from(t, str.format("{}((double){}, (double){})", f, v0, vals.items[1])!)
+                r := fg.float_from(t, str.format("{}((double){}, (double){})", f, v0, vals[1])!)
                 return fg.tmp(t, r)
             }
-            return fg.tmp(t, str.format("({} {} {} ? {} : {})", v0, gt, vals.items[1], v0, vals.items[1])!)
+            return fg.tmp(t, str.format("({} {} {} ? {} : {})", v0, gt, vals[1], v0, vals[1])!)
         }
         .Clamp => {
             x := v0
-            lo := vals.items[1]
-            hi := vals.items[2]
+            lo := vals[1]
+            hi := vals[2]
             if fg.g.ty.repr(at) is .Float(_) {
                 r := fg.float_from(t, str.format("gm_fmin(gm_fmax((double){}, (double){}), (double){})", x, lo, hi)!)
                 return fg.tmp(t, r)
@@ -157,7 +168,7 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
             ii := fg.int_info(at)?
             u := ii_ucty(ii)
             a := v0
-            b := vals.items[1]
+            b := vals[1]
             return fg.tmp(t, str.format("({} > {} ? ({}){} - ({}){} : ({}){} - ({}){})", a, b, u, a, u, b, u, b, u, a)!)
         }
         .IsNan => return fg.tmp(t, str.format("(uint8_t)__builtin_isnan({})", v0)!)
@@ -171,26 +182,26 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
         }
         .Fma => {
             f := if fg.g.ty.kind(at) is .Float(32) { "__builtin_fmaf" } else { "__builtin_fma" }
-            r := fg.float_from(t, str.format("{}({}, {}, {})", f, v0, vals.items[1], vals.items[2])!)
+            r := fg.float_from(t, str.format("{}({}, {}, {})", f, v0, vals[1], vals[2])!)
             return fg.tmp(t, r)
         }
-        .Rotl, .Rotr => return fg.rotate(e, op, at, vals.items)
-        .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse => return fg.bit_count(e, op, at, v0)
-        .Pow(fl) => return fg.pow(e, fl, at, vals.items)
+        .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => return try fg.atomic(span, t, op, tys, vals)
+        .Rotl, .Rotr => return fg.rotate(t, op, at, vals)
+        .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse => return fg.bit_count(span, t, op, at, v0)
+        .Pow(fl) => return fg.pow(span, t, fl, at, vals)
         .CstrLen => return fg.tmp(t, str.format("(uintptr_t)strlen((const char *){})", v0)!)
-        .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => return fg.atomic(e, op, args, vals.items)
         .Fence => {
             a := fg.addr_of(at, v0)
             fg.linef("__atomic_thread_fence(gm_ord[GM_LD(uint8_t, {})]);", a)
             return fg.unit()
         }
-        .BlackBox => return fg.black_box(e, v0)
+        .BlackBox => return fg.black_box(t, v0)
         .Hash => {
             f := fg.g.helpers.hash_fn(&fg.g.ty, at)
             a := fg.addr_of(at, v0)
-            return fg.tmp(t, str.format("{}({}, 0xcbf29ce484222325ULL ^ (uint64_t){})", f, a, vals.items[1])!)
+            return fg.tmp(t, str.format("{}({}, 0xcbf29ce484222325ULL ^ (uint64_t){})", f, a, vals[1])!)
         }
-        _ => return !unsupported(e.span, "this builtin")
+        _ => return !unsupported(span, "this builtin")
     }
 }
 
@@ -215,7 +226,17 @@ assert :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load
 
 /// `@name(args)`, a call of the runtime's `gm_name`, with slices passed as a pointer and a length.
 sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
+    vals := list(string)
+    tys := list(Ty)
+    for i in 0..args.len {
+        vals.push(try fg.expr(&args[i]))!
+        tys.push(args[i].ty)!
+    }
+    return fg.sys_values(e.ty, sop, tys.items, vals.items)
+}
+
+/// System operation `sop` of type `t` on the values `vals` of types `tys`.
+sys_values :: fn(fg: ^FnGen, t: Ty, sop: tir.SysOp, tys: []const Ty, vals: []const string) -> string needs sema.Load {
     // The arguments and variables come from the runtime as slices and strings.
     if sop is .EnvArgs {
         k := fg.fresh()
@@ -224,8 +245,7 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
     }
     if sop is .EnvVar {
         k := fg.fresh()
-        v := try fg.expr(&args[0])
-        addr := fg.addr_of(args[0].ty, v)
+        addr := fg.addr_of(tys[0], vals[0])
         fg.linef("const uint8_t *ev{}; size_t evn{};", k, k)
         fg.linef("bool evok{} = gm_env_var((const uint8_t *){}, {}, &ev{}, &evn{});", k, slice_ptr(addr), fg.slice_len(addr), k, k)
         s := fg.make_slice(fg.g.ty.string_ty(), str.format("ev{}", k)!, str.format("evn{}", k)!)
@@ -234,11 +254,10 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
         return fg.tmp(t, str.format("evok{} ? {} : {}", k, some, none)!)
     }
     cargs := list(string)
-    for i in 0..args.len {
-        a := &args[i]
-        v := try fg.expr(a)
-        if fg.g.ty.kind(a.ty) is .Slice(_, _) {
-            addr := fg.addr_of(a.ty, v)
+    for i in 0..vals.len {
+        v := vals[i]
+        if fg.g.ty.kind(tys[i]) is .Slice(_, _) {
+            addr := fg.addr_of(tys[i], v)
             cargs.push(str.format("(void *){}, {}", slice_ptr(addr), fg.slice_len(addr))!)!
         } else {
             cargs.push(v)!
@@ -254,30 +273,39 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
 
 /// `@alloc_tag` and `@alloc_check`, which only debug builds keep.
 alloc_tag :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
-    loc := fg.loc(e)
     if not fg.g.opts.debug { return fg.unit() }
-    v := list(string)
-    for k in 0..3 { v.push(try fg.expr(&args[k]))! }
-    f := try fg.expr(&args[3])
-    fa := fg.addr_of(args[3].ty, f)
+    vals := list(string)
+    tys := list(Ty)
+    for i in 0..args.len {
+        vals.push(try fg.expr(&args[i]))!
+        tys.push(args[i].ty)!
+    }
+    return fg.alloc_tag_values(e.span, op, tys.items, vals.items)
+}
+
+/// `@alloc_tag` or `@alloc_check` (Debug builds) on the values `vals` of types `tys`.
+alloc_tag_values :: fn(fg: ^FnGen, span: source.Span, op: tir.Builtin, tys: []const Ty, vals: []const string) -> string needs sema.Load {
+    loc := fg.g.src_loc(span)
+    if not fg.g.opts.debug { return fg.unit() }
+    v := vals
+    fa := fg.addr_of(tys[3], vals[3])
     fp := slice_ptr(fa)
     fl := fg.slice_len(fa)
-    line := try fg.expr(&args[4])
-    col := try fg.expr(&args[5])
+    line := vals[4]
+    col := vals[5]
     if op is .AllocTag {
-        fg.linef("gm_alloc_tag({}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col)
+        fg.linef("gm_alloc_tag({}, {}, {}, {}, {}, {}, {});", v[0], v[1], v[2], fp, fl, line, col)
     } else {
         // The check traps at its own location, like the interpreter.
-        fg.linef("gm_alloc_check({}, {}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col, loc)
+        fg.linef("gm_alloc_check({}, {}, {}, {}, {}, {}, {}, {});", v[0], v[1], v[2], fp, fl, line, col, loc)
     }
     return fg.unit()
 }
 
 /// The unit variant of a union with tag `v0`, or null.
-from_tag :: fn(fg: ^FnGen, e: ^Expr, at: Ty, v0: string) -> Unsup!string needs sema.Load {
-    t := e.ty
-    .Optional(u) := fg.g.ty.kind(t) else return !unsupported(e.span, "from_tag")
-    .Union(_, variants) := fg.g.ty.adt_of(u).kind else return !unsupported(e.span, "from_tag")
+from_tag :: fn(fg: ^FnGen, span: source.Span, t: Ty, at: Ty, v0: string) -> Unsup!string needs sema.Load {
+    .Optional(u) := fg.g.ty.kind(t) else return !unsupported(span, "from_tag")
+    .Union(_, variants) := fg.g.ty.adt_of(u).kind else return !unsupported(span, "from_tag")
     res0 := fg.make_none(t)
     res := fg.tmp(t, res0)
     for i in 0..variants.len {
@@ -294,8 +322,7 @@ from_tag :: fn(fg: ^FnGen, e: ^Expr, at: Ty, v0: string) -> Unsup!string needs s
 }
 
 /// A bit rotation.
-rotate :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, at: Ty, vals: []string) -> Unsup!string needs sema.Load {
-    t := e.ty
+rotate :: fn(fg: ^FnGen, t: Ty, op: tir.Builtin, at: Ty, vals: []const string) -> Unsup!string needs sema.Load {
     v0 := vals[0]
     ii := fg.int_info(at)?
     x := str.format("(unsigned __int128)({})({})", ii_ucty(ii), v0)!
@@ -309,8 +336,7 @@ rotate :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, at: Ty, vals: []string) -> U
 }
 
 /// A count, reversal or swap of the bits of an integer.
-bit_count :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, at: Ty, v0: string) -> Unsup!string needs sema.Load {
-    t := e.ty
+bit_count :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, at: Ty, v0: string) -> Unsup!string needs sema.Load {
     ii := fg.int_info(at)?
     x0 := str.format("(unsigned __int128)({})({})", ii_ucty(ii), v0)!
     // Keep the low bits only (a shift by 128 would be undefined in C).
@@ -321,7 +347,7 @@ bit_count :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, at: Ty, v0: string) -> Un
         .Ctz => str.format("gm_ctz({}, {})", x, ii.bits)!
         .Popcount => str.format("gm_popcount({})", x)!
         .Bswap => {
-            if ii.bits % 8 is not 0 { return !unsupported(e.span, "bswap of a partial byte") }
+            if ii.bits % 8 is not 0 { return !unsupported(span, "bswap of a partial byte") }
             str.format("gm_bswap({}, {})", x, ii.bits)!
         }
         _ => str.format("gm_bitreverse({}, {})", x, ii.bits)!
@@ -337,11 +363,10 @@ bit_count :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, at: Ty, v0: string) -> Un
 }
 
 /// An integer power.
-pow :: fn(fg: ^FnGen, e: ^Expr, fl: ast.Flavor, at: Ty, vals: []string) -> Unsup!string needs sema.Load {
-    t := e.ty
+pow :: fn(fg: ^FnGen, span: source.Span, t: Ty, fl: ast.Flavor, at: Ty, vals: []const string) -> Unsup!string needs sema.Load {
     v0 := vals[0]
-    loc := fg.loc(e)
-    ii := fg.int_info(at) else return !unsupported(e.span, "float pow")
+    loc := fg.g.src_loc(span)
+    ii := fg.int_info(at) else return !unsupported(span, "float pow")
     c := ii_cty(ii)
     r := str.format("r{}", fg.fresh())!
     o := str.format("o{}", fg.fresh())!
@@ -362,18 +387,16 @@ pow :: fn(fg: ^FnGen, e: ^Expr, fl: ast.Flavor, at: Ty, vals: []string) -> Unsup
 }
 
 /// An atomic or volatile access.
-atomic :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr, vals: []string) -> Unsup!string needs sema.Load {
-    t := e.ty
+atomic :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys: []const Ty, vals: []const string) -> Unsup!string needs sema.Load {
     v0 := vals[0]
-    at := args[0].ty
-    .Ptr(_, elem) := fg.g.ty.kind(at) else return !unsupported(e.span, "this atomic")
+    at := tys[0]
+    .Ptr(_, elem) := fg.g.ty.kind(at) else return !unsupported(span, "this atomic")
     c := fg.g.ty.cty(elem)
     p := str.format("(({} *){})", c, v0)!
     ords := list(string)
-    for i in 1..args.len {
-        x := &args[i]
-        if fg.g.ty.kind(x.ty) is not .Adt(_, _) { continue }
-        a := fg.addr_of(x.ty, vals[i])
+    for i in 1..tys.len {
+        if fg.g.ty.kind(tys[i]) is not .Adt(_, _) { continue }
+        a := fg.addr_of(tys[i], vals[i])
         ords.push(str.format("gm_ord[GM_LD(uint8_t, {})]", a)!)!
     }
     match op {
@@ -420,8 +443,7 @@ atomic :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr, vals: []string
 }
 
 /// `@black_box(v)`, a value the C compiler must assume nothing about.
-black_box :: fn(fg: ^FnGen, e: ^Expr, v0: string) -> Unsup!string needs sema.Load {
-    t := e.ty
+black_box :: fn(fg: ^FnGen, t: Ty, v0: string) -> Unsup!string needs sema.Load {
     if fg.g.ty.is_unit(t) { return v0 }
     // The compiler must assume nothing about the value. An integer or a boolean
     // goes through an empty `asm` that may change it, which needs no stack slot (a
@@ -503,13 +525,12 @@ arith_get :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!st
 }
 
 /// The numeric conversions `T(x)`, `.trunc`, `.round`, `.floor`, `.ceil`, `.checked`, `.sat`.
-convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> Unsup!string needs sema.Load {
-    t := e.ty
+convert :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, src: Ty, v: string) -> Unsup!string needs sema.Load {
     target := t
     if op is .Checked {
         if .Optional(x) := fg.g.ty.kind(t) { target = x }
     }
-    loc := fg.loc(e)
+    loc := fg.g.src_loc(span)
     // The source as a number: integers (and bools, enum tags) or a float.
     src_int := false
     src_val := ""
@@ -530,14 +551,14 @@ convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> Unsu
                 src_val = fg.load(tag, a)
             }
             .Struct(sd) => {
-                u := sd.bits else return !unsupported(e.span, str.format("converting from `{}`", fg.g.ty.show(src))!)
+                u := sd.bits else return !unsupported(span, str.format("converting from `{}`", fg.g.ty.show(src))!)
                 a := fg.addr_of(src, v)
                 src_int = true
                 src_val = fg.load(u, a)
             }
-            _ => return !unsupported(e.span, str.format("converting from `{}`", fg.g.ty.show(src))!)
+            _ => return !unsupported(span, str.format("converting from `{}`", fg.g.ty.show(src))!)
         }
-        _ => return !unsupported(e.span, str.format("converting from `{}`", fg.g.ty.show(src))!)
+        _ => return !unsupported(span, str.format("converting from `{}`", fg.g.ty.show(src))!)
     }
     match fg.g.ty.repr(target) {
         .Int(_, _, _) => {
@@ -623,5 +644,5 @@ convert :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, src: Ty, v: string) -> Unsu
             return b
         }
     }
-    return !unsupported(e.span, str.format("converting to `{}`", fg.g.ty.show(target))!)
+    return !unsupported(span, str.format("converting to `{}`", fg.g.ty.show(target))!)
 }

@@ -434,7 +434,19 @@ them into static storage and the interpreter lays them out in its memory.
 `compiler/lir/` lowers a checked, monomorphic function body from TIR to one form that a back
 end can run or translate directly, and on which analyses such as the removal of checks a
 loop's range proves can be done once. The interpreter compiles every body from it
-(`interp/vm_lir.gm`, below); the C back end still walks TIR itself and is to move onto it.
+(`interp/vm_lir.gm`, below). The C back end walks TIR, and with `GAMMA_CGEN_LIR=1` generates
+from LIR each body whose instructions `cgen/lirc.gm` translates (`GAMMA_CGEN_LIR=report` lists
+the others and why), sharing the expression helpers with the TIR path (operators, builtins,
+coercions, calls, formatted output take C values, not TIR nodes). Each temporary becomes a C
+temporary; a large value loaded from a place, or a union variant, is computed only where it is
+needed, so `x is .V(p)` compares the tag and payload in place and a copy is a `memmove`; a
+call whose large result is returned or stored in a local writes it there. `defer` and the
+loops of a function with nested functions use the same ladder as the TIR path: a block with a
+`defer` is a block scope whose deferred bodies are LIR lists, and a branch out of it to a
+block's end is an exit to a rung for that block. A `with` installs its handler nodes and has
+the `with` scope of the TIR path, and exits between frames, `resume` and `cancel` are the
+same C. Bodies with `with … on`, vector values, atomics, `@fiber`, `in` or `#bits` fields
+still take the TIR path, as do specialized clones, very long bodies and `-g` builds.
 `gamma lir` prints it, and the `lir` suite checks that every conformance program and
 example lowers to well-formed LIR with nothing left to TIR.
 
@@ -650,6 +662,7 @@ operating system, the architecture, whether it is a Fil-C target and whether `f1
 | `gen.gm`, `program.gm` | `Gen`: the whole program, prototypes, constants, entry points; the checked program as the back end sees it |
 | `types.gm`, `layout.gm` | C representations of types (typed structs, blobs, mirrors), type descriptors for `@write`; the target and pointer maps for Fil-C (layouts come from `sema/layout.gm`) |
 | `func.gm`, `fngen.gm` | functions: frames, blocks, statements, the exit ladders; the state of generating one function |
+| `lirc.gm` | function bodies from LIR (`GAMMA_CGEN_LIR`), for the functions whose LIR it translates; the others are generated from TIR |
 | `expr.gm`, `calls.gm` | expressions, places and coercions; calls, effects, `with`, `try`, equality |
 | `patterns.gm`, `bits.gm` | conditions, `match`, patterns and `in`; `#bits` fields |
 | `consts.gm` | compile-time values in static storage |

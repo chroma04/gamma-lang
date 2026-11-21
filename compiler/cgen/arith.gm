@@ -63,26 +63,30 @@ pub normalize :: fn(ii: IntInfo, v: string) -> string needs Alloc {
 
 unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
     v := try fg.expr(x)
-    t := e.ty
+    return fg.unary_value(e.span, e.ty, op, x.ty, v)
+}
+
+/// The unary operator `op` on `v` of type `xt`, a value of type `t`; traps report `span`.
+unary_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.UnOp, xt: Ty, v: string) -> Unsup!string needs sema.Load {
     match op {
         .Not => return fg.tmp(t, str.format("(uint8_t)!{}", v)!)
-        .Neg => match fg.g.ty.repr(x.ty) {
+        .Neg => match fg.g.ty.repr(xt) {
             .Float(_) => return fg.tmp(t, str.format("-{}", v)!)
             .Int(_, _, _) => {
-                ii := fg.int_info(x.ty)?
-                min := fg.int_lit(x.ty, ii_min(ii))
+                ii := fg.int_info(xt)?
+                min := fg.int_lit(xt, ii_min(ii))
                 if fg.g.opts.checks {
-                    loc := fg.loc(e)
+                    loc := fg.g.src_loc(span)
                     fg.linef("if ({} == {}) gm_trap(\"integer overflow in `-`\", {});", v, min, loc)
                 }
                 r := str.format("({})(({})0 - ({}){})", ii_cty(ii), ii_ucty(ii), ii_ucty(ii), v)!
                 r2 := normalize(ii, r)
                 return fg.tmp(t, r2)
             }
-            _ => return !unsupported(e.span, str.format("negating `{}`", fg.g.ty.show(x.ty))!)
+            _ => return !unsupported(span, str.format("negating `{}`", fg.g.ty.show(xt))!)
         }
         .BitNot => {
-            ii := fg.int_info(x.ty) else return !unsupported(e.span, str.format("`~` on `{}`", fg.g.ty.show(x.ty))!)
+            ii := fg.int_info(xt) else return !unsupported(span, str.format("`~` on `{}`", fg.g.ty.show(xt))!)
             r := normalize(ii, str.format("({})~{}", ii_cty(ii), v)!)
             return fg.tmp(t, r)
         }
@@ -124,7 +128,7 @@ binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!s
             }
             return fg.tmp(t, str.format("({} {} {})", a, sym, b)!)
         }
-        .Int(_, _, _) => return try fg.int_binary(e, op, l.ty, a, b)
+        .Int(_, _, _) => return try fg.int_binary(e.span, e.ty, op, l.ty, a, b)
         _ => return !unsupported(e.span, str.format("operator `{}` on `{}`", tir.binop_symbol(op), fg.g.ty.show(l.ty))!)
     }
 }
@@ -136,11 +140,12 @@ float_from :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs Alloc {
     return str.format("({})({})", fg.g.ty.cty(t), v)!
 }
 
-int_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, lt: Ty, a: string, b: string) -> Unsup!string needs sema.Load {
+/// The integer operator `op` on `a` and `b` of type `lt`, a value of type `t`; traps report
+/// `span`.
+int_binary :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.BinOp, lt: Ty, a: string, b: string) -> Unsup!string needs sema.Load {
     ii := fg.int_info(lt)?
     c := ii_cty(ii)
-    loc := fg.loc(e)
-    t := e.ty
+    loc := fg.g.src_loc(span)
     match op {
         .Add(fl), .Sub(fl), .Mul(fl) => {
             name: string = match op {

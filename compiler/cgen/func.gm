@@ -129,6 +129,22 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     borrowed := g.borrowed_params(f)
     in_frame := g.frame_locals(f)
     split_runs := not g.opts.debug_info and long_body(g, f)
+    // The body from LIR, when `lirc.gm` translates all of it (see there).
+    lf: ?lir.Func = null
+    if g.opts.lir and spec is null and not split_runs and not g.opts.debug_info {
+        func := g.lir_of(f)
+        if why := g.lir_unsupported(f, &func) {
+            g.lir_fallbacks.push(str.format("{}: {}", def.name, why)!)!
+        } else {
+            g.lir_count += 1
+            // The locals lowering adds are C locals.
+            all := list(bool)
+            all.extend(in_frame)!
+            while all.items.len < func.locals.len { all.push(false)! }
+            in_frame = all.items
+            lf = func
+        }
+    }
     cname := ""
     if sp := spec { cname = g.spec_name(f, sp) } else { cname = g.fn_name(f) }
     sig := str.format("static __attribute__((aligned(4))) {}{}{} {}({})", hint_attrs(def.hints), conv_attr(def.win64), ret, cname, str.join(params.items, ", ")!)!
@@ -202,7 +218,9 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         lv := fg.local_lv(p)
         fg.linef("{} = {};", lv, a)
     }
-    if out_ret and fg.builds_in_place(body) {
+    if x := lf {
+        try fg.lir_body(&x)
+    } else if out_ret and fg.builds_in_place(body) {
         // Built straight in the caller's destination: the body has no `defer`.
         ct := fg.g.ty.cty(def.ret)
         try fg.expr_into(body, str.format("(*({} *)gm_out)", ct)!, .Out)
@@ -685,7 +703,7 @@ end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
                 d := s.defers.items[k - 1]
                 guard: ?string = null
                 if d.is_err { guard = "gm_errdefer_runs(&F.h)" }
-                fg.defer_body(guard, d.body, true)
+                fg.defer_body(guard, d, true)
                 k -= 1
             }
         }
@@ -709,13 +727,13 @@ end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
 /// `guard` (a C condition) holds when there is one. `unwinding` is true when it runs during
 /// a non-local exit: the exit in progress is set aside while it runs, so the calls it makes
 /// return normally.
-defer_body :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
+defer_body :: fn(fg: ^FnGen, guard: ?string, d: Defer, unwinding: bool) needs sema.Load {
     saved := fg.set_aside_scopes()
-    fg.defer_body_inner(guard, body, unwinding)
+    fg.defer_body_inner(guard, d, unwinding)
     fg.restore_scopes(saved)
 }
 
-defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
+defer_body_inner :: fn(fg: ^FnGen, guard: ?string, d: Defer, unwinding: bool) needs sema.Load {
     saved_check := fg.no_check
     fg.no_check = true
     if g := guard {
@@ -727,7 +745,11 @@ defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool)
     if unwinding { fg.line("gm_unwind gm_saved = gm_unw; gm_unw.kind = GM_NONE;") }
     // A defer body cannot fail to translate here if it translated before; errors are
     // reported where the defer statement is first seen.
-    _ = fg.expr(body)
+    if body := d.body {
+        _ = fg.expr(body)
+    } else if c := fg.lirc {
+        _ = c.lc_defer_list(d.lir)
+    }
     if unwinding { fg.line("gm_unw = gm_saved;") }
     fg.indent -= 1
     fg.line("}")
@@ -1074,7 +1096,7 @@ block :: fn(fg: ^FnGen, b: ^tir.Block) -> Unsup!string needs sema.Load {
     while k > 0 {
         k -= 1
         d := popped.defers.items[k]
-        if not d.is_err { fg.defer_body(null, d.body, false) }
+        if not d.is_err { fg.defer_body(null, d, false) }
     }
     fg.end_scope(popped, true)
     if r := result { return r }

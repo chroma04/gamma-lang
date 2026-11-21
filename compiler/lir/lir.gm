@@ -312,6 +312,71 @@ pub dst_of :: fn(op: ^const Op) -> ?u32 => match op^ {
     _ => null
 }
 
+/// Calls `f` on each value instruction `op` reads (not in its nested lists), the indexes
+/// of its place included.
+#allow("needless-pub")
+pub for_each_value :: fn(op: ^const Op, f: fn(v: Value)) {
+    place :: fn(p: ^const Place) {
+        for x in p.proj {
+            match x {
+                .Elem(i, _), .Step(i, _) => f(i)
+                _ => {}
+            }
+        }
+    }
+    match op^ {
+        .Move(_, v), .Un(_, _, v), .Coerce(_, _, v), .Fill(_, v), .Trap(v), .BitsGet(_, v, _), .Cancel(v) => f(v)
+        .Load(_, p), .AddrOf(_, p), .IsPresent(_, p, _), .TagIs(_, p, _) => place(&p)
+        .Store(p, v) => {
+            place(&p)
+            f(v)
+        }
+        .Bin(_, _, a, b), .Eq(_, _, a, b), .In(_, _, a, b), .BitsSet(_, a, _, b), .Resume(a, b) => {
+            f(a)
+            f(b)
+        }
+        .Builtin(_, _, args), .Aggregate(_, args) => for v in args { f(v) }
+        .Call(_, c, args) => {
+            if .Value(v) := c { f(v) }
+            for v in args { f(v) }
+        }
+        .Variant(_, _, ?v), .Wrap(_, _, ?v), .Assert(?v), .Exit(_, ?v) => if x := v { f(x) }
+        .Check(c) => match c {
+            .Bounds(a, b) => {
+                f(a)
+                f(b)
+            }
+            .Range(lo, hi, ?len, _) => {
+                f(lo)
+                f(hi)
+                if x := len { f(x) }
+            }
+            .Unwrap(v, p, _) => {
+                f(v)
+                place(&p)
+            }
+        }
+        .MakeSlice(_, a, b, c, _, _) => {
+            f(a)
+            f(b)
+            f(c)
+        }
+        .Write(sink, _, _, args, ?table) => {
+            if .Value(v) := sink { f(v) }
+            for v in args { f(v) }
+            if x := table { f(x) }
+        }
+        .If(c, _, _), .BrIf(c, _, _) => f(c)
+        .Return(?v) => if x := v { f(x) }
+        .With(_, _, _, ?on, _) => if x := on { f(x) }
+        .Install(h) => match h {
+            .Value(_, v), .Decl(_, v) => f(v)
+            .Lit(_) => {}
+        }
+        _ => {}
+    }
+}
+
 /// The type of the value at place `p` of `f`, if it is known here.
 #allow("needless-pub")
 pub place_type :: fn(s: ^Sema, f: ^const Func, p: ^const Place) -> ?Ty needs Alloc {

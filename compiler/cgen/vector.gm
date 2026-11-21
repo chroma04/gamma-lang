@@ -114,7 +114,7 @@ vector_unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string
         return try fg.vec_lane_loop(t, n, fn(i: string) -> Unsup!string {
             y := fg.vec_lane_at(lane, bytes, pv, i)
             at := Expr(ty: lane, kind: .Uninit, span: e.span)
-            return try fg.int_binary(&at, .Sub(.Checked), lane, "0", y)
+            return try fg.int_binary(at.span, at.ty, .Sub(.Checked), lane, "0", y)
         })
     }
     a := fg.vec_load(t, v)
@@ -156,7 +156,7 @@ vector_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> 
             return try fg.vec_lane_loop(t, n, fn(i: string) -> Unsup!string {
                 x := fg.vec_lane_at(lane, bytes, pa, i)
                 at := Expr(ty: lane, kind: .Uninit, span: e.span)
-                return try fg.int_binary(&at, op, lane, x, b)
+                return try fg.int_binary(at.span, at.ty, op, lane, x, b)
             })
         }
         a := try fg.expr(l)
@@ -167,7 +167,7 @@ vector_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> 
             x := fg.vec_lane_at(lane, bytes, pa, i)
             y := fg.vec_lane_at(lane, bytes, pb, i)
             at := Expr(ty: lane, kind: .Uninit, span: e.span)
-            return try fg.int_binary(&at, op, lane, x, y)
+            return try fg.int_binary(at.span, at.ty, op, lane, x, y)
         })
     }
     a := try fg.expr(l)
@@ -283,7 +283,7 @@ vec_reduce :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!strin
         if fg.g.ty.is_float(lane) {
             r = fg.tmp(lane, str.format("({} + {})", acc, y)!)
         } else {
-            r = try fg.int_binary(&at, .Add(.Checked), lane, acc, y)
+            r = try fg.int_binary(at.span, at.ty, .Add(.Checked), lane, acc, y)
         }
     } else if fg.g.ty.is_float(lane) {
         f := if op is .ReduceMin { "gm_fmin" } else { "gm_fmax" }

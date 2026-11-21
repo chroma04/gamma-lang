@@ -43,7 +43,9 @@ pub ScopeKind :: union {
 /// A `defer` (or `errdefer`) registered in a block.
 pub Defer :: struct {
     pub is_err: bool
-    pub body: ^Expr
+    /// The deferred code: TIR, or (`null`) the LIR list `lir`.
+    pub body: ?^Expr
+    pub lir: []const lir.Inst = empty_slice(lir.Inst)
 }
 
 /// A scope of the function being generated.
@@ -81,6 +83,8 @@ pub FnGen :: struct {
     pub dest_call: ?DestCall = null
     /// The destination of the call being emitted, from `dest_call`.
     pub call_dest: ?string = null
+    /// From LIR: the destination of the large result of the call being emitted.
+    pub dest_call_lir: ?string = null
     pub def: ^const Func
     pub out: List(u8)
     pub indent: usize = 1
@@ -112,6 +116,8 @@ pub FnGen :: struct {
     pub split_runs: bool = false
     /// The helpers being generated, innermost last.
     pub runs: List(Run)
+    /// The translation of the body from LIR (`lirc.gm`), which LIR defer bodies need.
+    pub lirc: ?^LirC = null
 }
 
 /// The scopes and the helpers in progress of a function being generated: what a body

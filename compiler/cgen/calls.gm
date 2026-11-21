@@ -59,7 +59,7 @@ call_inner :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr, dest: ?
     // Set only now: the arguments' own calls have their own destinations.
     fg.call_dest = dest
     match callee {
-        .Fn(f) => return fg.call_fn(e, f, vals.items)
+        .Fn(f) => return fg.call_fn(e.ty, e, f, vals.items)
         .Indirect(c) => {
             cvv := cv?
             match fg.g.ty.kind(c.ty) {
@@ -75,7 +75,7 @@ call_inner :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr, dest: ?
                 _ => return !unsupported(e.span, str.format("calling a value of type `{}`", fg.g.ty.show(c.ty))!)
             }
         }
-        .Perform(eff, op) => return fg.perform(e, &eff, op, vals.items, tys.items, e.ty)
+        .Perform(eff, op) => return fg.perform(e.span, &eff, op, vals.items, tys.items, e.ty)
     }
 }
 
@@ -224,7 +224,9 @@ out_call :: fn(fg: ^FnGen, ret: Ty, callee: string, args: string) -> string need
     return r
 }
 
-call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!string needs sema.Load {
+/// A call of function `f` with the arguments `vals`, of type `rt`; `e` is the TIR call, if
+/// there is one, which a `with` may have chosen a specialization for (`spec_call`).
+call_fn :: fn(fg: ^FnGen, rt: Ty, e: ?^const Expr, f: u32, vals: []const string) -> Unsup!string needs sema.Load {
     fg.g.queue(f)
     def := fg.g.prog.func(f)
     // A function with a parent captures it (a literal called directly).
@@ -240,7 +242,7 @@ call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!strin
     }
     name := ""
     if sc := fg.spec_call {
-        if sc.call is e {
+        if x := e and sc.call is x {
             fg.spec_call = null
             name = fg.g.queue_spec(f, sc.spec)
         }
@@ -273,10 +275,10 @@ call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!strin
             r = fg.out_call(def.ret, name, rest.items)
         } else if fg.g.ty.is_void(def.ret) {
             fg.linef("{};", call)
-            r = fg.zero(e.ty)
+            r = fg.zero(rt)
         } else {
             c2: string = if not foreign_ and fg.g.ty.by_ref(def.ret) { call } else { fg.gamma_value(def.ret, call) }
-            r = fg.call_result(e.ty, c2)
+            r = fg.call_result(rt, c2)
         }
     } else {
         cx := fg.cx
@@ -285,7 +287,7 @@ call_fn :: fn(fg: ^FnGen, e: ^Expr, f: u32, vals: []const string) -> Unsup!strin
             r = fg.out_call(def.ret, name, str.format(", (void *){}, {}, NULL{}", env, cx, args)!)
         } else {
             call := str.format("{}((void *){}, {}, NULL{})", name, env, cx, args)!
-            r = fg.call_result(e.ty, call)
+            r = fg.call_result(rt, call)
         }
     }
     if fg.g.may_unwind(f) { fg.check_unwind() }
@@ -384,13 +386,13 @@ call_indirect :: fn(fg: ^FnGen, code: string, env: string, cx: string, vals: []c
 // ---------------------------------------------------------------------------------
 
 /// Performs operation `op` of `effect` with argument values `vals`.
-perform :: fn(fg: ^FnGen, e: ^Expr, effect_: ^const EffectRef, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
+perform :: fn(fg: ^FnGen, span: source.Span, effect_: ^const EffectRef, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> Unsup!string needs sema.Load {
     id := fg.g.effect_id(effect_)
     if r := fg.direct_perform(id, effect_, op, vals, tys, ret) { return r }
-    if r := fg.stub_perform(e, effect_, id, op, vals, tys, ret) { return r }
+    if r := fg.stub_perform(span, effect_, id, op, vals, tys, ret) { return r }
     n := str.format("pn{}", fg.fresh())!
     cx := fg.cx
-    loc := fg.loc(e)
+    loc := fg.g.src_loc(span)
     name := fg.g.prog.s.tys.effect_name(effect_.eff)
     fg.linef("gm_node *{} = gm_find({}, {});", n, cx, id)
     fg.linef("if (!{}) gm_trap(\"no handler installed for effect `{}`\", {});", n, name, loc)
@@ -532,10 +534,10 @@ piece_stub :: fn(fg: ^FnGen, core: string, kind: u8, str_ty: Ty) -> string needs
 }
 
 /// A write to the ambient output or error through `out_stub`.
-stub_perform :: fn(fg: ^FnGen, e: ^Expr, effect_: ^const EffectRef, id: u32, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> ?string needs sema.Load {
+stub_perform :: fn(fg: ^FnGen, span: source.Span, effect_: ^const EffectRef, id: u32, op: u32, vals: []const string, tys: []const Ty, ret: Ty) -> ?string needs sema.Load {
     f := fg.out_stub(effect_, id, op, tys, ret) else return null
     cx := fg.cx
-    loc := fg.loc(e)
+    loc := fg.g.src_loc(span)
     fg.linef("{}({}, {}, {});", f, cx, vals[0], loc)
     fg.check_unwind()
     return fg.zero(ret)

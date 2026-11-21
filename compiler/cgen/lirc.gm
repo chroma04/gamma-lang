@@ -1,0 +1,1099 @@
+// Function bodies from LIR (`Options.lir`): the lowered form the interpreter compiles from,
+// translated to C. A function whose LIR uses an instruction this file does not translate
+// yet (`lir_unsupported`) is generated from TIR as before, so the two paths never mix
+// inside a body.
+//
+// Each temporary becomes a C temporary (`tN`) or, for a value that needs no variable, the
+// C expression itself; each local keeps its C lvalue (`local_lv`), and the locals that
+// lowering adds are C locals of their own. A block is a C block followed by its label,
+// which `Br` jumps to; a loop is `for (;;)`; `If` is `if`. Values are computed in the
+// order of the instructions, so the C compiler sees the order of evaluation written out.
+
+/// The LIR of function `f`, from the lowering context kept on the generator.
+lir_of :: fn(g: ^Gen, f: u32) -> lir.Func needs sema.Load {
+    if g.lir_cx is null { g.lir_cx = new(lir.context(g.prog.s))! }
+    cx := g.lir_cx else @unreachable()
+    return cx.lower(f)
+}
+
+/// Whether function `f` is the parent of a nested function: its loops and `with`s may be
+/// the targets of exits from that function, which this path does not handle yet.
+has_nested :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+    if g.lir_parents.items.len is 0 {
+        for _ in 0..g.prog.s.defs.items.len { g.lir_parents.push(false)! }
+        for d in g.prog.s.defs.items {
+            if p := d.parent and usize(p) < g.lir_parents.items.len { g.lir_parents.items[usize(p)] = true }
+        }
+    }
+    return usize(f) < g.lir_parents.items.len and g.lir_parents.items[usize(f)]
+}
+
+/// Why the body of `f` (whose LIR is `func`) is not generated from LIR, or `null` if it is.
+lir_unsupported :: fn(g: ^Gen, f: u32, func: ^const lir.Func) -> ?string needs sema.Load {
+    if func.escapes > 0 { return "an escape to TIR" }
+    // A nested function may leave a loop of this one with a value (into `result`).
+    if has_nested(g, f) {
+        for l in func.loops {
+            if l.result is not null and l.brk is not l.cont { return "a loop with a value, in a function with nested functions" }
+        }
+    }
+    for l in func.locals {
+        if g.ty.is_vector(l.ty) { return "a vector local" }
+    }
+    for t in func.temps {
+        if g.ty.is_vector(t) { return "a vector value" }
+    }
+    return lir_list_unsupported(g, func, func.body)
+}
+
+lir_list_unsupported :: fn(g: ^Gen, func: ^const lir.Func, insts: []const lir.Inst) -> ?string needs sema.Load {
+    for i in insts {
+        if why := lir_inst_unsupported(g, func, &i) { return why }
+    }
+    return null
+}
+
+lir_inst_unsupported :: fn(g: ^Gen, func: ^const lir.Func, i: ^const lir.Inst) -> ?string needs sema.Load {
+    bad: ?string = null
+    lir.for_each_value(&i.op, fn(v: lir.Value) {
+        if bad is null { bad = lir_value_unsupported(g, v) }
+    })
+    if why := bad { return why }
+    match i.op {
+        .Move(_), .Load(_), .AddrOf(_), .Store(_), .Str(_), .Return(_), .Br(_), .BrIf(_), .NoArm, .Unreachable, .Trap(_), .Assert(_) => return null
+        .Un(_), .Eq(_) => return null
+        .Bin(_) => return null
+        .Call(_) => return null
+        .Check(_), .Coerce(_), .Variant(_), .Wrap(_), .MakeSlice(_), .IsPresent(_) => return null
+        .Block(_, body), .Loop(_, body), .DebugOnly(body), .Defer(_, body) => return lir_list_unsupported(g, func, body)
+        .If(_, a, b) => return lir_list_unsupported(g, func, a) else lir_list_unsupported(g, func, b)
+        .Aggregate(d, _), .Fill(d, _) => {
+            t := func.temps[usize(d)]
+            if g.ty.bits_layout(t) is not null { return "a #bits value" }
+            if g.ty.repr(t) is not .Blob and g.ty.size(t) > 0 { return "an aggregate held in a scalar" }
+            return null
+        }
+        .TagIs(_) => return null
+        .In(_), .BitsGet(_), .BitsSet(_) => return "a test of a value's parts"
+        .Builtin(_, op, _) => return if lir_builtin(op) { null } else { str.format("the builtin {}", op)! }
+        .Write(_), .FnRef(_), .Template(_), .Closure(_) => return null
+        .HandlerRef(_), .Install(_), .Exit(_), .Resume(_), .Cancel(_) => return null
+        .With(_, _, install, ?on, body) => {
+            if on is not null { return "`with … on`" }
+            return lir_list_unsupported(g, func, install) else lir_list_unsupported(g, func, body)
+        }
+        .Tir(_) => return "an escape to TIR"
+    }
+}
+
+/// Whether builtin `op` is generated from its values (`builtin_values`) here.
+lir_builtin :: fn(op: tir.Builtin) -> bool => match op {
+    .Convert, .Trunc, .Round, .Floor, .Ceil, .Checked, .Sat, .Bits, .Cast, .Addr, .ToPtr, .PtrAdd, .PtrSub, .PtrDiff => true
+    .Tag, .FromTag, .Min, .Max, .Clamp, .Abs, .AbsDiff, .IsNan, .IsInf, .IsFinite, .SignBit, .Sqrt, .Fma => true
+    .Rotl, .Rotr, .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse, .Pow(_), .CstrLen, .Fence, .BlackBox, .Hash => true
+    .Unreachable, .Cover(_), .HeapAlloc, .HeapFree, .CopyElems, .Sys(_), .AllocTag, .AllocCheck => true
+    .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => true
+    _ => false
+}
+
+lir_value_unsupported :: fn(g: ^Gen, v: lir.Value) -> ?string needs sema.Load {
+    .Word(t, bits) := v else return null
+    return match g.ty.repr(t) {
+        .Int(_, _, _) => null
+        .Float(w) => if w is 16 { "an f16 constant" } else { null }
+        .Bool, .Ptr => null
+        _ => if bits is 0 { null } else { "a constant of this type" }
+    }
+}
+
+/// The state of translating one body.
+#allow("needless-pub")
+pub LirC :: struct {
+    fg: ^FnGen
+    f: ^const lir.Func
+    /// The C expression of each temporary.
+    temps: []string
+    /// The C label of each LIR label.
+    labels: []string
+    /// The temporaries not computed yet (`Lazy`), each computed where it is first needed
+    /// as a value, or before an instruction that may write memory, or before a nested
+    /// list: until then it can be read in place.
+    lazy: []?Lazy
+    pending: List(u32)
+    /// Whether the call just emitted wrote its result to `FnGen.dest_call_lir`.
+    dest_taken: bool = false
+    /// Whether functions are nested in this one.
+    nested_fns: bool = false
+    /// The blocks being translated, innermost last.
+    open: List(OpenBlock)
+    /// The `with`s whose handlers are being installed, innermost last: the handler context
+    /// so far.
+    installing: List(Installing)
+}
+
+/// A `with` whose `install` list is being translated.
+Installing :: struct {
+    /// TIR's label of the `with`, and the handler context outside it and so far.
+    label: u32
+    outer: string
+    cur: string
+}
+
+/// A temporary not computed yet.
+Lazy :: union {
+    /// A large value loaded from the address `addr` (an expression of temporaries and
+    /// locals, which stays valid until something writes).
+    Load: (addr: string, t: Ty)
+    /// A union variant, with its payload's value.
+    Variant: (variant: u32, payload: ?string, t: Ty)
+}
+
+/// Generates the body of the function being generated from its LIR `func` (supported, see
+/// `lir_unsupported`). The prologue and the epilogue are `gen_body`'s.
+lir_body :: fn(fg: ^FnGen, func: ^const lir.Func) -> Unsup!() needs sema.Load {
+    // The locals lowering adds are C locals.
+    for i in fg.def.locals.len..func.locals.len {
+        l := &func.locals[i]
+        fg.temp_bytes += l.size
+        fg.linef("{} {};", fg.g.ty.cty(l.ty), fg.local_lv(i.trunc(u32)))
+    }
+    temps := make_fill(func.temps.len, "")!
+    labels := list(string)
+    for _ in 0..func.labels { labels.push(str.format("gm_lb{}", fg.fresh())!)! }
+    c := LirC(fg: fg, f: func, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock), installing: list(Installing))
+    fg.lirc = &c
+    // The function's body is a block: its defers run when it returns.
+    fg.scopes.push(fg.block_scope())!
+    r := c.lc_list(func.body)
+    popped := fg.scopes.pop()?
+    try r
+    fg.end_scope(popped, true)
+    fg.lirc = null
+}
+
+/// A block being translated: its label and how many scopes enclosed it.
+OpenBlock :: struct {
+    label: u32
+    depth: usize
+}
+
+/// The label in `gm_unw` of an exit to the end of LIR block `l` (`Br` across a `defer`),
+/// apart from the labels of TIR's loops and `with`s.
+exit_label :: fn(l: u32) -> u32 => 0x4000_0000 + l
+
+/// Whether `insts` (at any depth) has a `Defer` and a `Br` to `l`: a branch to the end of
+/// block `l` that may cross a deferred statement, which needs a rung of the ladder.
+crosses_defer :: fn(insts: []const lir.Inst, l: u32) -> bool {
+    found := (defer_: false, br: false)
+    scan_defer_br(insts, l, &found)
+    return found.defer_ and found.br
+}
+
+scan_defer_br :: fn(xs: []const lir.Inst, l: u32, found: ^(defer_: bool, br: bool)) {
+    for x in xs {
+        match x.op {
+            .Defer(_) => { found.defer_ = true }
+            .Br(t), .BrIf(_, _, t) => if t is l { found.br = true }
+            .Block(_, b), .Loop(_, b), .DebugOnly(b) => scan_defer_br(b, l, found)
+            .If(_, a, b) => {
+                scan_defer_br(a, l, found)
+                scan_defer_br(b, l, found)
+            }
+            .With(_, _, a, _, b) => {
+                scan_defer_br(a, l, found)
+                scan_defer_br(b, l, found)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Translates the body of a deferred statement, which is emitted once per way out of its
+/// block: the labels it defines get new C names each time.
+lc_defer_list :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load {
+    c.lc_relabel(insts)
+    try c.lc_list(insts)
+}
+
+lc_relabel :: fn(c: ^LirC, xs: []const lir.Inst) needs Alloc {
+    for x in xs {
+        match x.op {
+            .Block(l, b), .Loop(l, b) => {
+                c.labels[usize(l)] = str.format("gm_lb{}", c.fg.fresh())!
+                c.lc_relabel(b)
+            }
+            .DebugOnly(b), .Defer(_, b) => c.lc_relabel(b)
+            .If(_, a, b) => {
+                c.lc_relabel(a)
+                c.lc_relabel(b)
+            }
+            .With(l, _, a, _, b) => {
+                c.labels[usize(l)] = str.format("gm_lb{}", c.fg.fresh())!
+                c.lc_relabel(a)
+                c.lc_relabel(b)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A jump to another frame (`lir.Exit`), as `break_expr`, `continue_expr` and
+/// `return_expr` make it.
+lc_exit :: fn(c: ^LirC, kind: lir.Exit, v: ?lir.Value) -> Unsup!() needs sema.Load {
+    fg := c.fg
+    match kind {
+        .Break(target) => match target {
+            .Label(levels, lbl) => {
+                if x := v and fg.is_with_label(levels, lbl) {
+                    vt := lir.value_type(c.f, x)
+                    if not fg.g.ty.is_never(vt) { fg.linef("{} = {};", fg.frame_field(levels, str.format("w{}", lbl)!), c.lc_val(x)) }
+                }
+                fr, _ := fg.frame_up(levels)
+                fg.start_exit(.Break, fr, str.format("{}", lbl)!, "0")
+            }
+            .InstallingWith => {
+                if x := v {
+                    vt := lir.value_type(c.f, x)
+                    if not fg.g.ty.is_void(vt) { fg.store(vt, "inst->result", c.lc_val(x)) }
+                }
+                fg.start_exit(.Break, "inst->with_frame", "inst->with_label", "0")
+            }
+        }
+        .Continue(target) => match target {
+            .Label(levels, lbl) => {
+                fr, _ := fg.frame_up(levels)
+                fg.start_exit(.Continue, fr, str.format("{}", lbl)!, "0")
+            }
+            // In a clause, `continue` ends the clause (the next iteration of a `for`).
+            .InstallingWith => {
+                fg.linef("F.ret = {};", fg.unit())
+                fg.start_exit(.Return, "(&F.h)", "0", "0")
+            }
+        }
+        .Return(levels) => {
+            ret := fg.target_ret(levels)
+            is_err := "0"
+            if x := v {
+                vt := lir.value_type(c.f, x)
+                xv := c.lc_val(x)
+                if fg.g.ty.kind(ret) is .Result(_) and not fg.g.ty.is_never(vt) { is_err = fg.res_is_err(ret, fg.addr_of(vt, xv)) }
+                flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
+                if not fg.g.ty.is_never(vt) { fg.linef("{} = {};", fg.frame_field(levels, "ret"), xv) }
+                is_err = flag
+            }
+            fr, _ := fg.frame_up(levels)
+            fg.start_exit(.Return, fr, "0", is_err)
+        }
+    }
+}
+
+/// Whether `insts` has a `Defer` directly in it.
+has_defer :: fn(insts: []const lir.Inst) -> bool {
+    for x in insts {
+        if x.op is .Defer(_) { return true }
+    }
+    return false
+}
+
+/// A jump to the end of LIR block `l`: through the ladder if it crosses deferred statements.
+lc_br :: fn(c: ^LirC, l: u32) needs sema.Load {
+    fg := c.fg
+    i := c.open.items.len
+    while i > 0 {
+        i -= 1
+        o := c.open.items[i]
+        if o.label is not l { continue }
+        crossing := false
+        for j in o.depth..fg.scopes.items.len {
+            s := &fg.scopes.items[j]
+            if s.kind is .Block and s.defers.items.len > 0 { crossing = true }
+        }
+        if crossing {
+            fg.start_exit(.Break, "(&F.h)", str.format("{}", exit_label(l))!, "0")
+            return ()
+        }
+        break
+    }
+    fg.linef("goto {};", c.labels[usize(l)])
+}
+
+lc_list :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load {
+    mark := c.pending.items.len
+    i: usize = 0
+    while i < insts.len {
+        // A large result goes straight to where the next instruction puts it.
+        if i + 1 < insts.len {
+            if dest := c.lc_call_dest(&insts[i], &insts[i + 1]) {
+                c.lc_flush()
+                c.fg.dest_call_lir = dest
+                c.dest_taken = false
+                try c.lc_inst(&insts[i])
+                c.fg.dest_call_lir = null
+                // A call that cannot write there (of a foreign function) left it.
+                if not c.dest_taken {
+                    i += 1
+                    continue
+                }
+                if insts[i + 1].op is .Return(_) { c.fg.line("goto gm_fdone;") }
+                i += 2
+                continue
+            }
+        }
+        try c.lc_inst(&insts[i])
+        i += 1
+    }
+    // What the list did not use is dead past it.
+    c.pending.truncate(mark)
+}
+
+/// Where the large result of the call `a` goes when `b` only returns it or stores it in a
+/// local: the caller's destination (`gm_out`) or the local, which the call cannot see.
+lc_call_dest :: fn(c: ^LirC, a: ^const lir.Inst, b: ^const lir.Inst) -> ?string needs sema.Load {
+    .Call(?dst, callee, _) := a.op else return null
+    d := dst else return null
+    if callee is not .Fn(_) { return null }
+    t := c.f.temps[usize(d)]
+    fg := c.fg
+    if not fg.g.ty.by_ref(t) { return null }
+    match b.op {
+        .Return(?v) => {
+            x := v else return null
+            if x is not .Temp(d) or not fg.g.ty.by_ref(fg.def.ret) or fg.def.ret is not t or not fg.no_defers() { return null }
+            return str.format("(*({} *)gm_out)", fg.g.ty.cty(t))!
+        }
+        .Store(p, x) => {
+            if x is not .Temp(d) { return null }
+            .Local(l) := p.base else return null
+            if p.proj.len is not 0 or fg.is_borrowed(l) or c.f.locals[usize(l)].ty is not t { return null }
+            loc := &c.f.locals[usize(l)]
+            if loc.addressed or loc.captured { return null }
+            return fg.local_lv(l)
+        }
+        _ => return null
+    }
+}
+
+/// A nested list, as a C block.
+lc_nested :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load {
+    c.fg.indent += 1
+    try c.lc_list(insts)
+    c.fg.indent -= 1
+}
+
+lc_val :: fn(c: ^LirC, v: lir.Value) -> string needs sema.Load {
+    fg := c.fg
+    match v {
+        .Temp(t) => {
+            c.lc_compute(t)
+            return c.temps[usize(t)]
+        }
+        .Word(t, bits) => return word_lit(fg, t, bits)
+        .Zero(t) => return fg.zero(t)
+        .Uninit(t) => {
+            n := fg.tmp_uninit(t)
+            if fg.g.opts.debug { fg.linef("memset(&{}, 0xAA, sizeof {});", n, n) }
+            return n
+        }
+        .Big(t, bits) => {
+            .Int(signed, _, storage) := fg.g.ty.repr(t) else return fg.zero(t)
+            return str.format("(({})(((unsigned __int128){}ULL << 64) | {}ULL))", int_cty(signed, storage), (bits >> 64).trunc(u64), bits.trunc(u64))!
+        }
+    }
+}
+
+/// Computes temporary `t` if it is not computed yet.
+lc_compute :: fn(c: ^LirC, t: u32) needs sema.Load {
+    x := c.lazy[usize(t)] else return
+    c.lazy[usize(t)] = null
+    c.temps[usize(t)] = match x {
+        .Load(a, ty) => c.fg.load(ty, a)
+        .Variant(v, ?p, ty) => c.fg.make_variant(ty, usize(v), p)
+    }
+}
+
+/// Computes every temporary not computed yet.
+lc_flush :: fn(c: ^LirC) needs sema.Load => c.lc_flush_except(null)
+
+/// Computes every temporary not computed yet but `keep`, which stays as it is.
+lc_flush_except :: fn(c: ^LirC, keep: ?u32) needs sema.Load {
+    for t in c.pending.items {
+        if t is not keep { c.lc_compute(t) }
+    }
+    c.pending.clear()
+    if k := keep and c.lazy[usize(k)] is not null { c.pending.push(k)! }
+}
+
+/// Whether instruction `op` leaves memory as it is, so the loads not computed yet may
+/// wait past it.
+reads_only :: fn(op: ^const lir.Op) -> bool => match op^ {
+    .Move(_), .Load(_), .AddrOf(_), .Bin(_), .Un(_), .Eq(_), .Coerce(_), .Aggregate(_), .Str(_), .Fill(_) => true
+    .MakeSlice(_), .Variant(_), .Wrap(_), .FnRef(_), .Template(_), .IsPresent(_), .TagIs(_), .Check(_), .Br(_), .BrIf(_) => true
+    _ => false
+}
+
+/// The address the value `v` is at: in place if it is a load not computed yet.
+lc_addr_of :: fn(c: ^LirC, v: lir.Value) -> string needs sema.Load {
+    if .Temp(t) := v {
+        if x := c.lazy[usize(t)] {
+            if .Load(a, _) := x { return a }
+        }
+    }
+    return c.fg.addr_of(lir.value_type(c.f, v), c.lc_val(v))
+}
+
+/// The variant a value is known to be and its payload, if it is a variant not built yet.
+lc_lazy_variant :: fn(c: ^LirC, v: lir.Value) -> ?(variant: u32, payload: ?string) {
+    .Temp(t) := v else return null
+    x := c.lazy[usize(t)] else return null
+    .Variant(variant, ?payload, _) := x else return null
+    return (variant: variant, payload: payload)
+}
+
+/// The C literal of type `t` with the bits `bits` (`lir.Value.Word`).
+word_lit :: fn(fg: ^FnGen, t: Ty, bits: u64) -> string needs sema.Load {
+    match fg.g.ty.repr(t) {
+        .Int(signed, _, storage) => {
+            ct := int_cty(signed, storage)
+            if signed {
+                x := bits.bits(i64)
+                if x is -9223372036854775808 { return str.format("(({})(-9223372036854775807LL - 1))", ct)! }
+                return str.format("(({}){}LL)", ct, x)!
+            }
+            return str.format("(({}){}ULL)", ct, bits)!
+        }
+        .Float(w) => {
+            x: f64 = if w is 32 { f64(bits.trunc(u32).bits(f32)) } else { bits.bits(f64) }
+            return float_lit(w, x)
+        }
+        .Bool => return if bits is 0 { "((uint8_t)0)" } else { "((uint8_t)1)" }
+        .Ptr => return if bits is 0 { "((void *)0)" } else { str.format("((void *)(uintptr_t){}ULL)", bits)! }
+        _ => return fg.zero(t)
+    }
+}
+
+/// Sets temporary `d` to the C expression `v`, in a C temporary of its own.
+lc_set :: fn(c: ^LirC, d: u32, v: string) needs sema.Load {
+    c.temps[usize(d)] = c.fg.tmp(c.f.temps[usize(d)], v)
+}
+
+/// The type of local `l` of the body.
+lc_local_ty :: fn(c: ^LirC, l: u32) -> Ty => c.f.locals[usize(l)].ty
+
+/// The C lvalue of place `p` if it is a local of this function as a whole (not read in
+/// place from the caller's argument).
+lc_whole_local :: fn(c: ^LirC, p: ^const lir.Place) -> ?string needs Alloc {
+    .Local(l) := p.base else return null
+    if p.proj.len is not 0 or c.fg.is_borrowed(l) { return null }
+    return c.fg.local_lv(l)
+}
+
+/// The type of the value at place `p`.
+lc_place_type :: fn(c: ^LirC, p: ^const lir.Place, span: source.Span) -> Unsup!Ty needs sema.Load {
+    return lir.place_type(c.fg.g.prog.s, c.f, p) else !unsupported(span, "a place of unknown type")
+}
+
+/// The result type of a function value of type `t`.
+fn_ret :: fn(fg: ^FnGen, t: Ty) -> Ty needs Alloc => match fg.g.ty.kind(t) {
+    .Fn(sig), .FnPtr(sig) => sig.ret
+    _ => fg.g.ty.unit_ty()
+}
+
+/// Builtin `op` of type `t` on `args` (`lir_builtin`).
+lc_builtin :: fn(c: ^LirC, span: source.Span, t: Ty, op: tir.Builtin, args: []const lir.Value) -> Unsup!string needs sema.Load {
+    fg := c.fg
+    vals := list(string)
+    tys := list(Ty)
+    for a in args {
+        vals.push(c.lc_val(a))!
+        tys.push(lir.value_type(c.f, a))!
+    }
+    loc := fg.g.src_loc(span)
+    match op {
+        .Unreachable => {
+            fg.linef("gm_trap(\"reached `@unreachable()`\", {});", loc)
+            return fg.zero(t)
+        }
+        .Cover(id) => {
+            fg.linef("GM_COVER({});", id)
+            return fg.unit()
+        }
+        .HeapAlloc => {
+            a := vals.items[1]
+            fg.linef("if (({}) == 0 || (({}) & (({}) - 1)) != 0) gm_trap(\"allocation alignment is not a power of two\", {});", a, a, a, loc)
+            p := fg.tmp(fg.g.ty.s.tys.intern(.Rawptr), str.format("gm_heap_alloc({}, {})", vals.items[0], a)!)
+            return fg.tmp(t, p)
+        }
+        .HeapFree => {
+            fg.linef("gm_heap_free({}, {}, {}, {});", vals.items[0], vals.items[1], vals.items[2], loc)
+            return fg.unit()
+        }
+        .CopyElems => {
+            .Slice(_, elem) := fg.g.ty.kind(tys.items[0]) else return fg.unit()
+            d := fg.addr_of(tys.items[0], vals.items[0])
+            s := fg.addr_of(tys.items[1], vals.items[1])
+            n := fg.slice_len(d)
+            fg.linef("if ({} != 0) memmove({}, {}, {} * {});", n, slice_ptr(d), slice_ptr(s), n, fg.g.ty.size(elem))
+            return fg.unit()
+        }
+        .Sys(sop) => return fg.sys_values(t, sop, tys.items, vals.items)
+        .AllocTag, .AllocCheck => return fg.alloc_tag_values(span, op, tys.items, vals.items)
+        _ => return try fg.builtin_values(span, t, op, tys.items, vals.items)
+    }
+}
+
+/// The local at the base of place `p` (which is in a local).
+local_of :: fn(p: ^const lir.Place) -> u32 => if .Local(l) := p.base { l } else { 0 }
+
+/// The address (`uint8_t *`) of place `p`.
+lc_addr :: fn(c: ^LirC, p: ^const lir.Place, span: source.Span) -> Unsup!string needs sema.Load {
+    fg := c.fg
+    a: string = match p.base {
+        .Local(l) => fg.local_addr(l)
+        .Upvar(levels, l) => str.format("((uint8_t *)&{})", fg.frame_field(levels, str.format("l{}", l)!))!
+        .Global(decl) => try fg.g.global_addr(decl, span)
+        .Const(_, cspan, t) => str.format("((uint8_t *){})", try fg.g.const_storage(cspan, t, span))!
+        .Deref(t) => str.format("((uint8_t *){})", c.temps[usize(t)])!
+    }
+    for x in p.proj {
+        match x {
+            .Field(_, off), .Payload(off, _) => if off is not 0 { a = str.format("({} + {})", a, off)! }
+            .Elem(i, size), .Step(i, size) => { a = str.format("({} + (uintptr_t){} * {})", a, c.lc_val(i), size)! }
+            .Deref => { a = str.format("((uint8_t *)GM_LD(void *, {}))", a)! }
+        }
+    }
+    return a
+}
+
+lc_inst :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
+    fg := c.fg
+    span := i.span
+    if not reads_only(&i.op) {
+        // A value stored or returned is read in place as it is written.
+        keep: ?u32 = null
+        match i.op {
+            .Store(_, .Temp(t)), .Return(.Temp(t)) => { keep = t }
+            _ => {}
+        }
+        c.lc_flush_except(keep)
+    }
+    match i.op {
+        .Move(d, v) => c.lc_set(d, c.lc_val(v))
+        .Load(d, p) => {
+            t := c.f.temps[usize(d)]
+            lv := c.lc_whole_local(&p)
+            if x := lv and c.lc_local_ty(local_of(&p)) is t {
+                c.lc_set(d, x)
+            } else {
+                a := try c.lc_addr(&p, span)
+                if fg.g.ty.by_ref(t) {
+                    c.lazy[usize(d)] = .Load(a, t)
+                    c.pending.push(d)!
+                } else {
+                    c.temps[usize(d)] = fg.load(t, a)
+                }
+            }
+        }
+        // `x: T = ---` fills the place where it is (Debug: with 0xAA, §4.4), without a copy.
+        .Store(p, .Uninit(t)) => if fg.g.opts.debug and fg.g.ty.size(t) > 0 {
+            a := try c.lc_addr(&p, span)
+            fg.linef("memset({}, 0xAA, {});", a, fg.g.ty.size(t))
+        }
+        .Store(p, v) => {
+            if .Temp(t) := v and c.lazy[usize(t)] is not null and c.lc_lazy_variant(v) is null {
+                // A large value copied from one place to another.
+                from := c.lc_addr_of(v)
+                a := try c.lc_addr(&p, span)
+                fg.linef("memmove({}, {}, {});", a, from, fg.g.ty.size(lir.value_type(c.f, v)))
+                return ()
+            }
+            x := c.lc_val(v)
+            if lv := c.lc_whole_local(&p) {
+                fg.linef("{} = {};", lv, x)
+            } else {
+                a := try c.lc_addr(&p, span)
+                fg.store(lir.value_type(c.f, v), a, x)
+            }
+        }
+        .AddrOf(d, p) => {
+            a := try c.lc_addr(&p, span)
+            c.lc_set(d, str.format("(void *){}", a)!)
+        }
+        .Bin(d, op, a, b) => {
+            t := c.f.temps[usize(d)]
+            lt := lir.value_type(c.f, a)
+            x := c.lc_val(a)
+            y := c.lc_val(b)
+            if op in (.Lt, .Le, .Gt, .Ge) and not (fg.g.ty.repr(lt) in (.Int(_, _, _), .Float(_), .Bool, .Ptr)) {
+                // As `binary`: the ordering helper of the type.
+                less := fg.g.helpers.less_fn(&fg.g.ty, lt)
+                eq := fg.g.helpers.eq_fn(&fg.g.ty, lt)
+                pa := fg.addr_of(lt, x)
+                pb := fg.addr_of(lt, y)
+                cmp: string = match op {
+                    .Lt => str.format("{}({}, {})", less, pa, pb)!
+                    .Gt => str.format("{}({}, {})", less, pb, pa)!
+                    .Le => str.format("({}({}, {}) || {}({}, {}))", less, pa, pb, eq, pa, pb)!
+                    _ => str.format("({}({}, {}) || {}({}, {}))", less, pb, pa, eq, pb, pa)!
+                }
+                c.lc_set(d, str.format("(uint8_t){}", cmp)!)
+            } else if op in (.Lt, .Le, .Gt, .Ge) {
+                c.lc_set(d, str.format("({} {} {})", x, tir.binop_symbol(op), y)!)
+            } else if .Float(_) := fg.g.ty.repr(lt) {
+                c.lc_set(d, str.format("({} {} {})", x, tir.binop_symbol(op), y)!)
+            } else {
+                c.temps[usize(d)] = try fg.int_binary(span, t, op, lt, x, y)
+            }
+        }
+        .Un(d, op, a) => {
+            c.temps[usize(d)] = try fg.unary_value(span, c.f.temps[usize(d)], op, lir.value_type(c.f, a), c.lc_val(a))
+        }
+        .Eq(d, negated, a, b) => {
+            t := lir.value_type(c.f, a)
+            // `x is .V` of a variant without a payload compares the tag in place.
+            var := c.lc_lazy_variant(b)
+            other := a
+            if var is null {
+                var = c.lc_lazy_variant(a)
+                other = b
+            }
+            if v := var {
+                .Union(tag, variants) := fg.adt_def(t).kind else @unreachable()
+                at := c.lc_addr_of(other)
+                offs := fg.g.ty.offsets(t)
+                tv := fg.load(tag, str.format("({} + {})", at, offs[0])!)
+                cond: string = str.format("({} == {})", tv, fg.int_lit(tag, variants[usize(v.variant)].tag))!
+                if p := v.payload {
+                    // The payload is compared only when the tags agree.
+                    pt := variants[usize(v.variant)].payload else @unreachable()
+                    r := fg.tmp(fg.g.ty.bool_ty(), str.format("(uint8_t){}", cond)!)
+                    fg.linef("if ({}) {{", r)
+                    fg.indent += 1
+                    pv := fg.load(pt, str.format("({} + {})", at, offs[1])!)
+                    fg.linef("{} = (uint8_t){};", r, fg.equal(pt, pv, p))
+                    fg.indent -= 1
+                    fg.line("}")
+                    cond = r
+                }
+                c.lc_set(d, str.format("(uint8_t)({}{})", if negated { "!" } else { "" }, cond)!)
+                return ()
+            }
+            e := fg.equal(t, c.lc_val(a), c.lc_val(b))
+            c.lc_set(d, str.format("({}{})", if negated { "!" } else { "" }, e)!)
+        }
+        .Call(?d, callee, args) => {
+            // The callee is computed before the arguments (§7.1).
+            cv: ?string = null
+            if .Value(v) := callee { cv = c.lc_val(v) }
+            vals := list(string)
+            tys := list(Ty)
+            for a in args {
+                vals.push(c.lc_val(a))!
+                tys.push(lir.value_type(c.f, a))!
+            }
+            rt := fg.g.ty.unit_ty()
+            if x := d { rt = c.f.temps[usize(x)] }
+            fg.call_site(span)
+            r := match callee {
+                .Fn(f) => {
+                    if d is null { rt = fg.g.prog.func(f).ret }
+                    fg.call_dest = fg.dest_call_lir
+                    x := try fg.call_fn(rt, null, f, vals.items)
+                    // `result_var` takes the destination when the call writes there.
+                    c.dest_taken = fg.dest_call_lir is not null and fg.call_dest is null
+                    fg.call_dest = null
+                    x
+                }
+                .Value(v) => {
+                    vt := lir.value_type(c.f, v)
+                    if d is null { rt = fn_ret(fg, vt) }
+                    match fg.g.ty.kind(vt) {
+                        .Fn(_) => try fg.call_closure(cv?, vt, vals.items, tys.items, rt)
+                        .FnPtr(sig) => {
+                            effectful := not fg.g.within_sys(&sig.effects)
+                            x := fg.call_indirect(cv?, "NULL", fg.cx, vals.items, tys.items, rt, effectful, sig.win64)
+                            // A second-class argument may leave the callee by a non-local exit.
+                            if effectful or fg.g.takes_fn(tys.items) { fg.check_unwind() }
+                            x
+                        }
+                        _ => return !unsupported(span, "calling this value")
+                    }
+                }
+                .Perform(eff, op) => {
+                    if d is null { rt = fg.g.prog.s.effects.items[usize(eff.eff)].ops[usize(op)].ret }
+                    try fg.perform(span, &eff, op, vals.items, tys.items, rt)
+                }
+            }
+            if x := d { c.temps[usize(x)] = r }
+        }
+        .Coerce(d, kind, v) => {
+            c.temps[usize(d)] = try fg.coerce_value(span, c.f.temps[usize(d)], kind, lir.value_type(c.f, v), c.lc_val(v))
+        }
+        .Builtin(?d, op, args) => {
+            t := fg.g.ty.unit_ty()
+            if x := d { t = c.f.temps[usize(x)] }
+            r := try c.lc_builtin(span, t, op, args)
+            if x := d { c.temps[usize(x)] = r }
+        }
+        .Aggregate(d, items) => {
+            t := c.f.temps[usize(d)]
+            if fg.g.ty.size(t) is 0 {
+                c.temps[usize(d)] = fg.zero(t)
+            } else {
+                offs: []const u64 = empty_slice(u64)
+                esz: u64 = 0
+                if .Array(_, elem, _) := fg.g.ty.kind(t) { esz = fg.g.ty.size(elem) } else { offs = fg.g.ty.offsets(t) }
+                parts := list(BlobPart)
+                vals := list(string)
+                for k, x in enumerate(items) {
+                    off := if offs.len > k { offs[k] } else { u64(k) * esz }
+                    parts.push(BlobPart(off: off, len: fg.g.ty.size(lir.value_type(c.f, x))))!
+                    vals.push(c.lc_val(x))!
+                }
+                b := fg.blob_over(t, parts.items)
+                for k, x in enumerate(items) {
+                    fg.store(lir.value_type(c.f, x), str.format("((uint8_t *)&{} + {})", b, parts.items[k].off)!, vals.items[k])
+                }
+                c.temps[usize(d)] = b
+            }
+        }
+        .Fill(d, v) => {
+            t := c.f.temps[usize(d)]
+            .Array(n, elem, _) := fg.g.ty.kind(t) else @unreachable()
+            x := c.lc_val(v)
+            b := fg.tmp_uninit(t)
+            if n > 0 and fg.g.ty.size(elem) > 0 {
+                k := fg.fresh()
+                fg.linef("for (size_t i{} = 0; i{} < {}; i{}++) GM_ST({}, (uint8_t *)&{} + i{} * {}, {});", k, k, n, k, fg.g.ty.cty(elem), b, k, fg.g.ty.size(elem), x)
+            }
+            c.temps[usize(d)] = b
+        }
+        .Variant(d, variant, ?payload) => {
+            p: ?string = null
+            if x := payload { p = c.lc_val(x) }
+            c.lazy[usize(d)] = .Variant(variant, p, c.f.temps[usize(d)])
+            c.pending.push(d)!
+        }
+        .Wrap(d, kind, ?v) => {
+            t := c.f.temps[usize(d)]
+            c.temps[usize(d)] = match kind {
+                .None => fg.make_none(t)
+                .Some => fg.make_some(t, c.lc_val(v?))
+                .Ok => fg.make_res(t, false, lir.value_type(c.f, v?), c.lc_val(v?))
+                .Err => fg.make_res(t, true, lir.value_type(c.f, v?), c.lc_val(v?))
+            }
+        }
+        .MakeSlice(d, ptr, lo, hi, inclusive, size) => {
+            l := c.lc_val(lo)
+            h := str.format("((uintptr_t){}{})", c.lc_val(hi), if inclusive { " + 1" } else { "" })!
+            n := fg.tmp(fg.g.ty.usize_ty(), str.format("{} - (uintptr_t){}", h, l)!)
+            c.temps[usize(d)] = fg.make_slice(c.f.temps[usize(d)], str.format("((uint8_t *){} + (uintptr_t){} * {})", c.lc_val(ptr), l, size)!, n)
+        }
+        .IsPresent(d, p, result) => {
+            t := try c.lc_place_type(&p, span)
+            a := try c.lc_addr(&p, span)
+            cond := if result { str.format("!{}", fg.res_is_err(t, a))! } else { fg.opt_present(t, a) }
+            c.lc_set(d, str.format("(uint8_t){}", cond)!)
+        }
+        .TagIs(d, p, variant) => {
+            t := try c.lc_place_type(&p, span)
+            .Union(tag, variants) := fg.adt_def(t).kind else @unreachable()
+            a := try c.lc_addr(&p, span)
+            off := fg.g.ty.offsets(t)[0]
+            v := fg.load(tag, str.format("({} + {})", a, off)!)
+            c.lc_set(d, str.format("(uint8_t)({} == {})", v, fg.int_lit(tag, variants[usize(variant)].tag))!)
+        }
+        .Write(sink, pieces, specs, args, ?table) => {
+            to: WriteTo = match sink {
+                .Perform(effect_, op) => .Perform(effect_, op)
+                .Value(v) => .Fn(ValTy(v: c.lc_val(v), ty: lir.value_type(c.f, v)), null)
+            }
+            tys := list(Ty)
+            vals := list(string)
+            for a in args {
+                t := lir.value_type(c.f, a)
+                tys.push(t)!
+                vals.push(fg.addr_of(t, c.lc_val(a)))!
+            }
+            if x := table {
+                _ = try fg.write_table_values(span, to, c.lc_val(x), tys.items, vals.items)
+            } else {
+                _ = try fg.write_values(span, to, pieces, specs, tys.items, vals.items)
+            }
+        }
+        .FnRef(d, f, _) => {
+            t := c.f.temps[usize(d)]
+            fg.g.queue(f)
+            name := fg.g.addr_name(f)
+            // A plain function where hidden-convention code is expected is marked by
+            // tagging its address (GM_PTR_TAG, see `call_indirect`).
+            code: string = if fg.g.is_plain(f) and not fg.ptr_type_plain(t) { str.format("GM_PTR_TAG({})", name)! } else { str.format("((void *){})", name)! }
+            if fg.g.ty.kind(t) is .Fn(_) {
+                c.lc_set(d, str.format("((gm_closure){{{}, NULL, {}}})", code, fg.cx)!)
+            } else {
+                c.temps[usize(d)] = code
+            }
+        }
+        .Closure(d, f) => {
+            fg.g.queue(f)
+            c.lc_set(d, str.format("((gm_closure){{(void *){}, (void *)&F.h, {}}})", fg.g.fn_name(f), fg.cx)!)
+        }
+        .Template(d, tb) => { c.temps[usize(d)] = str.format("((void *)&{})", fg.g.template_table(tb))! }
+        .Str(d, bytes, cstr) => {
+            a := fg.g.static_bytes(bytes)
+            if cstr {
+                c.lc_set(d, str.format("((void *){})", a)!)
+            } else {
+                c.temps[usize(d)] = fg.make_slice(c.f.temps[usize(d)], a, str.format("{}", bytes.len)!)
+            }
+        }
+        .Check(ch) => if fg.g.opts.checks {
+            loc := fg.g.src_loc(span)
+            match ch {
+                .Bounds(x, n) => {
+                    bi := fg.bound(lir.value_type(c.f, x), c.lc_val(x))
+                    fg.index_check(true, bi, c.lc_val(n), loc)
+                }
+                .Range(lo, hi, ?len, inclusive) => if n := len {
+                    // As `slice_expr`: an inclusive bound of `UINTPTR_MAX` stays past every length.
+                    l := fg.tmp(fg.g.ty.usize_ty(), fg.bound(lir.value_type(c.f, lo), c.lc_val(lo)))
+                    h := fg.tmp(fg.g.ty.usize_ty(), fg.bound(lir.value_type(c.f, hi), c.lc_val(hi)))
+                    if inclusive { fg.linef("{} += {} != UINTPTR_MAX;", h, h) }
+                    nv := c.lc_val(n)
+                    fg.linef("if ({} > {} || {} > (uintptr_t){}) gm_trap_slice({}, {}, {}, {});", l, h, h, nv, l, h, nv, loc)
+                }
+                .Unwrap(present, p, result) => {
+                    if result {
+                        t := try c.lc_place_type(&p, span)
+                        .Result(err, _) := fg.g.ty.kind(t) else @unreachable()
+                        a := try c.lc_addr(&p, span)
+                        off := fg.g.ty.offsets(t)[1]
+                        fg.linef("if (!{}) gm_trap_unwrap({}, {} + {}, {});", c.lc_val(present), fg.g.ty.desc(err), a, off, loc)
+                    } else {
+                        fg.linef("if (!{}) gm_trap(\"unwrap of null\", {});", c.lc_val(present), loc)
+                    }
+                }
+            }
+        }
+        .Block(l, body) => {
+            // The block a TIR loop's `break` leaves: in a function with nested functions,
+            // whose exits may target the loop, it has a rung of the ladder (`end_scope`).
+            scoped := false
+            if c.nested_fns {
+                for x in c.f.loops {
+                    if x.brk is l and x.cont is not l {
+                        fg.scopes.push(fg.loop_scope(x.label, c.labels[usize(x.brk)], c.labels[usize(x.cont)]))!
+                        scoped = true
+                    }
+                }
+            }
+            c.open.push(OpenBlock(label: l, depth: fg.scopes.items.len))!
+            // A branch to its end across a `defer` exits through the ladder to its rung.
+            target := crosses_defer(body, l)
+            if target { fg.scopes.push(fg.with_scope(exit_label(l), c.labels[usize(l)]))! }
+            defers := has_defer(body)
+            if defers { fg.scopes.push(fg.block_scope())! }
+            fg.line("{")
+            r := c.lc_nested(body)
+            fg.line("}")
+            if defers {
+                popped := fg.scopes.pop()?
+                // Leaving normally runs the plain defers (not the errdefers), last first.
+                k := popped.defers.items.len
+                while k > 0 {
+                    k -= 1
+                    d := popped.defers.items[k]
+                    if not d.is_err { fg.defer_body(null, d, false) }
+                }
+                fg.end_scope(popped, true)
+            }
+            if target {
+                popped := fg.scopes.pop()?
+                fg.end_scope(popped, true)
+            }
+            _ = c.open.pop()
+            try r
+            if scoped {
+                popped := fg.scopes.pop()?
+                fg.end_scope(popped, true)
+            }
+            fg.label(c.labels[usize(l)])
+        }
+        .With(l, tl, install, _, body) => {
+            // As `with_expr`: the handlers are nodes of the handler context, on the C stack
+            // while the body runs; a clause that leaves the `with` with a value writes it to
+            // `F.wN` and exits to the rung of the `with`'s scope.
+            result: ?u32 = null
+            for x in c.f.loops {
+                if x.brk is l { result = x.result }
+            }
+            fg.line("{")
+            fg.indent += 1
+            c.installing.push(Installing(label: tl, outer: fg.cx, cur: fg.cx))!
+            r0 := c.lc_list(install)
+            ins := c.installing.pop()?
+            try r0
+            saved := fg.cx
+            fg.cx = ins.cur
+            end := str.format("we{}", fg.fresh())!
+            c.open.push(OpenBlock(label: l, depth: fg.scopes.items.len))!
+            // A branch out of the body across a `defer` exits to a rung of its own: the
+            // `with`'s rung is for clauses, which leave the value in `F.wN`.
+            target := crosses_defer(body, l)
+            if target { fg.scopes.push(fg.with_scope(exit_label(l), c.labels[usize(l)]))! }
+            fg.scopes.push(fg.with_scope(tl, end))!
+            defers := has_defer(body)
+            if defers { fg.scopes.push(fg.block_scope())! }
+            r := c.lc_list(body)
+            if defers {
+                popped := fg.scopes.pop()?
+                k := popped.defers.items.len
+                while k > 0 {
+                    k -= 1
+                    d := popped.defers.items[k]
+                    if not d.is_err { fg.defer_body(null, d, false) }
+                }
+                fg.end_scope(popped, true)
+            }
+            scope := fg.scopes.pop()?
+            _ = c.open.pop()
+            fg.cx = saved
+            try r
+            fg.indent -= 1
+            fg.line("}")
+            // The rungs, inner first: the `with`'s (for clauses), then the one for branches.
+            fg.end_scope(scope, true)
+            if target {
+                popped := fg.scopes.pop()?
+                fg.end_scope(popped, true)
+            }
+            fg.label(c.labels[usize(l)])
+            if x := result { fg.linef("F.w{} = {};", tl, fg.local_lv(x)) }
+            fg.label(end)
+            if x := result { fg.linef("{} = F.w{};", fg.local_lv(x), tl) }
+        }
+        .Install(h) => {
+            w := &c.installing.items[c.installing.items.len - 1]
+            slot := str.format("(void *)&F.w{}", w.label)!
+            match h {
+                .Lit(hid) => {
+                    eref := fg.g.prog.handler_lit(hid).effect_
+                    n := str.format("wn{}", fg.fresh())!
+                    fg.linef("gm_node {} = {{.eff = {}, .kind = GM_LIT, .clauses = {}, .env = (void *)&F.h, .hctx = {}, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = NULL, .next = {}}};", n, fg.g.effect_id(&eref), fg.g.handler_table(hid), w.outer, w.label, slot, w.cur)
+                    w.cur = str.format("(&{})", n)!
+                }
+                .Value(hid, v) => {
+                    hv := fg.tmp(lir.value_type(c.f, v), c.lc_val(v))
+                    eref := fg.g.prog.handler_lit(hid).effect_
+                    n := str.format("wn{}", fg.fresh())!
+                    fg.linef("gm_node {} = {{.eff = {}, .kind = GM_LIT, .clauses = {}, .env = {}.env, .hctx = {}.cx, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = NULL, .next = {}}};", n, fg.g.effect_id(&eref), fg.g.handler_table(hid), hv, hv, w.label, slot, w.cur)
+                    w.cur = str.format("(&{})", n)!
+                }
+                .Decl(decls, v) => {
+                    hv := fg.tmp(lir.value_type(c.f, v), c.lc_val(v))
+                    outer := w.cur
+                    for d in decls {
+                        table := try fg.g.decl_table(d)
+                        eref := fg.g.prog.handler_decl(d).effect_
+                        n := str.format("wn{}", fg.fresh())!
+                        fg.linef("gm_node {} = {{.eff = {}, .kind = GM_DECL, .clauses = {}, .env = (void *)&{}, .hctx = {}, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = NULL, .next = {}}};", n, fg.g.effect_id(&eref), table, hv, outer, w.label, slot, w.cur)
+                        w.cur = str.format("(&{})", n)!
+                    }
+                }
+            }
+        }
+        .HandlerRef(d, _) => c.lc_set(d, str.format("((gm_hval){{(void *)&F.h, {}}})", fg.cx)!)
+        .Exit(kind, ?v) => try c.lc_exit(kind, v)
+        .Resume(k, v) => {
+            ka := c.lc_addr_of(k)
+            x := c.lc_val(v)
+            rp := str.format("rp{}", fg.fresh())!
+            fg.linef("void *{} = gm_resume(inst->fw, {}, {});", rp, ka, fg.g.src_loc(span))
+            vt := lir.value_type(c.f, v)
+            if fg.g.ty.is_void(vt) {
+                fg.linef("(void){};", rp)
+            } else {
+                fg.linef("GM_ST({}, {}, {});", fg.g.ty.cty(vt), rp, x)
+            }
+            fg.start_exit(.Resume, "(&F.h)", "0", "0")
+        }
+        .Cancel(k) => {
+            fg.linef("gm_cancel_cont(inst->fw, {}, {});", c.lc_addr_of(k), fg.g.src_loc(span))
+            fg.check_unwind()
+        }
+        .Defer(is_err, body) => {
+            top := &fg.scopes.items[fg.scopes.items.len - 1]
+            top.defers.push(Defer(is_err: is_err, body: null, lir: body))!
+        }
+        .Loop(_, body) => {
+            fg.line("for (;;) {")
+            try c.lc_nested(body)
+            fg.line("}")
+        }
+        .If(cond, then, else_) => {
+            fg.linef("if ({}) {{", c.lc_val(cond))
+            try c.lc_nested(then)
+            if else_.len > 0 {
+                fg.line("} else {")
+                try c.lc_nested(else_)
+            }
+            fg.line("}")
+        }
+        .Br(l) => c.lc_br(l)
+        .BrIf(cond, negated, l) => {
+            fg.linef("if ({}{}) {{", if negated { "!" } else { "" }, c.lc_val(cond))
+            fg.indent += 1
+            c.lc_br(l)
+            fg.indent -= 1
+            fg.line("}")
+        }
+        .Return(?v) => {
+            if not fg.no_defers() {
+                // Through the ladder, which runs the deferred statements (the errdefers if
+                // the result is an error) and then returns `F.ret`.
+                if x := v {
+                    if fg.g.ty.by_ref(fg.def.ret) {
+                        fg.linef("memmove(&F.ret, {}, {});", c.lc_addr_of(x), fg.g.ty.size(fg.def.ret))
+                    } else {
+                        fg.linef("F.ret = {};", c.lc_val(x))
+                    }
+                }
+                is_err := "0"
+                if fg.g.ty.kind(fg.def.ret) is .Result(_) { is_err = fg.res_is_err(fg.def.ret, "((uint8_t *)&F.ret)") }
+                fg.start_exit(.Return, "(&F.h)", "0", is_err)
+                return ()
+            }
+            if x := v and fg.g.ty.by_ref(fg.def.ret) {
+                // A large result is written to the caller's destination itself.
+                from := c.lc_addr_of(x)
+                fg.linef("memmove(gm_out, {}, {});", from, fg.g.ty.size(fg.def.ret))
+                fg.line("goto gm_fdone;")
+                return ()
+            }
+            if x := v { fg.linef("F.ret = {};", c.lc_val(x)) }
+            fg.line("goto gm_fret;")
+        }
+        .Trap(m) => {
+            a := fg.addr_of(lir.value_type(c.f, m), c.lc_val(m))
+            fg.linef("gm_trap_bytes({}, {}, {});", slice_ptr(a), fg.slice_len(a), fg.g.src_loc(span))
+        }
+        .Assert(?m) => {
+            loc := fg.g.src_loc(span)
+            prefix := "assertion failed"
+            if x := m {
+                a := fg.addr_of(lir.value_type(c.f, x), c.lc_val(x))
+                fg.linef("{{ gm_buf mb = {{0}}; size_t ml = {}; const uint8_t *mp = {}; if (ml == {} && memcmp(mp, \"{}\", {}) == 0) gm_buf_push(&mb, mp, ml); else {{ gm_buf_push(&mb, \"{}: \", {}); gm_buf_push(&mb, mp, ml); }} gm_trap_bytes(mb.data, mb.len, {}); }}", fg.slice_len(a), slice_ptr(a), prefix.len, prefix, prefix.len, prefix, prefix.len + 2, loc)
+            } else {
+                fg.linef("gm_trap(\"{}\", {});", prefix, loc)
+            }
+        }
+        // Assertions run where the checks do (§21.6).
+        .DebugOnly(body) => if fg.g.opts.checks {
+            fg.line("{")
+            try c.lc_nested(body)
+            fg.line("}")
+        }
+        .NoArm => fg.linef("gm_trap(\"no match arm matched the scrutinee\", {});", fg.g.src_loc(span))
+        .Unreachable => fg.line("__builtin_unreachable();")
+        _ => return !unsupported(span, "this LIR instruction")
+    }
+}

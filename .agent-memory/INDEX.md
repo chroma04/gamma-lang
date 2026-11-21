@@ -20,13 +20,13 @@
   (075) P0 done: compiler/lir + `gamma lir` + suite `lir`; s80 P1a; s81 P1+P2: the
   interp compiles every body from LIR (vm_lir.gm + vm_gen.gm), tree evaluator, code.gm
   and vm_compile deleted; interp 5–13% fewer Ir on the benches. s82 P3a: lir/checks.gm
-  removes proven bounds checks; VM StepLd/StepSt.
+  removes proven bounds checks; VM StepLd/StepSt; P4a cgen/lirc.gm (GAMMA_CGEN_LIR=1).
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
 ## Next steps
-0. LIR plan (decisions/075 "State after P3a"): P4 cgen on LIR (or P3c handler
-   specialization for the VM), when the user asks to continue it.
+0. LIR plan (decisions/075 "State after P4a"): grow lirc.gm coverage (nested-fn parents,
+   defer, with/exits, long bodies, spec clones), then default on + delete TIR body code.
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
    gaps), testing, language. Performance §2 now lists only structural changes.
 2. roadmap/bugs.md: small open bugs, good for a short session.

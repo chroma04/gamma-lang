@@ -253,6 +253,16 @@ every build except Safe ones into three units (and fails a build that cannot be 
 GAMMA_C_UNITS=3 tools/test.sh conformance/ examples/
 ```
 
+The C back end is moving onto LIR (see [`architecture.md`](architecture.md#the-lowered-form-lir)).
+`GAMMA_CGEN_LIR=1` generates the bodies it can from LIR; CI runs the conformance tests, the
+examples and the compiler's self-build that way too. `GAMMA_CGEN_LIR=report` prints, after each
+build, how many bodies came from LIR and why each other one did not:
+
+```sh
+GAMMA_CGEN_LIR=1 tools/test.sh conformance/ examples/ selfhost/
+GAMMA_CGEN_LIR=report gamma build --emit-c examples/json_query.gm -o /tmp/q
+```
+
 When adding a feature, add conformance tests that follow the specification section by
 section: valid programs that exercise each rule, and invalid programs that check each compile
 error the section requires.
