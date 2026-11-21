@@ -232,7 +232,7 @@ table_demo :: fn() needs Out {
 }
 ```
 
-A named function converts implicitly to a function pointer (or to a second-class `fn`). A function literal converts to a pointer only if it captures nothing. Function pointers can be compared with `is`, and when their signatures use C-compatible types they are ABI-compatible with C function pointers ([chapter 14](14-interop.md)). A pointer's type fixes the effects of calling it exactly; there is no way to store a function that is polymorphic in its effects (§12.8).
+A named function converts implicitly to a function pointer (or to a second-class `fn`). A function literal converts to a pointer only if it captures nothing. Because a function converts to either kind, it has no type of its own where none is expected: `print("{}", double)` and `identity(double)` with a generic `identity` are errors (printing it would show its address, which a forgotten call or a missing local usually hides behind). Give it a pointer type first, `p: ^fn(x: i32) -> i32 = double`, when the address is what you want. Function pointers can be compared with `is`, and when their signatures use C-compatible types they are ABI-compatible with C function pointers ([chapter 14](14-interop.md)). A pointer's type fixes the effects of calling it exactly; there is no way to store a function that is polymorphic in its effects (§12.8).
 
 | | `fn(...)` | `^fn(...)` |
 | --- | --- | --- |

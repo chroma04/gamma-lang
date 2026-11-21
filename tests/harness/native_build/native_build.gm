@@ -2,7 +2,8 @@
 //! compiled once and kept in the cache directory (`GAMMA_CACHE_DIR`); Checked and Fast
 //! builds, and Debug builds without a cache, compile it with the program. Each way must
 //! give the same program. Safe builds need Fil-C. Without a usable C compiler (or, for
-//! the Safe build itself, without Fil-C) the tests are skipped.
+//! the Safe build itself, without Fil-C) the tests are skipped. `stack_usage.gm` checks
+//! `@stack_size` against the frame sizes GCC reports.
 
 kit :: import "../kit"
 driver :: import "gammac/driver"
@@ -25,6 +26,8 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
         out.push(kit.Test(name: "run_reports_a_closed_pipe_as_a_signal_status", run: closed_pipe))!
         out.push(kit.Test(name: "run_relinks_when_a_foreign_library_changes", run: relinks_foreign_library))!
         out.push(kit.Test(name: "output_is_flushed_before_waiting", run: output_is_flushed_before_waiting))!
+        out.push(kit.Test(name: "a_new_cache_directory_is_private", run: a_new_cache_directory_is_private))!
+        out.push(kit.Test(name: "stack_size_covers_the_frames_gcc_reports", run: stack_size_covers_the_frames_gcc_reports))!
     }
 }
 
@@ -77,6 +80,24 @@ objects :: fn(t: ^kit.T, cache: string) -> kit.Fail![]string needs kit.Run {
         if str.strip_suffix(n, ".o") is not null { l.push(n)! }
     }
     return l.items
+}
+
+// The cache holds objects and executables that builds use, so a cache directory that a build
+// creates is the user's alone (mode 0700); one that exists keeps its mode.
+a_new_cache_directory_is_private :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    s := try setup(t, "private_cache")
+    cache := kit.join(kit.join(s.dir, "new"), "cache")
+    _ = try build_and_run(t, s.src, kit.join(s.dir, "a"), cache, empty_slice(string))
+    info := Fs.stat(cache) else e => return !t.fail("cannot stat {}: {}", cache, e)
+    try t.check(info.mode & 0o777 is 0o700, "the new cache directory has mode {:o}, not 700", info.mode & 0o777)
+    shared := kit.join(s.dir, "shared")
+    fs.make_dir_all(shared) else e => return !t.fail("cannot create {}: {}", shared, e)
+    Fs.set_mode(shared, 0o755) else e => return !t.fail("cannot set the mode of {}: {}", shared, e)
+    _ = try build_and_run(t, s.src, kit.join(s.dir, "b"), shared, empty_slice(string))
+    kept := Fs.stat(shared) else e => return !t.fail("cannot stat {}: {}", shared, e)
+    try t.check(kept.mode & 0o777 is 0o755, "an existing cache directory's mode changed to {:o}", kept.mode & 0o777)
+    return ()
 }
 
 same_names :: fn(a, b: []const string) -> bool {

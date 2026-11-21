@@ -1,0 +1,35 @@
+//! stage: check
+// Only a union is a lifting target (§10.6): a struct error type gets no lifting and no
+// variant shorthand, whatever its fields.
+IoError :: union { NotFound, Other: i32 }
+Kind :: union { Io: IoError, Bad }
+PosError :: struct { kind: Kind, pos: usize = 0 }
+Wrapper :: struct { io: IoError }
+
+read :: fn(path: string) -> IoError!string {
+    if path.len is 0 { return !.NotFound }
+    return path
+}
+
+pos_error :: fn(kind: Kind, pos: usize) -> PosError => PosError(kind: kind, pos: pos)
+
+lifted :: fn() -> PosError!usize {
+    s := try read("x")                    //~ ERROR only a union error type lifts
+    return s.len
+}
+
+wrapped :: fn() -> Wrapper!usize {
+    s := try read("x")                    //~ ERROR only a union error type lifts
+    return s.len
+}
+
+shorthand :: fn() -> PosError!() {
+    return !.Bad                          //~ ERROR needs a union type
+}
+
+explicit :: fn(at: usize) -> PosError!usize {
+    s := read("x") else e => return !pos_error(.Io(e), at)
+    return s.len
+}
+
+main :: fn() {}

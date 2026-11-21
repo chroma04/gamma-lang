@@ -3,7 +3,7 @@
 #
 #     fuzz/build.sh [TARGET...]      # default: every target
 #
-# The targets are the root modules of this directory (parse, fmt, check, manifest,
+# The targets are the root modules of this directory (parse, fmt, check, lower, manifest,
 # archive). Each is compiled to C by `gamma build --emit-c`, then by clang with coverage
 # instrumentation and linked with libFuzzer's driver. Needs clang with libFuzzer (on
 # Debian and Ubuntu: `apt install clang libclang-rt-dev`).
@@ -13,7 +13,7 @@
 #   CLANG    the C compiler (default: clang)
 #   MODE     the build mode (default: checked, which keeps the safety checks)
 #   SAN      sanitizers for the generated C, as in `-fsanitize=` (default: address; the
-#            check target defaults to none because it is slow); `SAN=none` for none
+#            check and lower targets default to none because they are slow); `SAN=none` for none
 #   OPT      the optimization flag (default: -O1)
 #
 # The targets are built in parallel.
@@ -29,7 +29,7 @@ root=$(cd "$here/.." && pwd)
 : "${GAMMA_RUNTIME:=$root/runtime}"
 export GAMMA_STD GAMMA_RUNTIME
 
-if [ "$#" -eq 0 ]; then set -- parse fmt check manifest archive; fi
+if [ "$#" -eq 0 ]; then set -- parse fmt check lower manifest archive; fi
 out="$here/build"
 mkdir -p "$out"
 
@@ -45,7 +45,7 @@ fi
 build_one() {
     target=$1
     san=${SAN:-address}
-    if [ -z "${SAN:-}" ] && [ "$target" = check ]; then san=none; fi
+    if [ -z "${SAN:-}" ] && { [ "$target" = check ] || [ "$target" = lower ]; }; then san=none; fi
     if [ "$san" = none ]; then flags=fuzzer-no-link; else flags=fuzzer-no-link,$san; fi
     echo "== $target (sanitizer: $san)"
     "$GAMMA" build --mode="$MODE" --emit-c "$here/$target.gm" -o "$out/$target"

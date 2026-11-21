@@ -651,7 +651,7 @@ pub show :: fn(s: ^const Sema, t: Ty) -> string needs Alloc => s.tys.show(t)
 // ---------------------------------------------------------------------------------
 
 /// The effects of the core library other than `Yield`, in the order their ids are assigned.
-CORE_EFFECTS :: [12]string("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Test", "Proc")
+pub CORE_EFFECTS :: [12]string("Out", "Err", "Env", "Alloc", "Sys", "In", "Clock", "Rand", "Fs", "Net", "Test", "Proc")
 
 /// Resolves the core library's ambient effects, as loading the prelude does, so that
 /// their ids come first.

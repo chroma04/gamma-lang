@@ -35,7 +35,7 @@ case "$target" in
     parse | fmt) options="-timeout=5 -rss_limit_mb=4096" ;;
     manifest) options="-timeout=5 -rss_limit_mb=4096" ;;
     archive) options="-timeout=20 -rss_limit_mb=4096 -max_len=65536" ;;
-    check) options="-timeout=20 -rss_limit_mb=4096 -max_len=8192" ;;
+    check | lower) options="-timeout=20 -rss_limit_mb=4096 -max_len=8192" ;;
     *) options="" ;;
 esac
 

@@ -91,7 +91,8 @@ gen_consts :: fn(g: ^Gen) -> Unsup!ConstsText needs sema.Load {
             continue
         }
         if link := gl.link_name {
-            decls.write("extern uint8_t gm_g{}[] __asm__(GM_SYM({}));\n", t, c_string(link))!
+            tls := if gl.thread_local { "GM_TLS " } else { "" }
+            decls.write("extern {}uint8_t gm_g{}[] __asm__(GM_SYM({}));\n", tls, t, c_string(link))!
             continue
         }
         tls := if gl.thread_local { "GM_TLS " } else { "" }
@@ -253,11 +254,16 @@ value_bytes :: fn(g: ^Gen, v: tir.Value, t: Ty, out: []u8, off: u64, relocs: ^Li
         }
         .Fn(f) => {
             g.queue(f)
-            match g.ty.kind(t) {
-                .FnPtr(_) => relocs.push(Reloc(offset: off, target: str.format("(void *){}", g.addr_name(f))!, addend: 0))!
-                .Optional(_) => relocs.push(Reloc(offset: off, target: str.format("(void *){}", g.addr_name(f))!, addend: 0))!
-                _ => return !unsupported(source.DUMMY, "a compile-time function value of this type")
+            if g.ty.kind(t) not in (.FnPtr(_), .Optional(_)) { return !unsupported(source.DUMMY, "a compile-time function value of this type") }
+            // A plain function stored at a hidden-convention pointer type is tagged, as a
+            // conversion at run time tags it (see `call_indirect`), so the two are the same
+            // pointer.
+            target: string = if g.is_plain(f) and not g.fn_ptr_type_plain(t) {
+                str.format("GM_PTR_TAG({})", g.addr_name(f))!
+            } else {
+                str.format("(void *){}", g.addr_name(f))!
             }
+            relocs.push(Reloc(offset: off, target: target, addend: 0))!
         }
         .Closure(_), .Handler(_) => return !unsupported(source.DUMMY, "a compile-time function literal")
     }

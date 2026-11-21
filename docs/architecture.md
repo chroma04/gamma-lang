@@ -1269,7 +1269,8 @@ and run it once per test with captured output. With `--backend=interp` there is 
 executable: each test runs in a `gamma` process started with the same command line plus the
 hidden option `--run-test=j`, which checks the program again and interprets the `j`th
 selected test's entry (`driver.run_interp_entry`), so traps, exits and `--timeout` work as
-for an executable, and a test reaching foreign code or assembly is refused. `run.gm`
+for an executable. The tests that reach foreign code or assembly (`driver.needs_native`) are
+compiled into one executable of their own and run natively, in their place in the report. `run.gm`
 selects the cases (`--filter`), runs them, on `--jobs` threads that only start processes, and
 prints the results in order; a test passes if its exit status is 0, and a trap's message and
 location reach the report from standard error. A test that exceeds `--timeout` is killed by a

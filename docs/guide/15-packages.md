@@ -205,7 +205,7 @@ naming = "deny"
 
 ## The cache
 
-Fetched packages live in the same cache directory as compiled runtime objects: `$GAMMA_CACHE_DIR`, else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma` on macOS and `~/.cache/gamma` elsewhere (`gamma cache dir` prints it). Under it:
+Fetched packages live in the same cache directory as compiled runtime objects: `$GAMMA_CACHE_DIR`, else `$XDG_CACHE_HOME/gamma`, else `~/Library/Caches/gamma` on macOS and `~/.cache/gamma` elsewhere (`gamma cache dir` prints it). When a build creates it, it is made private to you (mode 0700; on Windows `%LOCALAPPDATA%` is private already), since builds link and run what it holds. Under it:
 
 | Path | Contents |
 | --- | --- |

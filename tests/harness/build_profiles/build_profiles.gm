@@ -13,6 +13,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "c_sources_work_with_every_command", run: c_sources_work_with_every_command))!
     out.push(kit.Test(name: "c_objects_follow_changes", run: c_objects_follow_changes))!
     out.push(kit.Test(name: "c_compile_errors_are_reported", run: c_compile_errors_are_reported))!
+    out.push(kit.Test(name: "thread_local_c_variables", run: thread_local_c_variables))!
     out.push(kit.Test(name: "profiles_and_precedence", run: profiles_and_precedence))!
     out.push(kit.Test(name: "debug_info_comes_from_the_manifest", run: debug_info_comes_from_the_manifest))!
     out.push(kit.Test(name: "manifest_errors_have_lines", run: manifest_errors_have_lines))!
@@ -208,6 +209,48 @@ c_sources_work_with_every_command :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run 
     try w.no_objects()
     // `check` does not need the C compiler's work.
     _ = try w.ok("app", [_]string("check", "main.gm"))
+    return ()
+}
+
+TLS_C :: "_Thread_local int tls_count = 5;\nint tls_bump(void) { return ++tls_count; }\n"
+
+TLS_MAIN :: `
+c :: import "std/c"
+thread :: import "std/thread"
+
+lib :: foreign "c" {
+    #thread_local #global tls_count: c.c_int
+    tls_bump :: fn() -> c.c_int
+}
+
+// Each thread starts from the C initializer, whatever the others did.
+other :: fn(out: ^c.c_int) needs Sys {
+    _ = lib.tls_bump()
+    lib.tls_count = lib.tls_count + 100
+    out^ = lib.tls_count
+}
+
+main :: fn() needs Out + Sys {
+    lib.tls_count = 40
+    n := lib.tls_bump()
+    seen: c.c_int = 0
+    th := thread.spawn(other, &seen)!
+    thread.join(th)
+    print("{} {} {}\n", n, lib.tls_count, seen)
+}
+`
+
+// A foreign `#thread_local #global` names a C `_Thread_local` variable (§19.3): each
+// thread has its own instance, shared with the C code of that thread.
+thread_local_c_variables :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c or not kit.runs("cc") { return !t.skip("no C compiler") }
+    w := try world(t, "tls")
+    try w.write("app/gamma.toml", "[package]\nname = \"app\"\n\n[build]\nc-sources = [\"c/tls.c\"]\n")
+    try w.write("app/c/tls.c", TLS_C)
+    try w.write("app/main.gm", TLS_MAIN)
+    try w.prints("app", [_]string("run", "main.gm"), "41 41 106\n")
+    // The interpreter cannot reach the C variable, so the program runs natively.
+    try w.prints("app", [_]string("run", "--backend=interp", "main.gm"), "41 41 106\n")
     return ()
 }
 

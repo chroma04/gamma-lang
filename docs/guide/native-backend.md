@@ -29,7 +29,8 @@ compiler. The whole conformance suite runs each `run` test through both.
   a small program and machines without a toolchain. It is much slower than compiled code
   (compute-heavy programs run tens to hundreds of times slower), and it cannot run a
   program that calls foreign C code or uses inline assembly: those run only through C
-  (`gamma run` without `--backend=interp` does that; with it, the program is refused).
+  (with `--backend=interp`, `gamma run` compiles such a program and runs it natively, and
+  `gamma test` does the same for the tests that need it).
 
 The build modes (`--mode=debug|checked|fast`) work on both: Debug and Checked builds keep
 every check, and Fast builds remove them (§21). Safe builds (`--mode=safe`) need Fil-C,

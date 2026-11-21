@@ -67,11 +67,11 @@ static int gm_snprintf(char *dst, size_t cap, const char *fmt, ...);
 #endif
 #endif
 
-#if defined(GM_RT_PROGRAM) && defined(GM_RT_SEPARATE) && !defined(_WIN32)
+#if defined(GM_RT_PROGRAM) && defined(GM_RT_SEPARATE)
 /* The generated code of a program that is linked with the separately compiled runtime
  * needs only the declarations below, which use nothing from the operating system's headers;
- * parsing those would take the C compiler about as long as a small program. (Windows
- * builds include them all.) */
+ * parsing those would take the C compiler about as long as a small program (on Windows,
+ * where every unit of a split build would parse <windows.h> and Winsock, much longer). */
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>

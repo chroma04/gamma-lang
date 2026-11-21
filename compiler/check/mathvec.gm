@@ -61,6 +61,35 @@ literal_var :: fn(cx: ^FnCx, kind: VarKind) -> Ty needs Load {
     return cx.infer.new_var(&cx.s.tys, kind)
 }
 
+/// Whether `e` mentions a complex constant, and whether it is an untyped constant
+/// expression (`try_untyped` gives a result). The operator nodes below `e` (and `e` too, if
+/// `record`) that mention one are recorded in `complex_nodes` with the second answer.
+/// `e` itself is not recorded at first: it may be a copy whose address is reused.
+classify_complex :: fn(cx: ^FnCx, e: ^const ast.Expr, record: bool) -> (mentions: bool, constant: bool) needs Load {
+    c: (mentions: bool, constant: bool) = match e.kind {
+        .Paren(inner) => cx.classify_complex(inner, true)
+        .Unary(.Neg, inner) => cx.classify_complex(inner, true)
+        .Unary(_, inner) => (mentions: cx.classify_complex(inner, true).mentions, constant: cx.try_untyped(e) is not null)
+        .Binary(op, lhs, rhs) => {
+            l := cx.classify_complex(lhs, true)
+            r := cx.classify_complex(rhs, true)
+            (mentions: l.mentions or r.mentions, constant: untyped_op(op) and l.constant and r.constant)
+        }
+        .Float(l) => (mentions: l.imag, constant: cx.try_untyped(e) is not null)
+        .Ident(_), .Field(_) => {
+            u := cx.try_untyped(e)
+            mentions := false
+            if r := u {
+                if .Ok(v) := r and v is .Complex(_) { mentions = true }
+            }
+            (mentions: mentions, constant: u is not null)
+        }
+        _ => (mentions: false, constant: cx.try_untyped(e) is not null)
+    }
+    if record and c.mentions and (e.kind is .Binary(_) or e.kind is .Unary(_)) { cx.complex_nodes.put(e, c.constant)! }
+    return c
+}
+
 /// True if `e` is made of constants with operators and mentions a complex constant, so
 /// that it is an untyped complex constant expression to evaluate exactly (§6.2).
 mentions_complex_constant :: fn(cx: ^FnCx, e: ^const ast.Expr) -> bool needs Load {
@@ -314,6 +343,9 @@ complex_call :: fn(cx: ^FnCx, name: string, args0: []const ^Expr, swap: bool, sp
 core_call_values :: fn(cx: ^FnCx, f: u32, args: []const ^Expr, span: source.Span) -> ^Expr needs Load {
     stmts := list(tir.Stmt)
     written := list(ast.Arg)
+    // The names of the arguments are seen only by the call: in a scope of their own, they
+    // do not pile up in the enclosing one (a chain `z + y + y + …` makes one per link).
+    cx.push_scope()
     for v in args {
         vt := cx.infer.resolve(cx.s, v.ty)
         local_name := str.format("<arg{}>", cx.locals.items.len)!
@@ -325,6 +357,7 @@ core_call_values :: fn(cx: ^FnCx, f: u32, args: []const ^Expr, span: source.Span
         written.push(ast.Arg(kind: .Positional(e), span: v.span))!
     }
     call := cx.generic_call(f, null, written.items, span)
+    cx.pop_scope()
     return block_typed(call.ty, stmts.items, call, span)
 }
 

@@ -1,0 +1,29 @@
+//! stage: check
+// A named function or function literal does not determine a type parameter (§16.2), and is
+// not a value to format (§21.6.1): it converts to either kind of function type (§5.14).
+str :: import "std/str"
+
+three :: fn() -> i32 => 3
+id :: fn(T: type, x: T) -> T => x
+call :: fn(f: ^fn() -> i32) -> i32 => f()
+log :: fn(A: type, template :: string, args: ..A) -> string needs Alloc => str.format(template, ..args)!
+
+inferred :: fn() needs Alloc {
+    _ = id(three)                                     //~ ERROR cannot be inferred from the function `three`
+    _ = id(fn() -> i32 => 3)                          //~ ERROR cannot be inferred from a function literal
+    _ = log("{}", three)                              //~ ERROR cannot be inferred from the function `three`
+}
+
+written :: fn() needs Out {
+    print("{}\n", three)                              //~ ERROR `three` is a function, which is not a value to format
+    print("{}\n", fn() -> i32 => 3)                   //~ ERROR a function literal is not a value to format
+}
+
+// A function parameter type, a typed pointer or a call is fine.
+fine :: fn() needs Alloc + Out {
+    p: ^fn() -> i32 = three
+    _ = id(T: ^fn() -> i32, three)
+    print("{} {} {}\n", call(three), three(), log("{}", p).len > 2)
+}
+
+main :: fn() {}

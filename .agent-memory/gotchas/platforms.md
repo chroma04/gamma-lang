@@ -23,6 +23,13 @@
 `GAMMA_TEST_LANE=s390x target/bootstrap/harness -j 4 lanes/` (~1 min).
 
 ## Windows
+- Windows CI time (s75 probe, PR #131 run 44835273320): Defender real-time protection is
+  OFF on windows-latest; one `gamma build hello` 0.8 s warm / 2.9 s cold; tests ran 4-way
+  parallel (5262 s test time / 1316 s wall) but each ~5x slower than alone, worst the
+  `gamma test` files (50-78 s vs ~2.5 s on Linux: fresh exe each, split into up to 4 C
+  units). Cause found: gm_rt.h included <windows.h>+Winsock+bcrypt in every program unit
+  on Windows (GM_RT_PROGRAM light path excluded _WIN32). Fixed in s75: Windows test step
+  22 min -> 2 min 36 s (run 44839104755). The job keeps the timing step and `--slowest 25`.
 - Windows-only code (`when target.os is .Windows`) is not checked on Linux: run
   `CC=clang gamma check --target=x86_64-w64-mingw32 f.gm` (no mingw needed).
   `when … { return a }` then `return b` is "unreachable code" on Windows only: use `else`.

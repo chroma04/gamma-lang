@@ -8,10 +8,13 @@ Versions and what each kind of change means are described in
 
 ### Added
 
+- **Thread-local foreign variables**: `#thread_local #global x: T` in a `foreign` block
+  declares a C `_Thread_local` variable, one instance per thread (spec §19.3).
 - **`gamma test --backend=interp` and `gamma bench --backend=interp`** run tests and
   benchmarks in the interpreter, without a C compiler. Each test runs in a process of its
   own, so `--jobs`, `--timeout`, `--filter` and the report work as with the C back end, and
-  the output is the same; a test that reaches foreign code or assembly is refused, and
+  the output is the same; a test that reaches foreign code or assembly is compiled through C
+  and run natively, in its place in the report, and
   `--coverage` still needs C. `--backend=interp` was a usage error for these commands.
 - **`gamma lint --target=<triple>` and `gamma fix --target=<triple>`** check the program
   for another machine, as `gamma check --target` does, so code in `when target…` branches
@@ -32,6 +35,15 @@ Versions and what each kind of change means are described in
 
 ### Changed
 
+- **Faster Debug builds on Windows.** The generated code of a Debug build no longer
+  includes `<windows.h>` and Winsock in every C unit; as on other systems it includes only
+  the few standard headers the runtime's declarations need.
+- **A function name or function literal written as a format value, or as an argument a type
+  parameter is inferred from, is an error** (spec §16.2, §21.6.1). It converts to either
+  kind of function type, and `print("{}", loc)` where a local `loc` was meant printed the
+  address of a function `loc`. Give it a function pointer type first to print its address.
+- **A cache directory that `gamma` creates is private to the user** (mode 0700), since builds
+  link the objects and run the executables it holds. An existing directory keeps its mode.
 - **The C sources of packages are compiled once**, and their objects kept in the cache
   (`native/`), instead of by every build. An object is used again only while the file
   and every header it includes are unchanged.
@@ -138,6 +150,13 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **A function in a constant table is the same pointer as at run time.** A function that
+  performs no effects, stored in a constant at a function pointer type that performs some,
+  compared unequal (`is`) to the same function converted at run time in native builds.
+- **Long complex-number chains check in linear time.** `1j + y + y + …` was quadratic
+  (20000 links: 6.9 s, now 0.3 s): the operator nodes are classified once, and the names
+  the compiler gives the operands of each complex operation no longer pile up in the
+  enclosing scope.
 - **A local type alias named like a visible type is an error**, as §4.6 says for every
   local: `Point :: i32` inside a function with a top-level `Point` (or a type parameter
   `T`, or a predeclared type name) was accepted and hid the type.
@@ -175,6 +194,10 @@ Versions and what each kind of change means are described in
 
 ### Documentation
 
+- **Spec §10.6 states that only a union is a lifting target**: an error type that is a
+  struct gets no lifting and no variant shorthand, since its other fields would be made up
+  (rationale in C.8). The guide shows the idiom, a function that builds the error, and the
+  error for `try` into a struct error type now says so and how to convert.
 - The idioms handbook is folded into the guide: its patterns (naming and module layout,
   scanners with `match`, binding optional payloads, when to trap, errors that unwind a
   recursive descent, an arena per phase, pointers into lists that grow, copies of lists and

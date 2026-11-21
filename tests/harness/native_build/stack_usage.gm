@@ -1,0 +1,143 @@
+// `@stack_size` against the frames the C compiler reports: GCC's `-fcallgraph-info=su`
+// gives each function's frame size and its direct calls, so the deepest chain of real
+// frames from a function can be added up and compared with the compiler's bound.
+
+hash_map :: import "std/collections/hash_map"
+
+/// The bytes of a fiber stack that `@stack_size` sets aside for the run time and its own
+/// start-up frames (`STACK_RESERVE` + `STACK_BASE` in compiler/check/stack_size.gm): the
+/// Gamma frames must fit in the rest.
+RESERVED: u64 : 8192 + 1024
+
+STACK_PROGRAM :: `
+leaf :: fn(x: u64) -> u64 {
+    buf: [512]u64 = ---
+    for i in 0..512 { buf[i] = x +% u64(i) }
+    s: u64 = 0
+    for v in buf { s +%= v }
+    return s
+}
+
+middle :: fn(x: u64) -> u64 {
+    a: [256]u64 = ---
+    for i in 0..256 { a[i] = leaf(x +% u64(i)) }
+    return a[3] +% a[7]
+}
+
+outer :: fn(x: u64) -> u64 {
+    a: [1024]u64 = ---
+    for i in 0..1024 { a[i] = middle(x +% u64(i)) }
+    return a[3] +% a[1000]
+}
+
+#noinline
+top :: fn(x: u64) -> u64 => outer(x) +% leaf(x)
+
+main :: fn() needs Out {
+    print("{} {}\n", @stack_size(top), top(3))
+}
+`
+
+/// A call graph with frame sizes: a node per function, an edge per direct call.
+CallGraph :: struct {
+    frames: hash_map.HashMap(string, u64)
+    calls: hash_map.HashMap(string, List(string))
+}
+
+/// The function name in a GCC call graph title (`file.c:name`).
+graph_name :: fn(title: string) -> string {
+    i := str.rfind(title, ":") else return title
+    return title[i + 1..]
+}
+
+/// The text between `key: "` and the next quote on `line`, or null.
+quoted_after :: fn(line, key: string) -> ?string {
+    at := str.find(line, key) else return null
+    rest := line[at + key.len..]
+    end := str.find(rest, "\"") else return null
+    return rest[0..end]
+}
+
+/// Reads a `.ci` file of `-fcallgraph-info=su`.
+read_call_graph :: fn(text: string) -> CallGraph needs Alloc {
+    g := CallGraph(frames: hash_map.hash_map(string, u64), calls: hash_map.hash_map(string, List(string)))
+    for line in str.lines(text) {
+        if source := quoted_after(line, "sourcename: \"") {
+            target := quoted_after(line, "targetname: \"") else continue
+            from := graph_name(source)
+            l := g.calls.get(from) else list(string)
+            l.push(graph_name(target))!
+            g.calls.put(from, l)!
+            continue
+        }
+        title := quoted_after(line, "title: \"") else continue
+        label := quoted_after(line, "label: \"") else continue
+        // The label ends with `\n<bytes> bytes (…)`.
+        end := str.find(label, " bytes") else continue
+        start := (str.rfind(label[0..end], "\\n") else continue) + 2
+        bytes := str.parse_int(u64, label[start..end]) else continue
+        g.frames.put(graph_name(title), bytes)!
+    }
+    return g
+}
+
+/// The bytes of the deepest chain of frames from `f`; calls to functions not in the graph
+/// (the run time, the C library) count nothing, and a call back into the chain ends it.
+deepest :: fn(g: ^CallGraph, f: string, path: ^List(string), memo: ^hash_map.HashMap(string, u64)) -> u64 needs Alloc {
+    if m := memo.get(f) { return m }
+    if f in path.items { return 0 }
+    path.push(f)!
+    below: u64 = 0
+    if callees := g.calls.get(f) {
+        for c in callees.items { below = below.max(deepest(g, c, path, memo)) }
+    }
+    _ = path.pop()
+    total := (g.frames.get(f) else 0) + below
+    memo.put(f, total)!
+    return total
+}
+
+// The bound covers the frames GCC actually lays out, in each build mode.
+stack_size_covers_the_frames_gcc_reports :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    cc := Env.var("CC") else "cc"
+    ask := kit.command(cc)
+    ask.args([_]string("--version"))
+    version := (try t.try_run(ask)) else return !t.skip(SKIP_NO_CC)
+    if not str.contains(version.out, "Free Software Foundation") { return !t.skip("the call graph with frame sizes needs GCC") }
+    dir := try t.scratch("native_build-stack_usage")
+    src := kit.join(dir, "top.gm")
+    try t.write(src, STACK_PROGRAM)
+    for mode in [_]string("debug", "checked", "fast") {
+        graphs := kit.join(dir, str.format("ci-{}", mode)!)
+        _ = fs.remove_all(graphs)
+        fs.make_dir_all(graphs) else e => return !t.fail("cannot create {}: {}", graphs, e)
+        probe := t.gamma([_]string("build"))
+        probe.set("GAMMA_CACHE_DIR", kit.join(dir, "cache"))
+        probe.set("CFLAGS", str.format("-fcallgraph-info=su -dumpdir {}/", graphs)!)
+        exe := kit.join(dir, str.format("top-{}", mode)!)
+        probe.args([_]string(str.format("--mode={}", mode)!, "-o", exe, src))
+        built := try t.run(probe)
+        if not built.success() {
+            // An older GCC without the option.
+            if str.contains(built.err, "callgraph-info") { return !t.skip("this GCC has no -fcallgraph-info") }
+            return !t.fail("the build failed:\n{}", built.err)
+        }
+        run := try t.run_ok(kit.command(exe))
+        words := str.split_once(run.out, " ") else return !t.fail("unexpected output: {}", run.out)
+        bound := str.parse_int(u64, words.before) else return !t.fail("unexpected output: {}", run.out)
+        text := try t.read(kit.join(graphs, str.format("top-{}.ci", mode)!))
+        g := read_call_graph(text)
+        root: ?string = null
+        for e in g.frames.entries() {
+            if e.key.starts_with("gm_f_top_") { root = e.key }
+        }
+        top := root else return !t.fail("no frame for `top` in the call graph ({} mode)", mode)
+        path := list(string)
+        memo := hash_map.hash_map(string, u64)
+        real := deepest(&g, top, &path, &memo)
+        try t.check(real > 8192, "the chain from `top` is only {} bytes ({} mode): the program no longer exercises the bound", real, mode)
+        try t.check(real + RESERVED <= bound, "{} mode: the frames from `top` take {} bytes, but @stack_size(top) = {} leaves {} for them", mode, real, bound, bound - RESERVED)
+    }
+    return ()
+}

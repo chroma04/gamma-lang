@@ -205,6 +205,16 @@ pick_first :: fn(s: string) -> Both!u16 {
 }
 ```
 
+Only a union is lifted into. An error type that is a struct, such as one carrying a position next to a kind, gets no lifting: the other fields are information the lift would have to invent. Write a small function that builds the error from what the call site knows, and use it after `else`:
+
+```gamma fragment
+CalcError :: struct { kind: ErrorKind, pos: usize }
+
+calc_error :: fn(kind: ErrorKind, pos: usize) -> CalcError => CalcError(kind: kind, pos: pos)
+
+store(vars, name, value) else e => return !calc_error(.Memory(e), pos)
+```
+
 If `main` returns a result and ends with an error, the runtime writes the error's type name and variant to standard error and exits with status 1.
 
 Some rules for `try`:

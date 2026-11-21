@@ -11,7 +11,7 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 seconds=${1:-30}
 if [ "$#" -gt 0 ]; then shift; fi
-if [ "$#" -eq 0 ]; then set -- parse fmt check manifest archive; fi
+if [ "$#" -eq 0 ]; then set -- parse fmt check lower manifest archive; fi
 
 "$here/seed.sh" || exit 2
 if [ -z "${NO_BUILD:-}" ]; then

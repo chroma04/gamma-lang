@@ -1,0 +1,49 @@
+//! Runs the front end on arbitrary text as a single-file program, as `check` does, and when
+//! the program checks cleanly, also the back end's preparation and C generation in a Debug
+//! and a Fast configuration. Inputs rejected by the checker stop there; traps and hangs in
+//! the later passes on accepted programs are bugs.
+
+c :: import "std/c"
+ast :: import "gammac/ast"
+cgen :: import "gammac/cgen"
+check :: import "gammac/check"
+diag :: import "gammac/diag"
+driver :: import "gammac/driver"
+load :: import "gammac/load"
+sema :: import "gammac/sema"
+source :: import "gammac/source"
+harness :: import "./harness"
+
+/// The program lives in memory only: no file is read or written for it.
+PATH :: "/gamma-fuzz-input/main.gm"
+
+body :: fn(input: string) needs Alloc + Env + Fs + Proc + Rand + Clock {
+    if not input.utf8_valid() { return }
+    sm := source.source_map()
+    diags := diag.diagnostics()
+    next_id: ast.NodeId = 0
+    std := driver.std_root()
+    l := load.loader(&sm, &diags, &next_id, std, false)
+    l.overlays.push(load.Overlay(path: load.canonical_path(PATH), text: input))!
+    if not l.load_core(driver.core_root(std), "Debug") { return }
+    s := sema.sema(&l)
+    check.install(&s)
+    s.resolve_ambient()
+    root := l.load_root(PATH) else return
+    s.resolve_declarations()
+    check.check_program(&s, root, false)
+    if diags.has_errors() { return }
+    d := s.l.lookup(root, "main") else return
+    .Fn(main) := s.resolve_decl(d) else return
+    entry := check.entry_point(&s, main)
+    roots := [1]u32(entry)
+    if not check.prepare_codegen(&s, roots[..]) { return }
+    p := cgen.prog(&s)
+    // An unsupported construct is reported, not a crash.
+    _ = cgen.generate(&p, entry, cgen.Options(checks: true, debug: true, debug_info: false))
+    _ = cgen.generate(&p, entry, cgen.Options(checks: false, debug: false, debug_info: false))
+}
+
+entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec(data, size, body)
+
+main :: fn() needs Alloc + Env + Sys { harness.run(entry) }

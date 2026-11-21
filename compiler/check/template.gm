@@ -298,6 +298,7 @@ build_write :: fn(cx: ^FnCx, sink: tir.WriteSink, template: ^const ast.Expr, res
         return error_expr(cx.s, span)
     }
     ta := cx.template_args(bytes, template.span, rest, span) else return error_expr(cx.s, span)
+    for k in 0..ta.values.len { cx.fn_written(&ta.values[k]) }
     // A `#soa` slice is written as its columns, not its pointers (§5.6.4).
     for k in 0..ta.values.len {
         if cx.soa_of(&ta.values[k]) is not null {
@@ -463,6 +464,7 @@ write_deferred :: fn(cx: ^FnCx, sink: tir.WriteSink, t: ^Expr, rest: []const ast
                 return error_expr(cx.s, span)
             }
             elems.push(cx.expr(&e, null)^)!
+            cx.fn_written(&elems.items[elems.items.len - 1])
         }
         ts := list(Ty)
         for x in elems.items { ts.push(cx.infer.resolve(cx.s, x.ty))! }
@@ -472,6 +474,32 @@ write_deferred :: fn(cx: ^FnCx, sink: tir.WriteSink, t: ^Expr, rest: []const ast
     ty := if a := args { cx.infer.resolve(cx.s, a.ty) } else { tys.unit() }
     tmp := cx.temp(ty, span)
     return tir.mk(tys.unit(), .WriteDeferred(new(tir.WriteDeferredExpr(sink: sink, template: t, args: args, tmp: tmp))!), span)
+}
+
+/// Reports a named function written as a template's value: it has no value to write but its
+/// address, which is almost never what was meant (§21.6.1).
+fn_written :: fn(cx: ^FnCx, v: ^const Expr) needs Load {
+    .FnRef(_) := v.kind else return
+    name := fn_name_at(cx, v.span) else {
+        d := diag.error(v.span, "a function literal is not a value to format (§21.6.1)")
+        d.add_note("to write its address, give it a function pointer type first: `p: ^fn(…) = fn(…) …`")
+        cx.s.emit(d)
+        return
+    }
+    d := diag.error(v.span, str.format("`{}` is a function, which is not a value to format (§21.6.1)", name)!)
+    d.add_note(str.format("to write its result, call it: `{}(…)`; to write its address, give it a function pointer type first: `p: ^fn(…) = {}`", name, name)!)
+    cx.s.emit(d)
+}
+
+/// The name written at `span` (`f`, `m.f`), or null if something else is, such as a
+/// function literal.
+fn_name_at :: fn(cx: ^FnCx, span: source.Span) -> ?string needs Load {
+    text := cx.span_text(span)
+    if text.len is 0 { return null }
+    for c in text {
+        if not (c in 'a'..='z' or c in 'A'..='Z' or c in '0'..='9' or c in ('_', '.')) { return null }
+    }
+    return text
 }
 
 /// Splits the template of the `WriteDeferred` `e`, now a string, and its arguments

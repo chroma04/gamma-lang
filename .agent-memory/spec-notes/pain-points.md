@@ -6,10 +6,6 @@ Before flagging, check "Settled" below: those are decided.
 ## Open
 - Adding an intrinsic that the prelude uses needs a 2-stage build + seed refresh (s50 sys
   worker); procedure now in docs/contributing.md. Watch.
-- A function name used as a format argument compiles and prints the function's address
-  (`str.format("…{}", loc)` where a local `loc` was meant but missing: the method `loc` of
-  the same module was found). Hit once (s55, moving cgen arms into helpers; the C compiler
-  caught it). Candidate: formatting a function value is an error or a lint.
 - Code size of format templates (s56, measured): `template :: string` is a comptime
   parameter, so every function taking one has an instance per template, and every
   forwarding wrapper (str.format → List.write, kit.check → str.format) multiplies them.
@@ -20,7 +16,7 @@ Before flagging, check "Settled" below: those are decided.
   Not urgent; flagged to the user.
 
 ## Settled — do not re-flag (reason)
-Done: stale-element-pointer through struct pointers (060), dangling-address lint + errors (044/045), pub(package) (044), composite keys
+Done: function value as a format value / inferred type argument is an error (s75, §16.2), stale-element-pointer through struct pointers (060), dangling-address lint + errors (044/045), pub(package) (044), composite keys
 (044), `?x` (047), `[a, b]` note (045), mutated-copy lint, if-branch join (s45), flush before
 blocking (049), temp array slicing (049), process-group kill + SpawnOptions env (053), `in`
 joins (s48). Checked s50 as already working: `if .V(b) := x and n > 0` (§8.2 chains),
@@ -28,6 +24,7 @@ joins (s48). Checked s50 as already working: `if .V(b) := x and n > 0` (§8.2 ch
 thread entries with fewer effects (subsumption), `?T`-in-variant diagnostic suggests `?x`,
 `<` and `sort` on strings (§7.5), sorted map = std/collections/ordered_map.
 By design / not worth conceding:
+- Lifting into struct-typed errors, `!.V` through a struct field (071; spec §10.6, C.8).
 - No shadowing (user, 045). `usize(u64)`/`.trunc` (§6.6, 32-bit targets).
 - `f :: fn` only (functions are constants, second-class literals). One namespace per
   module across files. Variant at the start of a line (`T.V(…)` reads fine; §2.8).
