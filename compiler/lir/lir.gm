@@ -1,0 +1,337 @@
+//! LIR, the lowered form of function bodies: what checking produces (TIR, a typed tree)
+//! taken one step towards a machine, so that the back ends share the lowering instead of
+//! each doing it from the tree.
+//!
+//! A body is a list of instructions, structured as in WebAssembly: a block, a loop or an
+//! `if` holds lists of its own, and control leaves a block or a loop only by falling off
+//! its end or by `Br` to the label of an enclosing one. Values live in *locals* and
+//! *temporaries*:
+//!
+//! - The locals are TIR's (same indices, parameters included), then the ones lowering adds
+//!   for the value of a block, `if`, `match` or `and`/`or`, and for an operand it must
+//!   address. Locals are assigned any number of times, through `Store` to a place.
+//! - Each temporary is written by exactly one instruction (its `dst`) and read only after
+//!   it: later in the same list, or in the lists nested in those later instructions. A
+//!   value needed past the list it was made in goes through a local.
+//!
+//! Everything TIR leaves implicit is an instruction: the order of evaluation (each operand
+//! is a value computed before the instruction that uses it), bounds checks (`Check`), the
+//! tests and bindings of patterns, the result of a branching expression, and the scope of
+//! a `defer` (the block it is in). Integer arithmetic traps as its TIR operator does, on
+//! the instruction's span.
+//!
+//! Lowering is total: a construct it does not lower yet becomes `Tir`, which evaluates the
+//! TIR expression whole, as a back end's tree evaluator would. `Func.escapes` counts them.
+
+arena :: import "std/arena"
+bigint :: import "../bigint"
+ratio :: import "../ratio"
+sema :: import "../sema"
+source :: import "../source"
+str :: import "std/str"
+tir :: import "../tir"
+types :: import "../types"
+
+Ty :: types.Ty
+Sema :: sema.Sema
+Expr :: tir.Expr
+
+/// A function body in LIR.
+pub Func :: struct {
+    pub fn_id: u32
+    /// TIR's locals, then those lowering adds (`Local.synthetic`).
+    pub locals: []Local
+    /// The type of each temporary.
+    pub temps: []Ty
+    pub ret: Ty
+    pub body: []Inst
+    /// How many labels the body uses (they are numbered from 0).
+    pub labels: u32
+    /// The labels of TIR's loops and `with`s: where a TIR `break` or `continue` of the
+    /// label goes (for the `Tir` instructions that leave them).
+    pub loops: []LoopLabels
+    /// How many `Tir` instructions the body has.
+    pub escapes: u32
+}
+
+pub LoopLabels :: struct {
+    /// TIR's label.
+    pub label: u32
+    /// The block whose end a `break` goes to, and the block whose end a `continue` goes
+    /// to (the loop's step and condition follow it).
+    pub brk: u32
+    pub cont: u32
+}
+
+pub Local :: struct {
+    pub ty: Ty
+    pub size: u64
+    pub align: u64
+    pub param: bool = false
+    /// Its address is taken in the function, so it lives in memory.
+    pub addressed: bool = false
+    /// A function nested in this one reaches it (as an upvar there).
+    pub captured: bool = false
+    /// Added by lowering: not a local of the source.
+    pub synthetic: bool = false
+}
+
+pub Inst :: struct {
+    pub op: Op
+    pub span: source.Span
+}
+
+/// An operand.
+pub Value :: union {
+    Temp: u32
+    /// A scalar of at most 8 bytes (an integer, a float, a `bool`, a null optional
+    /// pointer) of type `ty`: its bits, as an integer of that size holds them (a float's
+    /// bits, `bool` 0 or 1, a signed integer sign-extended to 64 bits).
+    Word: (ty: Ty, bits: u64)
+    /// The value of a zero-size type such as `()`.
+    Zero: Ty
+    /// Unspecified bytes of type `ty` (`---`, §4.4), which Debug builds fill with `0xAA`.
+    Uninit: Ty
+}
+
+/// A place in memory, or a local: a base and what is applied to it in order.
+pub Place :: struct {
+    pub base: Base
+    pub proj: []Proj = empty_slice(Proj)
+}
+
+pub Base :: union {
+    Local: u32
+    /// A local of the function `levels` frames out (the frame a nested function captures).
+    Upvar: (levels: u32, local: u32)
+    /// A `#global` or foreign variable, by its declaration.
+    Global: usize
+    /// A typed constant in static storage, by its name and declaration.
+    Const: (name: string, span: source.Span)
+    /// What the pointer in a temporary points to.
+    Deref: u32
+}
+
+pub Proj :: union {
+    /// Field `index` of a struct or tuple, `off` bytes in.
+    Field: (index: u32, off: u64)
+    /// Element `index` of an array, of `size` bytes: `index * size` bytes on. It is not
+    /// checked; a `Check` comes before it where the language checks the index.
+    Elem: (index: Value, size: u64)
+    /// The value of the same type `index * size` bytes on: the element `index` of a
+    /// sequence that a pointer's target starts (a slice's or a many-pointer's).
+    Step: (index: Value, size: u64)
+    /// What the pointer held here points to.
+    Deref
+    /// The value of a present optional, or the payload of a result or of a union value,
+    /// `off` bytes in.
+    Payload: u64
+}
+
+/// A function or operation an instruction calls.
+pub Callee :: union {
+    Fn: u32
+    /// A function value or function pointer.
+    Value: Value
+    /// Operation `op` of an effect, through the handler installed for it.
+    Perform: (effect_: types.EffectRef, op: u32)
+}
+
+/// Where a `Write` goes.
+pub Sink :: union {
+    /// An operation taking `[]const u8` (`Out.write` for `print`).
+    Perform: (effect_: types.EffectRef, op: u32)
+    /// A function value taking `[]const u8`.
+    Value: Value
+}
+
+/// What a `Check` instruction checks; it traps where the language says (§18.2), and Fast
+/// builds leave it out unless §18.1 keeps it.
+pub Check :: union {
+    /// `index < len`: an integer index (of any integer type) and a `usize` length.
+    Bounds: (index: Value, len: Value)
+    /// The bounds of a slicing: `lo <= hi` (`lo <= hi + 1` if `inclusive`) and, if the
+    /// length is known, `hi <= len` (`hi < len`).
+    Range: (lo: Value, hi: Value, len: ?Value, inclusive: bool)
+    /// `present` (from `IsPresent` on the place): the unwrapping `x?` (or, with `result`,
+    /// `x!`) of the value at the place traps otherwise, reporting the error a result holds.
+    Unwrap: (present: Value, place: Place, result: bool)
+}
+
+/// What a `Wrap` instruction makes.
+pub Wrap :: union {
+    /// An absent optional (`null`), around no value.
+    None
+    /// A present optional.
+    Some
+    /// A successful result.
+    Ok
+    /// A failed result.
+    Err
+}
+
+pub Op :: union {
+    // Values: each writes the temporary `dst`.
+    /// A copy of a value.
+    Move: (dst: u32, v: Value)
+    /// The value at a place.
+    Load: (dst: u32, place: Place)
+    /// The address of a place.
+    AddrOf: (dst: u32, place: Place)
+    /// A binary operator of TIR on two values of the operator's operand type (its result
+    /// type for `+ - * / % & | ~ << >>`, `bool` for comparisons).
+    Bin: (dst: u32, op: tir.BinOp, a: Value, b: Value)
+    Un: (dst: u32, op: tir.UnOp, a: Value)
+    /// `a is b`, or with `negated`, `a is not b`.
+    Eq: (dst: u32, negated: bool, a: Value, b: Value)
+    /// An implicit coercion (§6.4) of a value to the type of `dst`.
+    Coerce: (dst: u32, kind: tir.Coercion, v: Value)
+    /// A builtin that takes the values of its arguments; `dst` if it has a value.
+    Builtin: (dst: ?u32, op: tir.Builtin, args: []Value)
+    /// A call; `dst` if its value is used.
+    Call: (dst: ?u32, callee: Callee, args: []Value)
+    /// A struct, tuple or array of the values, in order.
+    Aggregate: (dst: u32, items: []Value)
+    /// The bytes of a string literal (§5.8) as a `string`, or (`c`) a C string's address.
+    Str: (dst: u32, bytes: []const u8, c: bool)
+    /// An array with every element `v`.
+    Fill: (dst: u32, v: Value)
+    /// The slice of the elements of `size` bytes from `lo` to `hi` (included if
+    /// `inclusive`) of the sequence starting at the address `ptr`; `Check(.Range)` checks
+    /// the bounds before.
+    MakeSlice: (dst: u32, ptr: Value, lo: Value, hi: Value, inclusive: bool, size: u64)
+    /// Formatted output (`print`, `@write`, §21.6.1): the values, then the template's pieces
+    /// and specs, or (`table`) the template a shared body was given (`tir.WriteExpr`).
+    Write: (sink: Sink, pieces: []const []const u8, specs: []const tir.FmtSpec, args: []Value, table: ?Value)
+    /// A union value of `variant`.
+    Variant: (dst: u32, variant: u32, payload: ?Value)
+    /// An optional or result around `v` (a failed result: around the error).
+    Wrap: (dst: u32, kind: Wrap, v: ?Value)
+    /// A named function as a value: a function pointer, or (`second`) a second-class one.
+    FnRef: (dst: u32, f: u32, second: bool)
+    /// The value of a function literal that captures this frame.
+    Closure: (dst: u32, f: u32)
+    /// The value of a handler literal.
+    HandlerRef: (dst: u32, h: u32)
+    /// Whether the optional at the place is present, or (`result`) the result there a
+    /// success.
+    IsPresent: (dst: u32, place: Place, result: bool)
+    /// Whether the union value at the place is of `variant`.
+    TagIs: (dst: u32, place: Place, variant: u32)
+
+    // Effects on memory and checks.
+    Store: (place: Place, v: Value)
+    Check: Check
+
+    // Control.
+    /// A block: `Br(label)` in it goes to its end. Its `Defer`s run when it is left,
+    /// whichever way.
+    Block: (label: u32, body: []Inst)
+    /// A loop: its body runs again when it falls off its end; `Br` to an enclosing block
+    /// leaves it.
+    Loop: (label: u32, body: []Inst)
+    If: (cond: Value, then: []Inst, else_: []Inst)
+    /// Leaves the enclosing block `label`.
+    Br: u32
+    /// Leaves block `label` if `cond` is true (with `negated`, if it is false).
+    BrIf: (cond: Value, negated: bool, label: u32)
+    Return: ?Value
+    /// Registers `body` to run when the enclosing block is left (with `is_err`, only when
+    /// the function returns an error through it, §8.8).
+    Defer: (is_err: bool, body: []Inst)
+    /// Traps with the message (a string).
+    Trap: Value
+    /// No arm of a `match` matched.
+    NoArm
+    /// Not reached: what follows an instruction that does not complete (a call of a
+    /// function returning `never`).
+    Unreachable
+    /// A TIR expression evaluated whole, its value to `dst` if it is used.
+    Tir: (dst: ?u32, expr: ^Expr)
+}
+
+/// The temporary an instruction writes, if any.
+#allow("needless-pub")
+pub dst_of :: fn(op: ^const Op) -> ?u32 => match op^ {
+    .Move(d, _), .Load(d, _), .AddrOf(d, _), .Bin(d, _, _, _), .Un(d, _, _), .Eq(d, _, _, _) => d
+    .Coerce(d, _, _), .Aggregate(d, _), .Variant(d, _, _), .Wrap(d, _, _) => d
+    .Str(d, _, _), .Fill(d, _), .MakeSlice(d, _, _, _, _, _) => d
+    .FnRef(d, _, _), .Closure(d, _), .HandlerRef(d, _), .IsPresent(d, _, _), .TagIs(d, _, _) => d
+    .Builtin(?d, _, _), .Call(?d, _, _), .Tir(?d, _) => d
+    _ => null
+}
+
+/// The type of the value at place `p` of `f`, if it is known here: not for a constant in
+/// static storage, nor below the payload of a result or union value.
+#allow("needless-pub")
+pub place_type :: fn(s: ^Sema, f: ^const Func, p: ^const Place) -> ?Ty needs Alloc {
+    t: Ty = match p.base {
+        .Local(l) => {
+            if usize(l) >= f.locals.len { return null }
+            f.locals[usize(l)].ty
+        }
+        .Upvar(levels, l) => {
+            outer := ancestor(s, f.fn_id, levels) else return null
+            locals := s.defs.items[usize(outer)].locals
+            if usize(l) >= locals.len { return null }
+            locals[usize(l)].ty
+        }
+        .Global(decl) => {
+            found: ?Ty = null
+            for g in s.globals.items {
+                if g.decl is decl { found = g.ty }
+            }
+            found else return null
+        }
+        .Const(_) => return null
+        .Deref(tmp) => {
+            if usize(tmp) >= f.temps.len { return null }
+            pointee(s, f.temps[usize(tmp)]) else return null
+        }
+    }
+    for x in p.proj {
+        t = match x {
+            .Field(i, _) => field_type(s, t, i) else return null
+            .Elem(_) => if .Array(_, elem, _) := s.tys.kind(t) { elem } else { return null }
+            .Step(_) => t
+            .Deref => pointee(s, t) else return null
+            .Payload(_) => if .Optional(inner) := s.tys.kind(t) { inner } else { return null }
+        }
+    }
+    return t
+}
+
+/// The type of value `v` of `f`.
+#allow("needless-pub")
+pub value_type :: fn(f: ^const Func, v: Value) -> Ty => match v {
+    .Temp(t) => f.temps[usize(t)]
+    .Word(ty, _), .Zero(ty), .Uninit(ty) => ty
+}
+
+/// The function `levels` frames out from `f` (whose locals an upvar of `f` reaches).
+ancestor :: fn(s: ^const Sema, f: u32, levels: u32) -> ?u32 {
+    at := f
+    for _ in 0..levels {
+        if usize(at) >= s.defs.items.len { return null }
+        at = s.defs.items[usize(at)].parent else return null
+    }
+    return at
+}
+
+/// What a pointer of type `t` points to: the pointee of `^T`, the element of `[^]T`.
+pointee :: fn(s: ^const Sema, t: Ty) -> ?Ty => match s.tys.kind(t) {
+    .Ptr(_, x) => x
+    .ManyPtr(_, x) => x
+    _ => null
+}
+
+/// The type of field `i` of a struct, tuple, `#c_union` or slice (its pointer and length).
+field_type :: fn(s: ^Sema, t: Ty, i: u32) -> ?Ty needs Alloc {
+    match s.tys.kind(t) {
+        .Tuple(elems, _) => return if usize(i) < elems.len { elems[usize(i)] } else { null }
+        .Slice(is_const, elem) => return if i is 0 { s.tys.intern(.ManyPtr(is_const, elem)) } else { s.tys.usize_ty() }
+        _ => {}
+    }
+    fields := s.struct_fields(t) else s.c_union_fields(t) else return null
+    return if usize(i) < fields.len { fields[usize(i)].ty } else { null }
+}

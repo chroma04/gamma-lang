@@ -1,0 +1,1007 @@
+// Lowering a checked function body from TIR to LIR (`lower`).
+
+/// What lowering the functions of one program shares: for each function, the functions
+/// nested directly in it.
+#allow("needless-pub")
+pub Ctx :: struct {
+    s: ^Sema
+    nested: List(List(u32))
+}
+
+/// The context for lowering the functions of `s`, whose bodies are checked.
+#allow("needless-pub")
+pub context :: fn(s: ^Sema) -> Ctx needs Alloc {
+    cx := Ctx(s: s, nested: list(List(u32)))
+    for _ in 0..s.defs.items.len { cx.nested.push(list(u32))! }
+    for g in 0..s.defs.items.len {
+        if p := s.defs.items[g].parent { cx.nested.items[usize(p)].push(g.trunc(u32))! }
+    }
+    return cx
+}
+
+/// The LIR of function `f`, whose body is checked and monomorphic (not the body of a
+/// generic function, which only its instances have in lowerable form).
+#allow("needless-pub")
+pub lower :: fn(cx: ^Ctx, f: u32) -> Func needs Alloc {
+    s := cx.s
+    def := s.def_of(f)
+    lw := Lw(s: s, f: f, locals: list(Local), temps: list(Ty), cur: list(Inst), labels: 0, loops: list(LoopLabels), escapes: 0, results: list(?u32))
+    for i, l in enumerate(def.locals) {
+        lay := s.layout(l.ty)
+        lw.locals.push(Local(ty: l.ty, size: lay.size, align: lay.align, param: def.params.index_of(i.trunc(u32)) is not null))!
+    }
+    mark_captured(cx, f, 1, f, lw.locals.items)
+    ret := s.fns.items[usize(f)].ret
+    if b := def.body {
+        v := lw.expr(b)
+        if not lw.diverges(b) { lw.emit(.Return(v), b.span) }
+    }
+    return Func(fn_id: f, locals: lw.locals.items, temps: lw.temps.items, ret: ret, body: lw.cur.items, labels: lw.labels, loops: lw.loops.items, escapes: lw.escapes)
+}
+
+/// The state of lowering one function.
+Lw :: struct {
+    s: ^Sema
+    f: u32
+    locals: List(Local)
+    temps: List(Ty)
+    /// The list instructions go to.
+    cur: List(Inst)
+    labels: u32
+    loops: List(LoopLabels)
+    escapes: u32
+    /// For each TIR label (by index): the local a `break` with a value stores it in.
+    results: List(?u32)
+}
+
+emit :: fn(lw: ^Lw, op: Op, span: source.Span) needs Alloc {
+    lw.cur.push(Inst(op: op, span: span))!
+}
+
+temp :: fn(lw: ^Lw, t: Ty) -> u32 needs Alloc {
+    lw.temps.push(t)!
+    return (lw.temps.items.len - 1).trunc(u32)
+}
+
+label :: fn(lw: ^Lw) -> u32 {
+    lw.labels += 1
+    return lw.labels - 1
+}
+
+/// A local of type `t` that lowering adds.
+synthetic :: fn(lw: ^Lw, t: Ty) -> u32 needs Alloc {
+    lay := lw.s.layout(t)
+    lw.locals.push(Local(ty: t, size: lay.size, align: lay.align, synthetic: true))!
+    return (lw.locals.items.len - 1).trunc(u32)
+}
+
+/// The instructions `body` emits, as a list of their own.
+region :: fn(lw: ^Lw, body: fn()) -> []Inst needs Alloc {
+    saved := lw.cur
+    lw.cur = list(Inst)
+    body()
+    out := lw.cur.items
+    lw.cur = saved
+    return out
+}
+
+local_place :: fn(l: u32) -> Place => Place(base: .Local(l))
+
+/// `p` with `x` applied after its projections.
+project :: fn(p: Place, x: Proj) -> Place needs Alloc {
+    proj := list(Proj)
+    proj.extend(p.proj)!
+    proj.push(x)!
+    return Place(base: p.base, proj: proj.items)
+}
+
+/// The value of `v` in a temporary.
+in_temp :: fn(lw: ^Lw, v: Value, t: Ty, span: source.Span) -> u32 needs Alloc {
+    if .Temp(x) := v { return x }
+    d := lw.temp(t)
+    lw.emit(.Move(d, v), span)
+    return d
+}
+
+load :: fn(lw: ^Lw, p: Place, t: Ty, span: source.Span) -> Value needs Alloc {
+    d := lw.temp(t)
+    lw.emit(.Load(d, p), span)
+    return .Temp(d)
+}
+
+/// The value of a zero-size type.
+zero :: fn(t: Ty) -> Value => .Zero(t)
+
+unit :: fn(lw: ^Lw) -> Value needs Alloc => zero(lw.s.tys.unit())
+
+/// Whether `e` never completes: its type is `never`.
+diverges :: fn(lw: ^Lw, e: ^const Expr) -> bool => lw.s.tys.kind(e.ty) is .Never
+
+/// `e` evaluated whole by the TIR evaluator.
+escape :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
+    lw.escapes += 1
+    // The locals whose address it takes live in memory.
+    visit(e, fn(n: ^Expr) {
+        match n.kind {
+            .AddrOf(x), .AddrOfTemp(x) => lw.mark_root(x)
+            .Slice(sl) => if lw.s.tys.kind(sl.base.ty) is .Array(_, _, _) { lw.mark_root(sl.base) }
+            _ => {}
+        }
+    })
+    if lw.s.layout(e.ty).size is 0 or lw.diverges(e) {
+        lw.emit(.Tir(null, e), e.span)
+        return zero(e.ty)
+    }
+    d := lw.temp(e.ty)
+    lw.emit(.Tir(d, e), e.span)
+    return .Temp(d)
+}
+
+/// The scalar constant of type `t` with these bits, if `t` is a scalar of at most 8 bytes.
+word :: fn(lw: ^Lw, t: Ty, bits: u64) -> ?Value needs Alloc {
+    match lw.s.tys.kind(t) {
+        .Int(_, b) => if b > 64 { return null }
+        .Usize, .Isize, .Bool => {}
+        .Float(w) => if w is 16 { return null }
+        .Optional(inner) => if not lw.s.is_nullable_pointer(inner) { return null }
+        _ => return null
+    }
+    return .Word(t, bits)
+}
+
+// ---------------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------------
+
+/// Lowers `e`, emitting what it does, and returns its value.
+expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
+    s := lw.s
+    match e.kind {
+        .Int(i) => {
+            match s.tys.kind(e.ty) {
+                .Float(32) => return .Word(e.ty, u64(ratio.from_int(i).to_f64().to(f32).bits(u32)))
+                .Float(64) => return .Word(e.ty, ratio.from_int(i).to_f64().bits(u64))
+                _ => {}
+            }
+            if not s.tys.is_integer(e.ty) { return lw.escape(e) }
+            v := int_bits(i) else return lw.escape(e)
+            return lw.word(e.ty, v) else lw.escape(e)
+        }
+        .Str(bytes), .CStr(bytes) => {
+            d := lw.temp(e.ty)
+            lw.emit(.Str(d, bytes, e.kind is .CStr(_)), e.span)
+            return .Temp(d)
+        }
+        .Uninit => return .Uninit(e.ty)
+        .ArrayFill(x) => {
+            v := lw.expr(x)
+            d := lw.temp(e.ty)
+            lw.emit(.Fill(d, v), e.span)
+            return .Temp(d)
+        }
+        .Slice(sl) => return lw.slice(e, sl)
+        .Else(x) => return lw.else_expr(e, x)
+        .Unwrap(x, is_result) => {
+            p := lw.operand_place(x) else return lw.escape(e)
+            present := lw.temp(s.tys.bool_ty())
+            lw.emit(.IsPresent(present, p, is_result), e.span)
+            lw.emit(.Check(.Unwrap(.Temp(present), p, is_result)), e.span)
+            if s.layout(e.ty).size is 0 { return zero(e.ty) }
+            return lw.load(project(p, .Payload(lw.payload_off(x.ty))), e.ty, e.span)
+        }
+        .Try(x) => return lw.try_expr(e, x)
+        .Write(w) => {
+            sink: Sink = match w.sink {
+                .Perform(eff, op) => .Perform(eff, op)
+                .Fn(f) => .Value(lw.expr(f))
+            }
+            table: ?Value = null
+            if t := w.table { table = lw.expr(t) }
+            args := lw.exprs(w.args)
+            lw.emit(.Write(sink, w.pieces, w.specs, args, table), e.span)
+            return zero(e.ty)
+        }
+        .Float(x) => {
+            match s.tys.kind(e.ty) {
+                .Float(32) => return .Word(e.ty, u64(x.to(f32).bits(u32)))
+                .Float(64) => return .Word(e.ty, x.bits(u64))
+                _ => return lw.escape(e)
+            }
+        }
+        .Bool(b) => return .Word(e.ty, if b { 1 } else { 0 })
+        .Null => {
+            if w := lw.word(e.ty, 0) { return w }
+            d := lw.temp(e.ty)
+            lw.emit(.Wrap(d, .None, null), e.span)
+            return .Temp(d)
+        }
+        .Local(_), .Upvar(_), .Global(_), .Const(_), .Deref(_), .Field(_), .Index(_) => {
+            p := lw.place(e) else return lw.escape(e)
+            if s.layout(e.ty).size is 0 { return zero(e.ty) }
+            return lw.load(p, e.ty, e.span)
+        }
+        .SliceLen(x) => {
+            p := lw.operand_place(x) else return lw.escape(e)
+            return lw.load(project(p, .Field(1, lw.ptr_size())), e.ty, e.span)
+        }
+        .SlicePtr(x) => {
+            p := lw.operand_place(x) else return lw.escape(e)
+            return lw.load(project(p, .Field(0, 0)), e.ty, e.span)
+        }
+        .AddrOf(x) => {
+            p := lw.place(x) else return lw.escape(e)
+            lw.mark_addressed(&p)
+            d := lw.temp(e.ty)
+            lw.emit(.AddrOf(d, p), e.span)
+            return .Temp(d)
+        }
+        .FnRef(f) => {
+            d := lw.temp(e.ty)
+            lw.emit(.FnRef(d, f, s.tys.kind(e.ty) is .Fn(_)), e.span)
+            return .Temp(d)
+        }
+        .Closure(f) => {
+            d := lw.temp(e.ty)
+            lw.emit(.Closure(d, f), e.span)
+            return .Temp(d)
+        }
+        .HandlerRef(h) => {
+            d := lw.temp(e.ty)
+            lw.emit(.HandlerRef(d, h), e.span)
+            return .Temp(d)
+        }
+        .Unary(op, x) => {
+            a := lw.expr(x)
+            d := lw.temp(e.ty)
+            lw.emit(.Un(d, op, a), e.span)
+            return .Temp(d)
+        }
+        .Binary(op, l, r) => {
+            a := lw.expr(l)
+            b := lw.expr(r)
+            d := lw.temp(e.ty)
+            lw.emit(.Bin(d, op, a, b), e.span)
+            return .Temp(d)
+        }
+        .Eq(l, r, negated) => {
+            a := lw.expr(l)
+            b := lw.expr(r)
+            d := lw.temp(e.ty)
+            lw.emit(.Eq(d, negated, a, b), e.span)
+            return .Temp(d)
+        }
+        .Logic(is_and, l, r) => return lw.logic(e, is_and, l, r)
+        .Coerce(kind, x) => {
+            if kind is .Unresolved { return lw.escape(e) }
+            v := lw.expr(x)
+            if kind is .FromNever { return zero(e.ty) }
+            d := lw.temp(e.ty)
+            lw.emit(.Coerce(d, kind, v), e.span)
+            return .Temp(d)
+        }
+        .Builtin(op, args) => {
+            if not by_value(op) { return lw.escape(e) }
+            vals := lw.exprs(args)
+            if s.layout(e.ty).size is 0 or lw.diverges(e) {
+                lw.emit(.Builtin(null, op, vals), e.span)
+                return zero(e.ty)
+            }
+            d := lw.temp(e.ty)
+            lw.emit(.Builtin(d, op, vals), e.span)
+            return .Temp(d)
+        }
+        .Call(callee, args) => {
+            c: Callee = match callee {
+                .Fn(f) => .Fn(f)
+                .Perform(eff, op) => .Perform(eff, op)
+                .Indirect(x) => .Value(lw.expr(x))
+            }
+            vals := lw.exprs(args)
+            if s.layout(e.ty).size is 0 or lw.diverges(e) {
+                lw.emit(.Call(null, c, vals), e.span)
+                if lw.diverges(e) { lw.emit(.Unreachable, e.span) }
+                return zero(e.ty)
+            }
+            d := lw.temp(e.ty)
+            lw.emit(.Call(d, c, vals), e.span)
+            return .Temp(d)
+        }
+        .Aggregate(xs), .Array(xs) => {
+            vals := lw.exprs(xs)
+            d := lw.temp(e.ty)
+            lw.emit(.Aggregate(d, vals), e.span)
+            return .Temp(d)
+        }
+        .Variant(v) => {
+            payload: ?Value = null
+            if p := v.payload { payload = lw.expr(p) }
+            d := lw.temp(e.ty)
+            lw.emit(.Variant(d, v.variant, payload), e.span)
+            return .Temp(d)
+        }
+        .MakeErr(x) => {
+            v := lw.expr(x)
+            d := lw.temp(e.ty)
+            lw.emit(.Wrap(d, .Err, v), e.span)
+            return .Temp(d)
+        }
+        .Block(b) => return lw.block(b, e.ty)
+        .If(x) => return lw.if_expr(e, x)
+        .Loop(x) => return lw.loop_expr(e, x)
+        .Break(x) => {
+            .Label(0, tl) := x.target else return lw.escape(e)
+            labels := lw.loop_labels(tl) else return lw.escape(e)
+            if v := x.value {
+                val := lw.expr(v)
+                if r := lw.result_of(tl) { lw.emit(.Store(local_place(r), val), e.span) }
+            }
+            lw.emit(.Br(labels.brk), e.span)
+            return zero(e.ty)
+        }
+        .Continue(t) => {
+            .Label(0, tl) := t else return lw.escape(e)
+            labels := lw.loop_labels(tl) else return lw.escape(e)
+            lw.emit(.Br(labels.cont), e.span)
+            return zero(e.ty)
+        }
+        .Return(levels, x) => {
+            if levels is not 0 { return lw.escape(e) }
+            v := lw.expr(x)
+            lw.emit(.Return(v), e.span)
+            return zero(e.ty)
+        }
+        .Trap(x) => {
+            v := lw.expr(x)
+            lw.emit(.Trap(v), e.span)
+            return zero(e.ty)
+        }
+        .Match(scrutinee, arms) => return lw.match_expr(e, scrutinee, arms)
+        _ => return lw.escape(e)
+    }
+}
+
+/// The values of `xs`, left to right.
+exprs :: fn(lw: ^Lw, xs: []Expr) -> []Value needs Alloc {
+    out := list(Value)
+    for i in 0..xs.len { out.push(lw.expr(&xs[i]))! }
+    return out.items
+}
+
+/// Whether a builtin takes the values of its arguments (the others are evaluated whole).
+by_value :: fn(op: tir.Builtin) -> bool => match op {
+    .Assert, .Cover(_), .Unreachable, .Fiber, .Sys(_), .Get, .GetPtr, .First, .Last, .Asm(_), .StaticAssert(_) => false
+    _ => true
+}
+
+ptr_size :: fn(lw: ^Lw) -> u64 needs Alloc => lw.s.layout(lw.s.tys.usize_ty()).size
+
+/// `a and b` (`is_and`) or `a or b`: `b` is evaluated only if `a` does not decide.
+logic :: fn(lw: ^Lw, e: ^Expr, is_and: bool, l, r: ^Expr) -> Value needs Alloc {
+    res := lw.synthetic(e.ty)
+    a := lw.expr(l)
+    rest := lw.region(fn() {
+        b := lw.expr(r)
+        lw.emit(.Store(local_place(res), b), r.span)
+    })
+    decided := lw.region(fn() { lw.emit(.Store(local_place(res), .Word(e.ty, if is_and { 0 } else { 1 })), e.span) })
+    if is_and {
+        lw.emit(.If(a, rest, decided), e.span)
+    } else {
+        lw.emit(.If(a, decided, rest), e.span)
+    }
+    return lw.load(local_place(res), e.ty, e.span)
+}
+
+// ---------------------------------------------------------------------------------
+// Places
+// ---------------------------------------------------------------------------------
+
+/// The place `e` denotes, if it is a place expression this lowering handles; the
+/// operands of its indexes and dereferences are evaluated (and indexes checked) on the way.
+place :: fn(lw: ^Lw, e: ^Expr) -> ?Place needs Alloc {
+    s := lw.s
+    match e.kind {
+        .Local(l) => return local_place(l)
+        .Upvar(levels, l) => return Place(base: .Upvar(levels, l))
+        .Global(_, decl) => return Place(base: .Global(decl))
+        .Const(name, span) => return Place(base: .Const(name, span))
+        .Deref(x) => {
+            p := lw.expr(x)
+            return Place(base: .Deref(lw.in_temp(p, x.ty, x.span)))
+        }
+        .Field(base, index) => {
+            if lw.is_bits(base.ty) { return null }
+            p := lw.operand_place(base) else return null
+            offs := s.layout(base.ty).offsets
+            off: u64 = if usize(index) < offs.len { offs[usize(index)] } else { 0 }
+            return project(p, .Field(index, off))
+        }
+        .Index(base, index, checked) => return lw.index_place(e, base, index, checked)
+        _ => return null
+    }
+}
+
+/// The place holding the value of `e`: `e` itself if it is a place, otherwise a local
+/// that lowering adds and stores the value in.
+operand_place :: fn(lw: ^Lw, e: ^Expr) -> ?Place needs Alloc {
+    if is_place_expr(lw.s, e) { return lw.place(e) }
+    v := lw.expr(e)
+    l := lw.synthetic(e.ty)
+    lw.emit(.Store(local_place(l), v), e.span)
+    return local_place(l)
+}
+
+/// Whether `e` denotes a place (§7.2) rather than a value.
+is_place_expr :: fn(s: ^Sema, e: ^const Expr) -> bool => match e.kind {
+    .Local(_), .Upvar(_), .Global(_), .Deref(_), .Const(_) => true
+    .Field(base, _) => is_place_expr(s, base)
+    .Index(base, _, _) => if s.tys.kind(base.ty) is .Array(_, _, _) { is_place_expr(s, base) } else { true }
+    _ => false
+}
+
+/// Whether `t` is a `#bits` struct, whose fields are not at byte offsets.
+is_bits :: fn(lw: ^Lw, t: Ty) -> bool {
+    .Adt(id, _) := lw.s.tys.kind(t) else return false
+    .Struct(def) := lw.s.adts.items[usize(id)].kind else return false
+    return def.bits is not null
+}
+
+/// The element `base[index]` of an array, slice, many-pointer or pointer to an array.
+index_place :: fn(lw: ^Lw, e: ^Expr, base, index: ^Expr, checked: bool) -> ?Place needs Alloc {
+    s := lw.s
+    esz := s.layout(e.ty).size
+    usize_ty := s.tys.usize_ty()
+    match s.tys.kind(base.ty) {
+        .Array(len, _, _) => {
+            p := lw.operand_place(base) else return null
+            i := lw.expr(index)
+            if checked { lw.emit(.Check(.Bounds(i, .Word(usize_ty, len))), e.span) }
+            return project(p, .Elem(i, esz))
+        }
+        .Slice(is_const, elem) => {
+            p := lw.operand_place(base) else return null
+            ptr := lw.load(project(p, .Field(0, 0)), s.tys.intern(.ManyPtr(is_const, elem)), e.span)
+            len := lw.load(project(p, .Field(1, lw.ptr_size())), usize_ty, e.span)
+            i := lw.expr(index)
+            if checked { lw.emit(.Check(.Bounds(i, len)), e.span) }
+            .Temp(t) := ptr else return null
+            return Place(base: .Deref(t), proj: one(.Step(i, esz)))
+        }
+        .ManyPtr(_, _) => {
+            ptr := lw.expr(base)
+            i := lw.expr(index)
+            return Place(base: .Deref(lw.in_temp(ptr, base.ty, base.span)), proj: one(.Step(i, esz)))
+        }
+        .Ptr(_, pointee) => {
+            .Array(len, _, _) := s.tys.kind(pointee) else return null
+            ptr := lw.expr(base)
+            i := lw.expr(index)
+            if checked { lw.emit(.Check(.Bounds(i, .Word(usize_ty, len))), e.span) }
+            return Place(base: .Deref(lw.in_temp(ptr, base.ty, base.span)), proj: one(.Elem(i, esz)))
+        }
+        _ => return null
+    }
+}
+
+one :: fn(x: Proj) -> []Proj needs Alloc {
+    l := list(Proj)
+    l.push(x)!
+    return l.items
+}
+
+/// Marks the local at the root of `p` as addressed, if `p` is in a local of this
+/// function and not reached through a pointer.
+mark_addressed :: fn(lw: ^Lw, p: ^const Place) {
+    .Local(l) := p.base else return
+    for x in p.proj {
+        if x is .Deref { return }
+    }
+    lw.locals.items[usize(l)].addressed = true
+}
+
+/// Marks the local at the root of the place expression `e` as addressed, if there is one
+/// (`sema.root_local`).
+mark_root :: fn(lw: ^Lw, e: ^Expr) {
+    l := lw.s.root_local(e) else return
+    if usize(l) < lw.locals.items.len { lw.locals.items[usize(l)].addressed = true }
+}
+
+/// Marks the locals of `f` that the functions nested in `outer` reach, `depth` frames out
+/// from them.
+mark_captured :: fn(cx: ^Ctx, f: u32, depth: u32, outer: u32, locals: []Local) {
+    for g in cx.nested.items[usize(outer)].items {
+        if b := cx.s.defs.items[usize(g)].body {
+            visit(b, fn(n: ^Expr) {
+                if .Upvar(levels, l) := n.kind {
+                    if levels is depth and usize(l) < locals.len { locals[usize(l)].captured = true }
+                }
+            })
+        }
+        mark_captured(cx, f, depth + 1, g, locals)
+    }
+}
+
+/// Calls `f` on every expression in `e`.
+visit :: fn(e: ^Expr, f: fn(x: ^Expr)) {
+    f(e)
+    tir.for_each_child(e, fn(c: ^Expr) { visit(c, f) })
+}
+
+// ---------------------------------------------------------------------------------
+// Blocks and control flow
+// ---------------------------------------------------------------------------------
+
+/// A block of type `t`: its statements, then its tail's value. A block with `defer`s is a
+/// `Block`, which runs them when it is left.
+block :: fn(lw: ^Lw, b: ^tir.Block, t: Ty) -> Value needs Alloc {
+    has_defers := false
+    for st in b.stmts {
+        if st is .Defer(_) { has_defers = true }
+    }
+    if not has_defers {
+        lw.stmts(b)
+        tail := b.tail else return lw.unit()
+        return lw.expr(tail)
+    }
+    sized := lw.s.layout(t).size > 0 and lw.s.tys.kind(t) is not .Never
+    res: ?u32 = if sized { lw.synthetic(t) } else { null }
+    l := lw.label()
+    body := lw.region(fn() {
+        lw.stmts(b)
+        if tail := b.tail {
+            v := lw.expr(tail)
+            if r := res { lw.emit(.Store(local_place(r), v), tail.span) }
+        }
+    })
+    lw.emit(.Block(l, body), b.span)
+    r := res else return zero(t)
+    return lw.load(local_place(r), t, b.span)
+}
+
+stmts :: fn(lw: ^Lw, b: ^tir.Block) needs Alloc {
+    for i in 0..b.stmts.len { lw.stmt(&b.stmts[i]) }
+}
+
+stmt :: fn(lw: ^Lw, st: ^tir.Stmt) needs Alloc {
+    match st^ {
+        .Let(l, ?init) => {
+            x := init else return
+            v := lw.expr(x)
+            if lw.diverges(x) { return }
+            if lw.s.layout(x.ty).size is 0 { return }
+            lw.emit(.Store(local_place(l), v), x.span)
+        }
+        .LetTuple(locals, init) => {
+            p := lw.operand_place(init) else return
+            offs := lw.s.layout(init.ty).offsets
+            .Tuple(elems, _) := lw.s.tys.kind(init.ty) else return
+            for i, x in enumerate(locals) {
+                l := x else continue
+                if lw.s.layout(elems[i]).size is 0 { continue }
+                v := lw.load(project(p, .Field(i.trunc(u32), offs[i])), elems[i], init.span)
+                lw.emit(.Store(local_place(l), v), init.span)
+            }
+        }
+        .Assign(place, value) => {
+            // The place's operands, then the value, then the store (§4.7).
+            p := lw.place(place) else {
+                // A place this lowering does not handle: the whole statement.
+                lw.escape_stmt(st, place.span)
+                return
+            }
+            v := lw.expr(value)
+            if lw.diverges(value) or lw.s.layout(value.ty).size is 0 { return }
+            lw.emit(.Store(p, v), value.span)
+        }
+        .AssignTuple(_, value) => lw.escape_stmt(st, value.span)
+        .Expr(x) => {
+            _ = lw.expr(x)
+        }
+        .Defer(is_err, body) => {
+            insts := lw.region(fn() { _ = lw.expr(body) })
+            lw.emit(.Defer(is_err, insts), body.span)
+        }
+    }
+}
+
+/// A statement this lowering does not handle, as a TIR block of that one statement.
+escape_stmt :: fn(lw: ^Lw, st: ^tir.Stmt, span: source.Span) needs Alloc {
+    stmts := list(tir.Stmt)
+    stmts.push(st^)!
+    b := new(tir.Block(stmts: stmts.items, tail: null, span: span))!
+    e := tir.mk(lw.s.tys.unit(), .Block(b), span)
+    _ = lw.escape(e)
+}
+
+/// The local a branching expression of type `t` leaves its value in (`null` if it has
+/// none: unit, zero-size or `never`).
+result_local :: fn(lw: ^Lw, t: Ty) -> ?u32 needs Alloc {
+    if lw.s.layout(t).size is 0 or lw.s.tys.kind(t) is .Never { return null }
+    return lw.synthetic(t)
+}
+
+/// Stores the value of `e` in the result local `res`, unless `e` does not complete.
+store_result :: fn(lw: ^Lw, res: ?u32, e: ^Expr) needs Alloc {
+    v := lw.expr(e)
+    r := res else return
+    if lw.diverges(e) { return }
+    lw.emit(.Store(local_place(r), v), e.span)
+}
+
+read_result :: fn(lw: ^Lw, res: ?u32, t: Ty, span: source.Span) -> Value needs Alloc {
+    r := res else return zero(t)
+    return lw.load(local_place(r), t, span)
+}
+
+if_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.IfExpr) -> Value needs Alloc {
+    res := lw.result_local(e.ty)
+    // A single boolean condition is an `If`.
+    if x.cond.len is 1 {
+        if .Bool(c) := x.cond[0] {
+            cv := lw.expr(c)
+            then := lw.region(fn() { lw.store_result(res, x.then) })
+            else_ := lw.region(fn() {
+                if el := x.else_ { lw.store_result(res, el) }
+            })
+            lw.emit(.If(cv, then, else_), e.span)
+            return lw.read_result(res, e.ty, e.span)
+        }
+    }
+    // Otherwise the conditions and the `then` branch are in a block that a failed
+    // condition leaves, followed by the `else` branch, in a block the `then` branch leaves.
+    end := lw.label()
+    els := lw.label()
+    outer := lw.region(fn() {
+        inner := lw.region(fn() {
+            lw.conds(x.cond, els)
+            lw.store_result(res, x.then)
+            if not lw.diverges(x.then) { lw.emit(.Br(end), x.then.span) }
+        })
+        lw.emit(.Block(els, inner), e.span)
+        if el := x.else_ { lw.store_result(res, el) }
+    })
+    lw.emit(.Block(end, outer), e.span)
+    return lw.read_result(res, e.ty, e.span)
+}
+
+/// The conditions of an `if` or loop, in order: each that fails leaves block `fail`.
+conds :: fn(lw: ^Lw, cond: []tir.CondPart, fail: u32) needs Alloc {
+    for c in cond {
+        match c {
+            .Bool(b) => {
+                v := lw.expr(b)
+                lw.emit(.BrIf(v, true, fail), b.span)
+            }
+            .Match(pat, value) => {
+                p := lw.operand_place(value) else {
+                    v := lw.escape(value)
+                    l := lw.synthetic(value.ty)
+                    lw.emit(.Store(local_place(l), v), value.span)
+                    lw.pattern(pat, local_place(l), fail)
+                    continue
+                }
+                lw.pattern(pat, p, fail)
+            }
+        }
+    }
+}
+
+/// The labels of TIR's loop or `with` `tl`, if this lowering made them.
+loop_labels :: fn(lw: ^Lw, tl: u32) -> ?LoopLabels {
+    for x in lw.loops.items {
+        if x.label is tl { return x }
+    }
+    return null
+}
+
+result_of :: fn(lw: ^Lw, tl: u32) -> ?u32 {
+    if usize(tl) >= lw.results.items.len { return null }
+    return lw.results.items[usize(tl)]
+}
+
+/// A loop: `brk: { loop { conditions (failing: break); cont: { body }; step } }`.
+loop_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.LoopExpr) -> Value needs Alloc {
+    res := lw.result_local(e.ty)
+    brk := lw.label()
+    top := lw.label()
+    next_ := lw.label()
+    lw.loops.push(LoopLabels(label: x.label, brk: brk, cont: next_))!
+    while lw.results.items.len <= usize(x.label) { lw.results.push(null)! }
+    lw.results.items[usize(x.label)] = res
+    outer := lw.region(fn() {
+        looped := lw.region(fn() {
+            lw.conds(x.cond, brk)
+            inner := lw.region(fn() { _ = lw.block(x.body, lw.s.tys.unit()) })
+            lw.emit(.Block(next_, inner), x.body.span)
+            if st := x.step { _ = lw.expr(st) }
+        })
+        lw.emit(.Loop(top, looped), e.span)
+    })
+    lw.emit(.Block(brk, outer), e.span)
+    return lw.read_result(res, e.ty, e.span)
+}
+
+// ---------------------------------------------------------------------------------
+// Match and patterns
+// ---------------------------------------------------------------------------------
+
+/// `match`: `end: { a0: { tests of arm 0 (failing: leave a0); body; break end } a1: { … }
+/// … no arm }`.
+match_expr :: fn(lw: ^Lw, e: ^Expr, scrutinee: ^Expr, arms: []tir.Arm) -> Value needs Alloc {
+    res := lw.result_local(e.ty)
+    p := lw.operand_place(scrutinee) else return lw.escape(e)
+    end := lw.label()
+    body := lw.region(fn() {
+        for arm in arms {
+            fail := lw.label()
+            insts := lw.region(fn() {
+                lw.pattern(arm.pat, p, fail)
+                if g := arm.guard {
+                    v := lw.expr(g)
+                    lw.emit(.BrIf(v, true, fail), g.span)
+                }
+                lw.store_result(res, arm.body)
+                if not lw.diverges(arm.body) { lw.emit(.Br(end), arm.body.span) }
+            })
+            lw.emit(.Block(fail, insts), arm.pat.span)
+        }
+        lw.emit(.NoArm, e.span)
+    })
+    lw.emit(.Block(end, body), e.span)
+    return lw.read_result(res, e.ty, e.span)
+}
+
+/// Tests the value at `p` against `pat`, leaving block `fail` if it does not match, and
+/// binds the pattern's locals.
+pattern :: fn(lw: ^Lw, pat: ^tir.Pat, p: Place, fail: u32) needs Alloc {
+    s := lw.s
+    bool_ty := s.tys.bool_ty()
+    match pat.kind {
+        .Wild => {}
+        .Bind(l) => {
+            if s.layout(pat.ty).size is 0 { return }
+            v := lw.load(p, pat.ty, pat.span)
+            lw.emit(.Store(local_place(l), v), pat.span)
+        }
+        .Const(c) => {
+            v := lw.load(p, pat.ty, pat.span)
+            k := lw.expr(c)
+            d := lw.temp(bool_ty)
+            lw.emit(.Eq(d, false, v, k), pat.span)
+            lw.emit(.BrIf(.Temp(d), true, fail), pat.span)
+        }
+        .Range(lo, hi, inclusive) => {
+            v := lw.load(p, pat.ty, pat.span)
+            a := lw.int_value(pat.ty, lo) else {
+                lw.escape_pattern(pat, p, fail)
+                return
+            }
+            b := lw.int_value(pat.ty, hi) else {
+                lw.escape_pattern(pat, p, fail)
+                return
+            }
+            ge := lw.temp(bool_ty)
+            lw.emit(.Bin(ge, .Ge, v, a), pat.span)
+            lw.emit(.BrIf(.Temp(ge), true, fail), pat.span)
+            le := lw.temp(bool_ty)
+            lw.emit(.Bin(le, if inclusive { .Le } else { .Lt }, v, b), pat.span)
+            lw.emit(.BrIf(.Temp(le), true, fail), pat.span)
+        }
+        .Null => {
+            d := lw.temp(bool_ty)
+            lw.emit(.IsPresent(d, p, false), pat.span)
+            lw.emit(.BrIf(.Temp(d), false, fail), pat.span)
+        }
+        .Some(q) => {
+            d := lw.temp(bool_ty)
+            lw.emit(.IsPresent(d, p, false), pat.span)
+            lw.emit(.BrIf(.Temp(d), true, fail), pat.span)
+            lw.pattern(q, project(p, .Payload(0)), fail)
+        }
+        .Ok(q), .Err(q) => {
+            d := lw.temp(bool_ty)
+            lw.emit(.IsPresent(d, p, true), pat.span)
+            lw.emit(.BrIf(.Temp(d), pat.kind is .Ok(_), fail), pat.span)
+            lw.pattern(q, project(p, .Payload(lw.payload_off(pat.ty))), fail)
+        }
+        .Variant(v, ?payload) => {
+            d := lw.temp(bool_ty)
+            lw.emit(.TagIs(d, p, v), pat.span)
+            lw.emit(.BrIf(.Temp(d), true, fail), pat.span)
+            if q := payload { lw.pattern(q, project(p, .Payload(lw.payload_off(pat.ty))), fail) }
+        }
+        .Fields(fs) => {
+            if lw.is_bits(pat.ty) {
+                lw.escape_pattern(pat, p, fail)
+                return
+            }
+            offs := s.layout(pat.ty).offsets
+            for x in fs {
+                off: u64 = if usize(x.index) < offs.len { offs[usize(x.index)] } else { 0 }
+                lw.pattern(x.pat, project(p, .Field(x.index, off)), fail)
+            }
+        }
+        .Or(alts) => {
+            // `ok: { alt0: { tests (failing: leave alt0); break ok } … ; break fail }`.
+            ok := lw.label()
+            body := lw.region(fn() {
+                for q in alts {
+                    next := lw.label()
+                    insts := lw.region(fn() {
+                        lw.pattern(q, p, next)
+                        lw.emit(.Br(ok), q.span)
+                    })
+                    lw.emit(.Block(next, insts), q.span)
+                }
+                lw.emit(.Br(fail), pat.span)
+            })
+            lw.emit(.Block(ok, body), pat.span)
+        }
+    }
+}
+
+/// The low 64 bits of `i` in two's complement: an integer of at most 64 bits as a word.
+int_bits :: fn(i: bigint.Int) -> ?u64 => bigint.bits128(i).trunc(u64)
+
+/// The offset of the payload in a result or union of type `t`.
+payload_off :: fn(lw: ^Lw, t: Ty) -> u64 needs Alloc {
+    offs := lw.s.layout(t).offsets
+    return if offs.len > 1 { offs[1] } else { 0 }
+}
+
+/// The integer `i` as a constant of type `t`, if it is a word.
+int_value :: fn(lw: ^Lw, t: Ty, i: bigint.Int) -> ?Value needs Alloc {
+    if not lw.s.tys.is_integer(t) { return null }
+    v := int_bits(i) else return null
+    return lw.word(t, v)
+}
+
+/// A pattern this lowering does not test itself: a `match` of the one arm, evaluated
+/// whole, whose value says whether it matched (and which binds the pattern's locals).
+escape_pattern :: fn(lw: ^Lw, pat: ^tir.Pat, p: Place, fail: u32) needs Alloc {
+    bool_ty := lw.s.tys.bool_ty()
+    v := lw.load(p, pat.ty, pat.span)
+    l := lw.synthetic(pat.ty)
+    lw.emit(.Store(local_place(l), v), pat.span)
+    scrut := tir.mk(pat.ty, .Local(l), pat.span)
+    arms := list(tir.Arm)
+    arms.push(tir.Arm(pat: pat, guard: null, body: tir.mk(bool_ty, .Bool(true), pat.span)))!
+    wild := tir.mk_pat(pat.ty, .Wild, pat.span)
+    arms.push(tir.Arm(pat: wild, guard: null, body: tir.mk(bool_ty, .Bool(false), pat.span)))!
+    m := tir.mk(bool_ty, .Match(scrut, arms.items), pat.span)
+    matched := lw.escape(m)
+    lw.emit(.BrIf(matched, true, fail), pat.span)
+}
+
+// ---------------------------------------------------------------------------------
+// Optionals, results and slices
+// ---------------------------------------------------------------------------------
+
+/// The type a present optional or successful result of type `t` holds.
+payload_ty :: fn(lw: ^Lw, t: Ty) -> ?Ty => match lw.s.tys.kind(t) {
+    .Optional(inner) => inner
+    .Result(_, ok) => ok
+    _ => null
+}
+
+/// `x else d` and `x else e => d`: the value of `x` if it is present, else `d` (with the
+/// error bound to `e`).
+else_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.ElseExpr) -> Value needs Alloc {
+    s := lw.s
+    is_result := s.tys.kind(x.lhs.ty) is .Result(_)
+    // A fallback that turns the whole into an optional or a result is left to TIR.
+    inner := lw.payload_ty(x.lhs.ty) else return lw.escape(e)
+    if inner is not e.ty and s.tys.kind(e.ty) is not .Never { return lw.escape(e) }
+    p := lw.operand_place(x.lhs) else return lw.escape(e)
+    res := lw.result_local(e.ty)
+    present := lw.temp(s.tys.bool_ty())
+    lw.emit(.IsPresent(present, p, is_result), e.span)
+    off := lw.payload_off(x.lhs.ty)
+    then := lw.region(fn() {
+        r := res else return
+        if s.layout(inner).size is 0 { return }
+        v := lw.load(project(p, .Payload(off)), inner, e.span)
+        lw.emit(.Store(local_place(r), v), e.span)
+    })
+    otherwise := lw.region(fn() {
+        if c := x.capture {
+            .Result(err, _) := s.tys.kind(x.lhs.ty) else return
+            if s.layout(err).size > 0 {
+                v := lw.load(project(p, .Payload(off)), err, e.span)
+                lw.emit(.Store(local_place(c), v), e.span)
+            }
+        }
+        lw.store_result(res, x.rhs)
+    })
+    lw.emit(.If(.Temp(present), then, otherwise), e.span)
+    return lw.read_result(res, e.ty, e.span)
+}
+
+/// `try x` in the function itself (not one that a clause or literal returns from): the
+/// value of `x` if present, else the function returns `null` or the (lifted) error.
+try_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.TryExpr) -> Value needs Alloc {
+    s := lw.s
+    if x.levels is not 0 { return lw.escape(e) }
+    ret := s.fns.items[usize(lw.f)].ret
+    is_result := s.tys.kind(x.expr.ty) is .Result(_)
+    p := lw.operand_place(x.expr) else return lw.escape(e)
+    present := lw.temp(s.tys.bool_ty())
+    lw.emit(.IsPresent(present, p, is_result), e.span)
+    off := lw.payload_off(x.expr.ty)
+    fail := lw.region(fn() {
+        if not is_result {
+            if w := lw.word(ret, 0) {
+                lw.emit(.Return(w), e.span)
+                return
+            }
+            d := lw.temp(ret)
+            lw.emit(.Wrap(d, .None, null), e.span)
+            lw.emit(.Return(.Temp(d)), e.span)
+            return
+        }
+        .Result(err, _) := s.tys.kind(x.expr.ty) else return
+        v := lw.load(project(p, .Payload(off)), err, e.span)
+        if variant := x.lift {
+            .Result(ferr, _) := s.tys.kind(ret) else return
+            lifted := lw.temp(ferr)
+            lw.emit(.Variant(lifted, variant, v), e.span)
+            v = .Temp(lifted)
+        }
+        d := lw.temp(ret)
+        lw.emit(.Wrap(d, .Err, v), e.span)
+        lw.emit(.Return(.Temp(d)), e.span)
+    })
+    lw.emit(.If(.Temp(present), empty_slice(Inst), fail), e.span)
+    if s.layout(e.ty).size is 0 { return zero(e.ty) }
+    return lw.load(project(p, .Payload(off)), e.ty, e.span)
+}
+
+/// `base[lo..hi]` and its other forms: the bounds are checked, then the slice is made.
+slice :: fn(lw: ^Lw, e: ^Expr, sl: tir.SliceExpr) -> Value needs Alloc {
+    s := lw.s
+    usize_ty := s.tys.usize_ty()
+    .Slice(_, elem) := s.tys.kind(e.ty) else return lw.escape(e)
+    esz := s.layout(elem).size
+    ptr: Value = .Zero(usize_ty)
+    len: ?Value = null
+    match s.tys.kind(sl.base.ty) {
+        .Array(n, _, _) => {
+            if not is_place_expr(s, sl.base) { return lw.escape(e) }
+            p := lw.place(sl.base) else return lw.escape(e)
+            lw.mark_addressed(&p)
+            d := lw.temp(s.tys.intern(.ManyPtr(false, elem)))
+            lw.emit(.AddrOf(d, p), e.span)
+            ptr = .Temp(d)
+            len = .Word(usize_ty, n)
+        }
+        .Slice(is_const, _) => {
+            p := lw.operand_place(sl.base) else return lw.escape(e)
+            ptr = lw.load(project(p, .Field(0, 0)), s.tys.intern(.ManyPtr(is_const, elem)), e.span)
+            len = lw.load(project(p, .Field(1, lw.ptr_size())), usize_ty, e.span)
+        }
+        .ManyPtr(_, _) => {
+            if sl.hi is null { return lw.escape(e) }
+            ptr = lw.expr(sl.base)
+        }
+        .Ptr(_, pointee) => {
+            .Array(n, _, _) := s.tys.kind(pointee) else return lw.escape(e)
+            ptr = lw.expr(sl.base)
+            len = .Word(usize_ty, n)
+        }
+        _ => return lw.escape(e)
+    }
+    lo: Value = .Word(usize_ty, 0)
+    if x := sl.lo { lo = lw.expr(x) }
+    hi: Value = .Word(usize_ty, 0)
+    inclusive := sl.inclusive
+    if x := sl.hi {
+        hi = lw.expr(x)
+    } else {
+        hi = len else return lw.escape(e)
+        inclusive = false
+    }
+    lw.emit(.Check(.Range(lo, hi, len, inclusive)), e.span)
+    d := lw.temp(e.ty)
+    lw.emit(.MakeSlice(d, ptr, lo, hi, inclusive, esz), e.span)
+    return .Temp(d)
+}

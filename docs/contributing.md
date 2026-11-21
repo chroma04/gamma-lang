@@ -136,6 +136,7 @@ what it checks, what it needs and when it skips itself.
 | `examples`, `doc_examples` | the programs in `examples/`; the code blocks of the guides (below) |
 | `cli`, `testing_cli`, `repl`, `lsp` | the command line, `gamma test` and `gamma bench`, `gamma repl`, the language server |
 | `fmt`, `lint`, `fix`, `doc` | the formatter, `gamma lint`, `gamma fix` and the documentation generator (the checked-in `docs/std/` must be current) |
+| `lir` | the lowered form of function bodies: golden dumps of `tests/lir/*.gm` (`BLESS=1` rewrites them), and every conformance program and example lowers with no fault the verifier finds |
 | `pkg`, `build_profiles` | the package manager (needs `git`), build settings in `gamma.toml` |
 | `native_build`, `debug_info`, `runtime` | how native builds link the runtime, debug information, the C runtime (`runtime/rt_test.c`) |
 | `cross`, `freestanding`, `wasi`, `lanes` | the C toolchain variables and cross compilation, freestanding targets, WebAssembly for WASI, the lanes of other platforms (below) |

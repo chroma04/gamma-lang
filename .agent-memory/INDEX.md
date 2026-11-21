@@ -14,11 +14,15 @@
   lanes; Windows via cross-built gamma.exe + harness.exe), plus fuzz smoke, difftest,
   benchmarks, editors.
 - Last sessions: s76 0.3.0 prep; s77 perf round 10 (072: every remaining perf item
-  measured); s78 shared template bodies (073, check/share.gm).
+  measured); s78 shared template bodies (073, check/share.gm); s79 LLVM back end and
+  LLVM JIT re-evaluated with measurements (074): stay on C, wins listed in next.md §2;
+  cheap C wins done (clang for optimized builds, ThinLTO, union switch hint); lowered IR
+  (075) P0 done: compiler/lir + `gamma lir` + suite `lir`; P1 (VM from LIR) is next.
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
 ## Next steps
+0. LIR P1 (decisions/075 "State after P0"): the user asked for this plan; do it first.
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
    gaps), testing, language. Performance §2 now lists only structural changes.
 2. roadmap/bugs.md: small open bugs, good for a short session.

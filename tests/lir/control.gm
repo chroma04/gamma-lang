@@ -1,0 +1,29 @@
+// Loops, `break` with and without labels, `continue` and `defer`: blocks and branches.
+count :: fn(n: u32) -> u32 {
+    total: u32 = 0
+    i: u32 = 0
+    outer: while i < n {
+        i += 1
+        if i % 2 is 0 { continue }
+        j: u32 = 0
+        while true {
+            j += 1
+            if j > i { break }
+            if total > 100 { break outer }
+            total += j
+        }
+    }
+    return total
+}
+
+cleanup :: fn(flag: bool) -> u8 {
+    x: u8 = 1
+    defer x = 2
+    if flag { return x }
+    return 3
+}
+
+main :: fn() {
+    _ = count(10)
+    _ = cleanup(true)
+}

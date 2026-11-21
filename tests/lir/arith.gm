@@ -1,0 +1,12 @@
+// Scalars, locals and calls: the order of evaluation is explicit, every operand a value.
+square :: fn(x: i64) -> i64 => x * x
+
+mix :: fn(a: i64, b: u8, c: bool) -> i64 {
+    t := square(a) + i64(b)
+    if c and t > 10 { t = t -% 1 }
+    return t
+}
+
+main :: fn() {
+    _ = mix(3, 4, true)
+}

@@ -21,6 +21,7 @@ AST
   │                          exhaustiveness
   ▼
 TIR                          typed intermediate representation (tir/)
+  ├─▶ lir/                   lowered function bodies for the back ends (not yet consumed)
   ├─▶ eval/                  compile-time evaluation (spec §17)
   ├─▶ interp/                interpreter: --backend=interp (run, test, bench), gamma repl
   └─▶ cgen/                  C code generation → system C compiler → executable
@@ -50,6 +51,21 @@ small runtime library (`runtime/gm_rt.c`, `runtime/gm_rt.h`): stack switching fo
 passing* and *exit flags* (spec Appendix D), which are plain C. C is also what makes the
 bootstrap seed possible: the compiler's own generated C, compiled by any C compiler, is the
 compiler.
+
+Emitting LLVM IR directly was measured against this and not adopted. With Clang, the C
+already becomes the IR a direct emitter would write: checked arithmetic becomes
+`llvm.*.with.overflow` and a branch to a cold trap, loops over `0..a.len` lose their bounds
+checks, values held as byte structs are split into registers, and Fast builds vectorize.
+Checked loops do not vectorize, but that follows from traps being precise (§18.5) and holds
+in any back end. What direct IR would save is Clang's front end: about a third of the time
+of compiling the compiler's largest units at `-O2` at most, and 18–45% at `-O0`. For most of
+the facts the back end knows and could pass to the optimizer (pointers are never null, a
+result destination does not overlap what the callee reads, pure functions), GNU C has
+attributes too. One fact IR could carry and C cannot, `dereferenceable`, would be unsound,
+since a `^T` may dangle as long as it is not accessed (§18.4). Optimizing all of a program
+as one module, as a direct emitter would, gave 8% fewer instructions on the compiler (measured
+with ThinLTO over its C units). Against these gains stands a second native code generator,
+since the C back end stays for the seed, gcc, MinGW and Fil-C.
 
 ### Demand-driven semantic analysis
 
@@ -81,6 +97,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/check/` | checking function bodies and lowering them to TIR: expressions, calls, methods, patterns, `match`, exhaustiveness, literal inference, effects, handlers, iterators, generics, escape and dangling-pointer checks, continuations, `@stack_size`, format templates, vectors; the `gamma tir` dump |
 | `compiler/tir/` | the typed intermediate representation, compile-time values, deep copies for generic instances |
 | `compiler/eval/` | compile-time evaluation (spec §17) over TIR |
+| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends: its instructions (`lir.gm`), the lowering (`lower.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
 | `compiler/interp/` | the interpreter |
 | `compiler/cgen/` | the C back end |
 | `compiler/driver/` | the C toolchain and target selection, native builds, the cache of runtimes and programs, library paths, the interpreter entry, the options and the table of command-line options (`flags.gm`), from which the usage text is generated |
@@ -411,6 +428,48 @@ budget, `#fuel`, the trap messages and the compile-time call stack. Its values
 (`tir/value.gm`) keep their structure, with pointers as places in cells; the C back end turns
 them into static storage and the interpreter lays them out in its memory.
 
+## The lowered form (LIR)
+
+The interpreter and the C back end each lower function bodies from TIR themselves, with
+analyses of their own. `compiler/lir/` is the lowering they are being moved onto: one form
+of a checked, monomorphic body that both can run or translate directly, and on which
+analyses such as the removal of checks a loop's range proves can be done once. No back end
+consumes it yet; `gamma lir` prints it, and the `lir` suite checks that every conformance
+program and example lowers to well-formed LIR.
+
+- **Structure** (`lir.gm`). A body is a list of instructions, structured as in
+  WebAssembly: `Block`, `Loop` and `If` hold lists of their own, and control leaves a
+  block only by falling off its end or by `Br`/`BrIf` to its label (a loop runs again when
+  its body falls off the end). Structure is kept, rather than a graph of basic blocks,
+  because the C back end splits long functions by runs of statements and needs to see them,
+  and because the interpreter's compiler already turns structure into jumps. A `Defer`
+  belongs to the block it is in and runs whenever that block is left.
+- **Values.** The locals are TIR's (same indices), then those lowering adds for the value
+  of a block, `if`, `match` or `and`/`or` and for an operand it must address; locals are
+  written by `Store` to a place, any number of times. Every other value is a temporary,
+  written by exactly one instruction and read only after it, in the same list or a list
+  nested in a later instruction. So the order of evaluation (§4.7, §7) is explicit, and a
+  back end never needs to know which operands may change which.
+- **Places** are a base (a local, a local of an enclosing function, a global, a constant,
+  what a temporary points to) and projections: a field at its offset, an element of an
+  array (`Elem`), a step through the sequence a pointer starts (`Step`, for slices and
+  many-pointers), a dereference, the payload of an optional, result or union value.
+- **Implicit operations are instructions**: bounds and slice range checks (`Check`), the
+  unwrap check, the tests and bindings of patterns (a `match` is a block per arm, left
+  when the arm's pattern fails), and integer arithmetic, which traps as its TIR operator
+  does.
+- **Escapes.** Lowering is total: a construct it does not handle yet (`with`, `break` and
+  `return` out of a function literal, continuations, the builtins that do not take the
+  values of their arguments, a few constants) is kept as a `Tir` instruction holding the
+  TIR expression, for a tree evaluator to run whole; `Func.escapes` counts them. Over the
+  conformance programs and examples (with the library functions they use), about one
+  instruction in 230 is an escape, `with` and builtins most of them.
+- **Verification** (`verify.gm`). The verifier checks the rules above (temporaries
+  written once and read where their write is visible, branches to enclosing blocks only and
+  never out of a `defer`'s body, a `Defer` directly in a block) and the types of loads and
+  stores against the type of their place (`place_type`). `gamma lir` prints its findings
+  after each function, on lines starting with `!`.
+
 ## The interpreter
 
 `--backend=interp` (`gamma run`, `test`, `bench`) and `gamma repl` run the program in the interpreter
@@ -547,15 +606,25 @@ every translation unit of a split build.
 
 `gamma build` and `gamma run` translate the checked program to C (`compiler/cgen/`) and
 compile it, with the runtime (`runtime/gm_rt.h`, `runtime/gm_rt.c`), using the system C
-compiler (`$CC`, default `cc`, plus `$CFLAGS` and `$LDFLAGS`; `driver/toolchain.gm`) in GNU
+compiler (`$CC`, plus `$CFLAGS` and `$LDFLAGS`; `driver/toolchain.gm`) in GNU
 C11 mode, with `-fwrapv` and `-fno-strict-aliasing` (Gamma memory is untyped bytes), and
 with `-fno-stack-protector`: where the system's compiler adds a stack canary to every
 function with an array by default, nearly every generated function would get one, since
 every value that is not a scalar is an array of bytes in C. `$CFLAGS` come after these
 options and can turn the protector on again; C sources of a package are compiled with the
-compiler's defaults. The
+compiler's defaults. Without `$CC` the compiler is `cc`, except that Checked and Fast
+builds use `clang` when it is on `PATH` (not on Windows; `OPTIMIZING_CC`): at `-O2` it
+compiled the compiler's C in 32 s instead of gcc's 46 s, and that compiler checked
+programs 15% faster, wrote C 4% faster and was 19% smaller. On small programs the two were within 15% of each
+other either way. Debug builds keep `cc`, because Clang's `-Og` is close to `-O1` and
+compiled small programs 13–50% slower than gcc's. (`bootstrap/build.sh` compiles the seed
+with `cc`; the compiler it builds then makes this choice for its own builds.) On targets
+other than x86-64, Clang compiles a checked multiplication of `i128`s to a call of
+`__muloti4`, which only its own support library has, and Linux links libgcc: the runtime
+defines a weak `__muloti4` there (`gm_muloti4`), which gives way to compiler-rt's.
+The
 compilation target is decided before semantic analysis, because layouts and the `target`
-module depend on it: the default compiler means the host, and any other toolchain is asked
+module depend on it: the default compiler (`cc`, or the `clang` chosen this way) means the host, and any other toolchain is asked
 for its predefined macros (`$CC $CFLAGS -dM -E`). `--target=<triple>` chooses the compiler for
 a triple (`<triple>-gcc`, else `clang --target=<triple>`, or `$CC` with the option added if it
 is clang or `zig cc`) and then checks the probed target against the triple (architecture,
@@ -625,7 +694,10 @@ scrutinee is a large value (a union, say) that is a place and no arm has a guard
 can then write the place between the tests, which only read it, and the patterns are
 tested where it is (a condition `if p := place` always is). A `match` of three or more arms
 on a union first switches on its tag to the first arm that can match each variant, so that
-dispatch costs one jump rather than a test per arm; the arms' own tests still run, so an
+dispatch costs one jump rather than a test per arm (its `default` is
+`__builtin_unreachable()`, since a union holds one of its variants' tags or the program
+has undefined behavior, §18.4; without the range check this saves the interpreter's
+dispatch loop 1–3.5% of its instructions); the arms' own tests still run, so an
 arm whose nested pattern or guard fails falls through to the next as before.
 
 A function that is long because it has many statements, rather than one long chain, is
@@ -661,7 +733,14 @@ How the runtime is linked depends on the build mode:
   compiler itself) is split into units like a large Debug build (below) and
   linked with the cached runtime: as one unit, gcc takes over five minutes on
   the compiler's C, and the split build, at about 40 s on four cores from an
-  empty cache, runs as fast.
+  empty cache, runs as fast. With Clang compiling for the host and `ld.lld`
+  installed (`thin_lto` in `driver/native.gm`), the units and the runtime object
+  are compiled for ThinLTO (`-flto=thin`) and linked with lld, which optimizes
+  across them as one unit would: the compiler runs 8% fewer instructions and
+  writes C about 4% faster. lld keeps what it compiled for each unit in
+  `thinlto/` in the cache (at most 1 GiB, entries unused for a week removed),
+  so the link after an edit takes about a second instead of the 23 s of a link
+  from nothing. Building the compiler from an empty cache takes about 10 s longer.
 - Debug builds favor turnaround. Compiling the runtime is most of the work of
   compiling a small program, so it is compiled once on its own (with
   `GM_RT_SEPARATE` defined, which gives the declarations marked `GM_API` external

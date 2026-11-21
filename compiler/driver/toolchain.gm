@@ -2,7 +2,8 @@
 //!
 //! The compiler comes from the environment, as for `make`: `CC` is the compiler command,
 //! which may carry arguments (`zig cc -target aarch64-linux-gnu`, `clang
-//! --target=riscv64-linux-gnu`) and defaults to `cc`; `CFLAGS` are extra compiler options,
+//! --target=riscv64-linux-gnu`) and defaults to `cc` (to `clang`, if it is on `PATH`, for
+//! optimized builds other than on Windows); `CFLAGS` are extra compiler options,
 //! given after the back end's own; `LDFLAGS` are extra linker options, given after the
 //! source file. `--target=<triple>` picks a cross compiler for a target triple, and
 //! `GAMMA_RUNNER` names the emulator that runs the executables such a compiler builds.
@@ -24,6 +25,12 @@ pub Toolchain :: pkg.Toolchain
 /// The compiler used when `CC` is unset.
 DEFAULT_CC :: "cc"
 
+/// The compiler of optimized builds when `CC` is unset and it is on `PATH`, except on
+/// Windows: it compiles the C of large programs in about 30% less time than gcc at `-O2`,
+/// and the compiler built with it checks programs 15% faster. Debug builds keep
+/// `cc`, since gcc's `-Og` compiles small programs faster.
+OPTIMIZING_CC :: "clang"
+
 /// The value of the environment variable `name`, if it is set to something other than white
 /// space.
 env_var :: fn(name: string) -> ?string needs Alloc + Env {
@@ -35,6 +42,17 @@ env_var :: fn(name: string) -> ?string needs Alloc + Env {
 #allow("needless-pub")
 pub from_env :: fn() -> string!Toolchain needs Alloc + Env + Fs {
     return from_vars(env_var("CC") else load.default_cc(), env_var("CFLAGS"), env_var("LDFLAGS"))
+}
+
+/// The toolchain of a build for the host, from the environment: as `from_env`, except that
+/// an `optimized` build (Checked or Fast) without `CC` uses `OPTIMIZING_CC` if it is on
+/// `PATH` (not on Windows).
+host_from_env :: fn(optimized: bool) -> string!Toolchain needs Alloc + Env + Fs {
+    if not optimized or env_var("CC") is not null { return from_env() }
+    cc := load.optimizing_cc(OPTIMIZING_CC) else return from_env()
+    t := try from_vars(cc, env_var("CFLAGS"), env_var("LDFLAGS"))
+    t.host = true
+    return t
 }
 
 /// The toolchain given the values of `CC`, `CFLAGS` and `LDFLAGS` (`null` when unset).
@@ -154,9 +172,9 @@ pub for_safe_build :: fn() -> string!Toolchain needs Alloc + Env + Fs {
     return t
 }
 
-/// Whether this is the plain system compiler (`cc` with no extra options), which compiles
-/// for the host.
-is_default :: fn(t: ^const Toolchain) -> bool => t.cc.len is 1 and t.cc[0] is DEFAULT_CC and t.cflags.len is 0 and t.ldflags.len is 0
+/// Whether this is the plain system compiler (`cc` with no extra options), or a compiler
+/// the driver chose for the host (`host_from_env`), which compile for the host.
+is_default :: fn(t: ^const Toolchain) -> bool => (t.host or (t.cc.len is 1 and t.cc[0] is DEFAULT_CC)) and t.cflags.len is 0 and t.ldflags.len is 0
 
 /// `t` with the flags of gamma.toml placed before those of the environment.
 with_manifest_flags :: fn(t: Toolchain, cflags, ldflags: []const string) -> Toolchain needs Alloc {
@@ -436,6 +454,21 @@ triple_error :: fn(r: string!()) -> string {
         return e
     }
     return ""
+}
+
+test "a compiler chosen for the host is not asked for its target" {
+    ar := arena.new()
+    defer ar.deinit()
+    with ar.allocator() {
+        cc := Toolchain(cc: words_of(DEFAULT_CC, null), cflags: empty_slice(string), ldflags: empty_slice(string))
+        expect(is_default(&cc))
+        named := Toolchain(cc: words_of(OPTIMIZING_CC, null), cflags: empty_slice(string), ldflags: empty_slice(string))
+        expect(not is_default(&named))
+        chosen := Toolchain(cc: words_of(OPTIMIZING_CC, null), cflags: empty_slice(string), ldflags: empty_slice(string), host: true)
+        expect(is_default(&chosen))
+        flagged := with_manifest_flags(chosen, words_of("-m32", null), empty_slice(string))
+        expect(not is_default(&flagged))
+    }
 }
 
 test "a target triple picks the cross compiler" {

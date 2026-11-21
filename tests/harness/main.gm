@@ -37,6 +37,7 @@ fmt :: import "./fmt"
 freestanding :: import "./freestanding"
 lanes :: import "./lanes"
 lint :: import "./lint"
+lir :: import "./lir"
 long_expressions :: import "./long_expressions"
 long_functions :: import "./long_functions"
 lsp :: import "./lsp"
@@ -60,12 +61,13 @@ Suite :: struct {
 /// What adding tests may use.
 Setup :: Alloc + Env + Err + Fs + Proc
 
-suites :: fn() -> [24]Suite => [_]Suite(
+suites :: fn() -> [25]Suite => [_]Suite(
     Suite(name: "cli", add: cli.tests),
     Suite(name: "conformance", add: conformance.tests),
     Suite(name: "examples", add: examples.tests),
     Suite(name: "doc_examples", add: doc_examples.tests),
     Suite(name: "fmt", add: fmt.tests),
+    Suite(name: "lir", add: lir.tests),
     Suite(name: "lint", add: lint.tests),
     Suite(name: "fix", add: fix.tests),
     Suite(name: "doc", add: doc.tests),

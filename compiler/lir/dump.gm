@@ -1,0 +1,288 @@
+// The text form of LIR that `gamma lir` prints.
+
+/// `fn` as text: a header with its locals and return type, then its instructions, one per
+/// line, nested lists indented by two spaces:
+///
+/// ```text
+/// fn 12 escapes 0
+///   local 0 n: i64 param
+///   local 1 s: i64
+///   temp 0: i64
+///   ret i64
+///   %0 = load l0
+///   return %0
+/// ```
+///
+/// Temporaries are `%N`, locals `lN`, labels `@N`; a constant is its bits and type
+/// (`7:i64`; a float's bits in hex). Each local line shows the source name of a local of the source, and the flags
+/// `param`, `addressed`, `captured` and `synthetic`.
+dump :: fn(s: ^Sema, f: ^const Func, label: string) -> string needs Alloc {
+    d := Dumper(s: s, f: f, out: list(u8))
+    d.line(0, str.format("fn {} escapes {}", label, f.escapes)!)
+    names := s.def_of(f.fn_id).locals
+    for i, l in enumerate(f.locals) {
+        flags := list(u8)
+        if l.param { flags.extend(" param")! }
+        if l.addressed { flags.extend(" addressed")! }
+        if l.captured { flags.extend(" captured")! }
+        if l.synthetic { flags.extend(" synthetic")! }
+        name: string = if i < names.len { names[i].name } else { "_" }
+        d.line(1, str.format("local {} {}: {}{}", i, name, s.show(l.ty), flags.items)!)
+    }
+    for i, t in enumerate(f.temps) { d.line(1, str.format("temp {}: {}", i, s.show(t))!) }
+    d.line(1, str.format("ret {}", s.show(f.ret))!)
+    d.show_insts(1, f.body)
+    return d.out.items
+}
+
+Dumper :: struct {
+    s: ^Sema
+    f: ^const Func
+    out: List(u8)
+}
+
+line :: fn(d: ^Dumper, depth: usize, text: string) needs Alloc {
+    for _ in 0..depth { d.out.extend("  ")! }
+    d.out.extend(text)!
+    d.out.push('\n')!
+}
+
+show_insts :: fn(d: ^Dumper, depth: usize, list_: []const Inst) needs Alloc {
+    for i in 0..list_.len { d.show_inst(depth, &list_[i]) }
+}
+
+show_value :: fn(d: ^Dumper, v: Value) -> string needs Alloc => match v {
+    .Temp(t) => str.format("%{}", t)!
+    .Word(ty, bits) => {
+        if d.s.tys.kind(ty) is .Float(_) { return str.format("0x{:x}:{}", bits, d.s.show(ty))! }
+        str.format("{}:{}", bits, d.s.show(ty))!
+    }
+    .Zero(ty) => str.format("zero:{}", d.s.show(ty))!
+    .Uninit(ty) => str.format("uninit:{}", d.s.show(ty))!
+}
+
+show_values :: fn(d: ^Dumper, vs: []const Value) -> string needs Alloc {
+    parts := list(string)
+    for v in vs { parts.push(d.show_value(v))! }
+    return str.join(parts.items, ", ")!
+}
+
+show_place :: fn(d: ^Dumper, p: Place) -> string needs Alloc {
+    out := list(u8)
+    match p.base {
+        .Local(l) => out.write("l{}", l)!
+        .Upvar(levels, l) => out.write("up{}.l{}", levels, l)!
+        .Global(decl) => out.write("global{}", decl)!
+        .Const(name, _) => out.write("const {}", name)!
+        .Deref(t) => out.write("*%{}", t)!
+    }
+    for x in p.proj {
+        match x {
+            .Field(index, off) => out.write(".{}@{}", index, off)!
+            .Elem(index, size) => out.write("[{} *{}]", d.show_value(index), size)!
+            .Step(index, size) => out.write("+[{} *{}]", d.show_value(index), size)!
+            .Deref => out.write(".*")!
+            .Payload(off) => out.write(".payload@{}", off)!
+        }
+    }
+    return out.items
+}
+
+show_callee :: fn(d: ^Dumper, c: Callee) -> string needs Alloc => match c {
+    .Fn(f) => str.format("fn {}", d.s.fns.items[usize(f)].name)!
+    .Value(v) => d.show_value(v)
+    .Perform(eff, op) => str.format("perform {}.{}", d.s.tys.show_ref(&eff), op)!
+}
+
+show_dst :: fn(t: ?u32) -> string needs Alloc {
+    x := t else return ""
+    return str.format("%{} = ", x)!
+}
+
+show_inst :: fn(d: ^Dumper, depth: usize, i: ^const Inst) needs Alloc {
+    text: string = match i.op {
+        .Move(t, v) => str.format("%{} = {}", t, d.show_value(v))!
+        .Load(t, p) => str.format("%{} = load {}", t, d.show_place(p))!
+        .AddrOf(t, p) => str.format("%{} = addr {}", t, d.show_place(p))!
+        .Bin(t, op, a, b) => str.format("%{} = {} {}, {}", t, variant_text(op), d.show_value(a), d.show_value(b))!
+        .Un(t, op, a) => str.format("%{} = {} {}", t, variant_text(op), d.show_value(a))!
+        .Eq(t, negated, a, b) => str.format("%{} = {} {}, {}", t, if negated { "is-not" } else { "is" }, d.show_value(a), d.show_value(b))!
+        .Coerce(t, kind, v) => str.format("%{} = coerce {} {}", t, variant_text(kind), d.show_value(v))!
+        .Builtin(?t, op, args) => str.format("{}builtin {} ({})", show_dst(t), variant_text(op), d.show_values(args))!
+        .Call(?t, c, args) => str.format("{}call {} ({})", show_dst(t), d.show_callee(c), d.show_values(args))!
+        .Aggregate(t, items) => str.format("%{} = aggregate ({})", t, d.show_values(items))!
+        .Variant(t, v, ?payload) => {
+            p: string = if x := payload { str.format(" {}", d.show_value(x))! } else { "" }
+            str.format("%{} = variant {}{}", t, v, p)!
+        }
+        .Wrap(t, kind, ?v) => {
+            p: string = if x := v { str.format(" {}", d.show_value(x))! } else { "" }
+            str.format("%{} = wrap {}{}", t, variant_text(kind), p)!
+        }
+        .FnRef(t, f, second) => str.format("%{} = fn-ref {}{}", t, d.s.fns.items[usize(f)].name, if second { " second" } else { "" })!
+        .Closure(t, f) => str.format("%{} = closure {}", t, d.s.fns.items[usize(f)].name)!
+        .HandlerRef(t, h) => str.format("%{} = handler {}", t, h)!
+        .IsPresent(t, p, result) => str.format("%{} = {} {}", t, if result { "is-ok" } else { "is-some" }, d.show_place(p))!
+        .TagIs(t, p, v) => str.format("%{} = tag-is {} {}", t, d.show_place(p), v)!
+        .Store(p, v) => str.format("store {}, {}", d.show_place(p), d.show_value(v))!
+        .Check(c) => match c {
+            .Bounds(index, len) => str.format("check bounds {} < {}", d.show_value(index), d.show_value(len))!
+            .Range(lo, hi, ?len, inclusive) => {
+                n: string = if x := len { str.format(" len {}", d.show_value(x))! } else { "" }
+                str.format("check range {}..{}{}{}", d.show_value(lo), if inclusive { "=" } else { "" }, d.show_value(hi), n)!
+            }
+            .Unwrap(present, p, result) => str.format("check {} {} {}", if result { "ok" } else { "some" }, d.show_value(present), d.show_place(p))!
+        }
+        .Str(t, bytes, c) => str.format("%{} = {} {}", t, if c { "cstr" } else { "str" }, bytes.len)!
+        .Fill(t, v) => str.format("%{} = fill {}", t, d.show_value(v))!
+        .MakeSlice(t, ptr, lo, hi, inclusive, size) => str.format("%{} = slice {} {}..{}{} *{}", t, d.show_value(ptr), d.show_value(lo), if inclusive { "=" } else { "" }, d.show_value(hi), size)!
+        .Write(sink, pieces, _, args, ?table) => {
+            to: string = match sink {
+                .Perform(eff, op) => str.format("perform {}.{}", d.s.tys.show_ref(&eff), op)!
+                .Value(v) => d.show_value(v)
+            }
+            how: string = if t := table { str.format("table {}", d.show_value(t))! } else { str.format("{} pieces", pieces.len)! }
+            str.format("write {} {} ({})", to, how, d.show_values(args))!
+        }
+        .Block(l, body) => {
+            d.line(depth, str.format("block @{}", l)!)
+            d.show_insts(depth + 1, body)
+            return
+        }
+        .Loop(l, body) => {
+            d.line(depth, str.format("loop @{}", l)!)
+            d.show_insts(depth + 1, body)
+            return
+        }
+        .If(c, then, else_) => {
+            d.line(depth, str.format("if {}", d.show_value(c))!)
+            d.show_insts(depth + 1, then)
+            if else_.len > 0 {
+                d.line(depth, "else")
+                d.show_insts(depth + 1, else_)
+            }
+            return
+        }
+        .Br(l) => str.format("br @{}", l)!
+        .BrIf(c, negated, l) => str.format("br-{} {} @{}", if negated { "unless" } else { "if" }, d.show_value(c), l)!
+        .Return(?v) => if x := v { str.format("return {}", d.show_value(x))! } else { "return" }
+        .Defer(is_err, body) => {
+            d.line(depth, if is_err { "errdefer" } else { "defer" })
+            d.show_insts(depth + 1, body)
+            return
+        }
+        .Trap(v) => str.format("trap {}", d.show_value(v))!
+        .NoArm => "no-arm"
+        .Unreachable => "unreachable"
+        .Tir(?t, e) => str.format("{}tir {}", show_dst(t), tir_kind(e))!
+    }
+    d.line(depth, text)
+}
+
+/// A union value as text without the dots of its variants: `Add(Checked)`.
+variant_text :: fn(A: type, x: A) -> string needs Alloc {
+    full := str.format("{}", x)!
+    out := list(u8)
+    for c in full {
+        if c is not '.' { out.push(c)! }
+    }
+    return out.items
+}
+
+/// The name of the kind of a TIR expression.
+tir_kind :: fn(e: ^const Expr) -> string => match e.kind {
+    .Int(_), .Float(_), .UntypedFloat(_), .UntypedComplex(_), .Bool(_), .Null => "constant"
+    .Str(_), .CStr(_) => "string"
+    .Uninit => "uninit"
+    .ValueParam(_), .SizeOf(_), .IntLimit(_), .TypeName(_), .TypeIs(_) => "generic"
+    .Const(_) => "const"
+    .Local(_), .Upvar(_), .Global(_), .Deref(_), .Field(_), .Index(_) => "place"
+    .Slice(_) => "slice"
+    .SliceLen(_), .SlicePtr(_) => "slice-part"
+    .AddrOf(_), .AddrOfTemp(_) => "addr-of"
+    .FnRef(_), .Closure(_), .HandlerRef(_) => "fn-value"
+    .Unary(_), .Binary(_), .Logic(_), .Eq(_), .In(_) => "operator"
+    .Coerce(_) => "coerce"
+    .Builtin(_) => "builtin"
+    .Call(_) => "call"
+    .Aggregate(_), .Array(_), .ArrayFill(_), .Variant(_), .MakeErr(_) => "construct"
+    .Unwrap(_) => "unwrap"
+    .Else(_) => "else"
+    .Try(_) => "try"
+    .Match(_) => "match"
+    .Block(_) => "block"
+    .If(_) => "if"
+    .Loop(_) => "loop"
+    .Break(_) => "break"
+    .Continue(_) => "continue"
+    .Return(_) => "return"
+    .Trap(_) => "trap"
+    .Resume(_), .Cancel(_) => "continuation"
+    .Write(_), .WriteDeferred(_), .Template(_) => "write"
+    .SoaDeferred(_) => "soa"
+    .With(_) => "with"
+}
+
+/// The LIR of every function whose body is written outside the core library, in source
+/// order, as `gamma lir` prints it: those `gamma tir` prints and the instances of the
+/// generic ones among them (a generic function is lowered only in its instances). What
+/// `verify` finds wrong with a function follows it, each fault on a line starting `!`.
+pub program_dump :: fn(s: ^Sema) -> string needs Alloc {
+    order := list(u32)
+    for i in 0..s.fns.items.len {
+        f := i.trunc(u32)
+        sig := &s.fns.items[i]
+        if sig.name is "<entry>" { continue }
+        span := sig.span
+        if inst := sig.instance { span = s.fns.items[usize(inst.template)].span }
+        if span is source.DUMMY { continue }
+        if s.l.sm.file(span.file).path.starts_with("<core>") { continue }
+        if generic_context(s, f) { continue }
+        if i >= s.defs.items.len or s.defs.items[i].body is null { continue }
+        order.push(f)!
+    }
+    order.items.sort_by(fn(a, b: ^const u32) -> bool {
+        x := s.fns.items[usize(a^)].span
+        y := s.fns.items[usize(b^)].span
+        if x.file is not y.file { return x.file < y.file }
+        if x.lo is not y.lo { return x.lo < y.lo }
+        if x.hi is not y.hi { return x.hi < y.hi }
+        return a^ < b^
+    })
+    cx := context(s)
+    out := list(u8)
+    for f in order.items {
+        func := cx.lower(f)
+        out.extend(dump(s, &func, fn_label(s, f)))!
+        for e in verify(s, &func) { out.write("! {}\n", e)! }
+    }
+    return out.items
+}
+
+/// Whether `f` is a generic function, or nested in one, and not an instance: its body
+/// still mentions type parameters.
+generic_context :: fn(s: ^Sema, f: u32) -> bool {
+    at: ?u32 = f
+    while g := at {
+        sig := &s.fns.items[usize(g)]
+        if sig.instance is not null { return false }
+        if sig.generics.len > 0 { return true }
+        at = if usize(g) < s.defs.items.len { s.defs.items[usize(g)].parent } else { null }
+    }
+    return false
+}
+
+/// How the dump names function `f`: its name and where it is declared, and an instance
+/// by its generic function and type arguments, as `gamma tir` names them.
+fn_label :: fn(s: ^Sema, f: u32) -> string needs Alloc {
+    sig := &s.fns.items[usize(f)]
+    if inst := sig.instance {
+        args := list(string)
+        for a in inst.args { args.push(s.show(a))! }
+        return str.format("{}[{}]", fn_label(s, inst.template), str.join(args.items, ", ")!)!
+    }
+    if sig.span is source.DUMMY { return sig.name }
+    file := s.l.sm.file(sig.span.file)
+    lc := file.line_col(sig.span.lo)
+    return str.format("{}@{}:{}:{}", sig.name, file.path, lc.line, lc.col)!
+}

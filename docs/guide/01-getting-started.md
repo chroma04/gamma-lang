@@ -108,6 +108,7 @@ gamma parse --dump file.gm check the syntax and print the syntax tree
 gamma modules file.gm      list the modules a program loads and what each imports
 gamma decls file.gm        print what each top-level declaration of a program denotes
 gamma tir file.gm          check a program and print the typed form of its functions
+gamma lir file.gm          check a program and print its functions lowered for the back ends
 gamma help                 print usage
 gamma version              print the compiler version
 ```
@@ -196,7 +197,7 @@ Two differences are visible to programs. `target.os` is `.Windows` and `c_long` 
 
 ### The C compiler and cross-compiling
 
-Native builds use the C compiler named by the environment variable `CC` (default `cc`), which may include arguments. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted. On Windows a backslash is an ordinary character (so `C:\msys64\ucrt64\bin\gcc.exe` works as written) except before a double quote, as in the Windows command line.
+Native builds use the C compiler named by the environment variable `CC`, which may include arguments. Without `CC`, Debug builds use `cc`, and Checked and Fast builds use `clang` if it is installed (except on Windows), since it compiles large programs faster and the result usually runs faster too; otherwise they use `cc` as well. `CFLAGS` adds compiler options after the tool's own, so they can override them, and `LDFLAGS` adds linker options. Quotes and backslashes work as in a shell, so a path with spaces can be quoted. On Windows a backslash is an ordinary character (so `C:\msys64\ucrt64\bin\gcc.exe` works as written) except before a double quote, as in the Windows command line.
 
 When `CC` or `CFLAGS` selects another target, the program is compiled for that target: the tool asks the compiler which machine it targets, and the `target` constants (`target.arch`, `target.os`, `target.endian`, `target.ptr_bits`) and the layouts of types follow it. Any C compiler that can cross-compile works:
 

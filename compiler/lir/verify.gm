@@ -1,0 +1,304 @@
+// Checking that a function's LIR is well formed (`verify`).
+
+/// What is wrong with `f`, one message per fault (empty if it is well formed):
+///
+/// - each temporary is written by exactly one instruction, and read only after it, in the
+///   same list or in a list nested in a later instruction of it;
+/// - every local, temporary and label exists;
+/// - `Br` and `BrIf` go to an enclosing block (not a loop), never out of a `defer`'s body;
+/// - each label is defined once;
+/// - a `Defer` is directly in the body of a block (or of the function);
+/// - a `Load` gives a temporary of the place's type, a `Store` stores a value of it (where
+///   `place_type` knows it), and a bounds check compares an integer with a `usize`.
+#allow("needless-pub")
+pub verify :: fn(s: ^Sema, f: ^const Func) -> []string needs Alloc => run_verifier(s, f)
+
+/// What is wrong with the structure of `f`: `verify` without the checks of types.
+verify_structure :: fn(f: ^const Func) -> []string needs Alloc => run_verifier(null, f)
+
+run_verifier :: fn(s: ?^Sema, f: ^const Func) -> []string needs Alloc {
+    v := Verifier(s: s, f: f, errors: list(string), written: list(bool), visible: list(bool), labels: list(bool), open: list(u32))
+    for _ in 0..f.temps.len {
+        v.written.push(false)!
+        v.visible.push(false)!
+    }
+    for _ in 0..f.labels { v.labels.push(false)! }
+    v.check_list(f.body, true)
+    return v.errors.items
+}
+
+Verifier :: struct {
+    /// Without it, types are not checked.
+    s: ?^Sema
+    f: ^const Func
+    errors: List(string)
+    written: List(bool)
+    /// Whether each temporary may be read here.
+    visible: List(bool)
+    /// Whether each label has been defined.
+    labels: List(bool)
+    /// The blocks that enclose the instruction being checked, innermost last; a defer's
+    /// body starts afresh (`NO_LABEL` marks where it starts).
+    open: List(u32)
+}
+
+/// What `Verifier.open` holds where a `defer`'s body starts: no branch may cross it.
+NO_LABEL: u32 : 0xFFFF_FFFF
+
+fault :: fn(v: ^Verifier, text: string) needs Alloc {
+    v.errors.push(text)!
+}
+
+/// Checks a list; `block_body` if it is the body of a block or of the function.
+check_list :: fn(v: ^Verifier, insts: []const Inst, block_body: bool) needs Alloc {
+    // The temporaries written in this list stop being visible after it.
+    made := list(u32)
+    for i in 0..insts.len {
+        v.check_inst(&insts[i], block_body)
+        if t := dst_of(&insts[i].op) {
+            if usize(t) < v.visible.items.len {
+                v.visible.items[usize(t)] = true
+                made.push(t)!
+            }
+        }
+    }
+    for t in made.items { v.visible.items[usize(t)] = false }
+}
+
+check_inst :: fn(v: ^Verifier, i: ^const Inst, block_body: bool) needs Alloc {
+    if t := dst_of(&i.op) {
+        if usize(t) >= v.written.items.len {
+            v.fault(str.format("%{} is not a temporary", t)!)
+        } else if v.written.items[usize(t)] {
+            v.fault(str.format("%{} is written twice", t)!)
+        } else {
+            v.written.items[usize(t)] = true
+        }
+    }
+    match i.op {
+        .Move(_, x) => v.check_value(x)
+        .Load(d, p) => {
+            v.check_place(p)
+            v.same_type("load", p, d_type(v, d))
+        }
+        .AddrOf(_, p), .IsPresent(_, p, _), .TagIs(_, p, _) => v.check_place(p)
+        .Bin(_, _, a, b), .Eq(_, _, a, b) => {
+            v.check_value(a)
+            v.check_value(b)
+        }
+        .Un(_, _, a), .Coerce(_, _, a) => v.check_value(a)
+        .Builtin(_, _, args), .Aggregate(_, args) => for x in args { v.check_value(x) }
+        .Call(_, c, args) => {
+            if .Value(x) := c { v.check_value(x) }
+            for x in args { v.check_value(x) }
+        }
+        .Variant(_, _, ?x), .Wrap(_, _, ?x) => if y := x { v.check_value(y) }
+        .Store(p, x) => {
+            v.check_place(p)
+            v.check_value(x)
+            if v.typed(x) { v.same_type("store", p, value_type(v.f, x)) }
+        }
+        .Check(c) => match c {
+            .Bounds(a, b) => {
+                v.check_value(a)
+                v.check_value(b)
+                if s := v.s {
+                    if v.typed(a) and not s.tys.is_integer(value_type(v.f, a)) { v.fault(str.format("a bounds check of an index of type {}", s.show(value_type(v.f, a)))!) }
+                    if v.typed(b) and s.tys.kind(value_type(v.f, b)) is not .Usize { v.fault(str.format("a bounds check against a length of type {}", s.show(value_type(v.f, b)))!) }
+                }
+            }
+            .Range(lo, hi, ?len, _) => {
+                v.check_value(lo)
+                v.check_value(hi)
+                if x := len { v.check_value(x) }
+            }
+            .Unwrap(present, p, _) => {
+                v.check_value(present)
+                v.check_place(p)
+            }
+        }
+        .Str(_), .FnRef(_), .Closure(_), .HandlerRef(_), .NoArm, .Unreachable, .Tir(_) => {}
+        .Fill(_, x) => v.check_value(x)
+        .MakeSlice(_, ptr, lo, hi, _, _) => {
+            v.check_value(ptr)
+            v.check_value(lo)
+            v.check_value(hi)
+        }
+        .Write(sink, _, _, args, ?table) => {
+            if .Value(x) := sink { v.check_value(x) }
+            for x in args { v.check_value(x) }
+            if x := table { v.check_value(x) }
+        }
+        .Block(l, body) => {
+            v.check_define(l)
+            v.open.push(l)!
+            v.check_list(body, true)
+            _ = v.open.pop()
+        }
+        .Loop(l, body) => {
+            v.check_define(l)
+            // Not a target: its body is not a block.
+            v.open.push(NO_LABEL - 1)!
+            v.check_list(body, false)
+            _ = v.open.pop()
+        }
+        .If(c, then, else_) => {
+            v.check_value(c)
+            v.check_list(then, false)
+            v.check_list(else_, false)
+        }
+        .Br(l) => v.check_target(l)
+        .BrIf(c, _, l) => {
+            v.check_value(c)
+            v.check_target(l)
+        }
+        .Return(?x) => if y := x { v.check_value(y) }
+        .Defer(_, body) => {
+            if not block_body { v.fault("a defer is not directly in a block") }
+            v.open.push(NO_LABEL)!
+            v.check_list(body, true)
+            _ = v.open.pop()
+        }
+        .Trap(x) => v.check_value(x)
+    }
+}
+
+check_define :: fn(v: ^Verifier, l: u32) needs Alloc {
+    if usize(l) >= v.labels.items.len {
+        v.fault(str.format("@{} is not a label", l)!)
+        return
+    }
+    if v.labels.items[usize(l)] { v.fault(str.format("@{} is defined twice", l)!) }
+    v.labels.items[usize(l)] = true
+}
+
+/// Checks that `l` is the label of an enclosing block, inside the innermost defer body.
+check_target :: fn(v: ^Verifier, l: u32) needs Alloc {
+    i := v.open.items.len
+    while i > 0 {
+        i -= 1
+        x := v.open.items[i]
+        if x is NO_LABEL { break }
+        if x is l { return }
+    }
+    v.fault(str.format("br @{} does not go to an enclosing block", l)!)
+}
+
+check_value :: fn(v: ^Verifier, x: Value) needs Alloc {
+    .Temp(t) := x else return
+    v.check_read(t)
+}
+
+check_read :: fn(v: ^Verifier, t: u32) needs Alloc {
+    if usize(t) >= v.visible.items.len {
+        v.fault(str.format("%{} is not a temporary", t)!)
+    } else if not v.visible.items[usize(t)] {
+        v.fault(str.format("%{} is read where it is not written before", t)!)
+    }
+}
+
+check_place :: fn(v: ^Verifier, p: Place) needs Alloc {
+    match p.base {
+        .Local(l) => if usize(l) >= v.f.locals.len { v.fault(str.format("l{} is not a local", l)!) }
+        .Deref(t) => v.check_read(t)
+        .Upvar(_), .Global(_), .Const(_) => {}
+    }
+    for x in p.proj {
+        match x {
+            .Elem(i, _), .Step(i, _) => v.check_value(i)
+            _ => {}
+        }
+    }
+}
+
+/// Whether the type of `x` can be read: it is not a temporary that does not exist.
+typed :: fn(v: ^Verifier, x: Value) -> bool {
+    .Temp(t) := x else return true
+    return usize(t) < v.f.temps.len
+}
+
+/// The type of temporary `t`, if it exists.
+d_type :: fn(v: ^Verifier, t: u32) -> ?Ty => if usize(t) < v.f.temps.len { v.f.temps[usize(t)] } else { null }
+
+/// Checks that the value an instruction (`what`) moves in or out of `p` has `p`'s type.
+same_type :: fn(v: ^Verifier, what: string, p: Place, t: ?Ty) needs Alloc {
+    s := v.s else return
+    vt := t else return
+    pt := place_type(s, v.f, &p) else return
+    if pt is not vt { v.fault(str.format("{} of a {} at a place of type {}", what, s.show(vt), s.show(pt))!) }
+}
+
+// Tests of the structural checks, on functions built by hand.
+
+/// A function of `temps` temporaries (all of one type) and `labels` labels, with `body`.
+test_fn :: fn(temps: usize, labels: u32, body: []Inst) -> Func needs Alloc {
+    ts := list(Ty)
+    for _ in 0..temps { ts.push(Ty(id: 0))! }
+    ls := list(Local)
+    ls.push(Local(ty: Ty(id: 0), size: 8, align: 8))!
+    return Func(fn_id: 0, locals: ls.items, temps: ts.items, ret: Ty(id: 0), body: body, labels: labels, loops: empty_slice(LoopLabels), escapes: 0)
+}
+
+at :: fn(op: Op) -> Inst => Inst(op: op, span: source.DUMMY)
+
+/// The instructions as a list of their own.
+insts_of :: fn(xs: []const Inst) -> []Inst needs Alloc {
+    l := list(Inst)
+    l.extend(xs)!
+    return l.items
+}
+
+test "a well-formed function has no faults" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        k: Value = .Word(Ty(id: 0), 1)
+        inner := insts_of([_]Inst(at(.Move(1, .Temp(0))), at(.BrIf(.Temp(1), false, 0)), at(.Store(Place(base: .Local(0)), .Temp(1)))))
+        body := insts_of([_]Inst(at(.Move(0, k)), at(.Block(0, inner)), at(.Return(.Temp(0)))))
+        f := test_fn(2, 1, body)
+        expect_eq(verify_structure(&f).len, 0)
+    }
+}
+
+test "temporaries are written once and read after" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        k: Value = .Word(Ty(id: 0), 1)
+        twice := test_fn(1, 0, insts_of([_]Inst(at(.Move(0, k)), at(.Move(0, k)))))
+        expect_eq(verify_structure(&twice)[0], "%0 is written twice")
+        early := test_fn(2, 0, insts_of([_]Inst(at(.Move(1, .Temp(0))), at(.Move(0, k)))))
+        expect_eq(verify_structure(&early)[0], "%0 is read where it is not written before")
+        // A temporary written in a block is not visible after it.
+        inner := insts_of([_]Inst(at(.Move(0, k))))
+        scoped := test_fn(2, 1, insts_of([_]Inst(at(.Block(0, inner)), at(.Move(1, .Temp(0))))))
+        expect_eq(verify_structure(&scoped)[0], "%0 is read where it is not written before")
+    }
+}
+
+test "branches go to enclosing blocks only" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        outside := test_fn(0, 1, insts_of([_]Inst(at(.Block(0, empty_slice(Inst))), at(.Br(0)))))
+        expect_eq(verify_structure(&outside)[0], "br @0 does not go to an enclosing block")
+        to_loop := test_fn(0, 1, insts_of([_]Inst(at(.Loop(0, insts_of([_]Inst(at(.Br(0)))))))))
+        expect_eq(verify_structure(&to_loop)[0], "br @0 does not go to an enclosing block")
+        // Not out of a defer's body.
+        deferred := insts_of([_]Inst(at(.Defer(false, insts_of([_]Inst(at(.Br(0))))))))
+        out_of_defer := test_fn(0, 1, insts_of([_]Inst(at(.Block(0, deferred)))))
+        expect_eq(verify_structure(&out_of_defer)[0], "br @0 does not go to an enclosing block")
+        twice := test_fn(0, 1, insts_of([_]Inst(at(.Block(0, empty_slice(Inst))), at(.Block(0, empty_slice(Inst))))))
+        expect_eq(verify_structure(&twice)[0], "@0 is defined twice")
+    }
+}
+
+test "a defer is directly in a block" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        d := insts_of([_]Inst(at(.Defer(false, empty_slice(Inst)))))
+        f := test_fn(0, 0, insts_of([_]Inst(at(.If(.Word(Ty(id: 0), 1), d, empty_slice(Inst))))))
+        expect_eq(verify_structure(&f)[0], "a defer is not directly in a block")
+    }
+}

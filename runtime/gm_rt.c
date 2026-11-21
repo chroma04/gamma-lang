@@ -430,6 +430,31 @@ GM_API _Noreturn void gm_trap_pow(const uint8_t *base, uint32_t bits, bool sgn, 
     gm_trap_bytes(m.data, m.len, file, line, col);
 }
 
+/* ---- 128-bit multiplication with overflow ---------------------------------------- */
+
+/* a * b in two's complement, and in *overflow whether the exact product lies outside the
+ * range of __int128. It uses only unsigned 128-bit multiplication and division, which the
+ * C compiler's support library has (libgcc's __multi3 and __udivti3). */
+static __int128 gm_muloti4(__int128 a, __int128 b, int *overflow) {
+    unsigned __int128 ua = a < 0 ? -(unsigned __int128)a : (unsigned __int128)a;
+    unsigned __int128 ub = b < 0 ? -(unsigned __int128)b : (unsigned __int128)b;
+    unsigned __int128 max = ((unsigned __int128)1 << 127) - 1;
+    /* A negative product may reach -2^127, one more than the largest positive one. */
+    unsigned __int128 limit = (a < 0) != (b < 0) ? max + 1 : max;
+    *overflow = ua != 0 && ub > limit / ua;
+    return (__int128)((unsigned __int128)a * (unsigned __int128)b);
+}
+
+/* Clang turns __builtin_mul_overflow on __int128 into a call of __muloti4 on most targets
+ * other than x86-64, a function of its own support library (compiler-rt) that libgcc, which
+ * Linux systems link, does not have. This definition stands in for it; being weak, it gives
+ * way to compiler-rt's where that is linked. */
+#if defined(__clang__) && defined(__SIZEOF_INT128__) && !defined(__x86_64__) && !defined(__APPLE__) && !defined(_WIN32)
+__attribute__((weak, used)) __int128 __muloti4(__int128 a, __int128 b, int *overflow) {
+    return gm_muloti4(a, b, overflow);
+}
+#endif
+
 /* ---- value display (spec §21.6.1) ---------------------------------------------- */
 
 static void gm_fmt_str(gm_buf *out, const char *s) { gm_buf_push(out, s, strlen(s)); }

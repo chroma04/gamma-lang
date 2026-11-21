@@ -21,6 +21,9 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 ## 2. Performance (measure first; callgrind recipe in docs/contributing.md)
 s77 (decisions/072) measured every item of the old list: kept the cheap wins, closed the
 rest with numbers. What is left needs a structural change; do it only if asked:
+- Lowered IR (decisions/075; user approved the detour, P5/LLVM dropped). P0 done (s79:
+  compiler/lir, `gamma lir`, suite `lir`). NEXT: P1, the VM runs from LIR (see 075
+  "State after P0"). The interp items below would mostly be absorbed by it.
 - Interp: push without copying constants (consts as immediates in Bc) and without the
   frame memset (needs proof registers are written before read); `with … on` and value
   loops still run on the tree evaluator; `with` re-resolves its perform site per ctx.
@@ -37,6 +40,8 @@ rest with numbers. What is left needs a structural change; do it only if asked:
 
 ## 4. Language and library (only with evidence; check spec §22 for std additions)
 - Vector follow-ups if asked: lane sqrt, two-input shuffles, lane trunc/round to ints.
+- Spec: §18.4.2 "compatible type" is undefined (Safe = reinterpret bytes; interp = bytes;
+  decisions/074 TBAA note). Define it, likely as layout/bits-based, with the tests.
 - Platforms: FreeBSD, a freestanding/embedded profile. Docs: Rosetta-style examples.
 
 ## Small cleanups (only when touching the code)

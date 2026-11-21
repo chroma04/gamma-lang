@@ -8,6 +8,23 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
+- **`gamma lir`** prints a program's functions in LIR, the lowered form that the
+  interpreter and the C back end are to share: instructions on numbered temporaries,
+  with the order of evaluation, bounds checks and the tests of patterns written out. No
+  back end uses it yet; the format is not stable.
+- **Optimized builds use Clang when it is installed.** Without `CC`, Checked and Fast
+  builds now compile with `clang` if it is on `PATH`, except on Windows; Debug builds keep `cc`. The compiler built this way is 19% smaller and checks
+  programs 15% faster. Set `CC` to choose the compiler yourself.
+- **Very large optimized programs are optimized across their units.** A Checked or Fast
+  build that is split into units (the compiler itself) is compiled for ThinLTO and linked
+  with lld when it uses Clang and `ld.lld` is installed, with lld's cache in the cache
+  directory: the compiler runs 8% fewer instructions. Building it from nothing takes about
+  10 s longer; after an edit, the link redoes only what changed.
+- **A `match` on a union dispatches without a range check**: the `switch` on its tag tells
+  the C compiler that no other tag occurs. The interpreter, whose instruction loop is such a
+  `match`, runs 1–3.5% fewer instructions.
+- **Clang builds for AArch64 Linux link programs that multiply `i128`s with a check.**
+  Clang calls `__muloti4` for them, which libgcc lacks; the runtime now provides it.
 - **Formatting functions no longer get a copy per template.** A generic function whose
   `template :: string` parameter is the template of its `@write`s (and is otherwise used
   only as a run-time string), such as `str.format`, `List(u8).write` or a logging wrapper,

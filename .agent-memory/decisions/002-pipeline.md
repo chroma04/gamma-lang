@@ -8,4 +8,4 @@
   reference semantics). C backend consumes monomorphized TIR (M7). Every run test should
   eventually run on both (differential testing).
 - Why C not LLVM: portable, no heavy dep, cc optimizes; fibers via small asm runtime; wide ints
-  via runtime. Revisit only if C can't express something (e.g. @stack_size precision).
+  via runtime. Re-measured in 074 (s79): still C; read 074 before revisiting again.

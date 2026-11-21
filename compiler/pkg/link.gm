@@ -13,6 +13,9 @@ pub Toolchain :: struct {
     pub cc: []const string
     pub cflags: []const string
     pub ldflags: []const string
+    /// Whether `cc` is a compiler the driver chose itself for the host, so that it
+    /// compiles for the host without being asked (as plain `cc` does).
+    pub host: bool = false
 }
 
 /// Splits `s` into words the way a POSIX shell does, without expansions: white space

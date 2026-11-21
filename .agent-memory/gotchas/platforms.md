@@ -1,6 +1,11 @@
 # Platforms and C compilers: pitfalls
 
 ## gcc vs clang (macOS CI uses Apple clang; local `cc` is gcc 13, clang 18 installed)
+- Since s79 Checked/Fast builds use clang when on PATH (Debug: cc). aarch64 clang needs
+  compiler-rt symbols (__muloti4 for i128 mul-overflow): the runtime defines a weak one.
+  Check other targets with `clang --target=aarch64-linux-gnu -O2 -c x.c; llvm-nm x.o`.
+- Windows-only code: `when target.os is .Windows { return x }` followed by more code is
+  "unreachable code" on Windows (cross-build CI job): use `when … { } else { }`.
 - Run the suites with `CC=clang` before pushing back-end changes. clang rejects things gcc
   accepts: `(T){0}` for a zero-member struct (use `(T){}`); numeric/unknown escapes in
   `_Static_assert` messages (cgen's `assert_message` handles it).
