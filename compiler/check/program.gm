@@ -56,7 +56,7 @@ pub check_program :: fn(s: ^Sema, root: usize, tests: bool) needs Load {
 /// arguments, which may request more, what depends on the type arguments is checked for
 /// them, and the nested functions of the generic one (function literals, handler
 /// clauses) are copied for the instance with its types substituted. Generic functions of
-/// the core library, whose bodies gammac does not check, are not followed.
+/// the core library, whose bodies gamma does not check, are not followed.
 monomorphize :: fn(s: ^Sema) needs Load {
     while req := s.mono_queue.pop() { produce_instance(s, req) }
 }

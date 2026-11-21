@@ -34,3 +34,5 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
   inferred (§16.2); `test --backend=interp` native fallback; foreign `#thread_local`;
   constant-table fn tagging fix; linear complex chains; @stack_size vs gcc test; `lower`
   fuzz target; guide for Zig programmers; Windows CI timing probe.
+- s76: 0.3.0 release prep: changelog regrouped (Breaking first), version bump everywhere,
+  universe HashMap names removed (announced in 0.2.0), `gammac` → `gamma` in comments.

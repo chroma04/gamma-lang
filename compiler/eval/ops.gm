@@ -936,7 +936,7 @@ payload_ty :: fn(m: ^const Machine, t: Ty, i: u32) -> ?Ty {
     return variants[usize(i)].payload
 }
 
-/// How `print` shows `v` of type `t`, for the simple values whose text gammac knows.
+/// How `print` shows `v` of type `t`, for the simple values whose text gamma knows.
 display :: fn(m: ^Machine, v: Value, t: Ty) -> ?[]u8 needs Alloc {
     match v {
         .Int(bits) => if m.s.tys.is_integer(t) { return m.big_of(bits, t).to_decimal() }

@@ -2827,8 +2827,6 @@ The universe holds the **effects** but not their **operations**, with one except
 | functions | `range`, `range_incl`, `each`, `each_ptr`, `enumerate`, `reversed`, `zip`, `collect`, `count`, `nth`, `bytes`, `runes`, `empty_slice`, `new`, `make`, `make_fill`, `make_aligned`, `dupe`, `free`, `free_aligned`, `destroy`, `list`, `print`, `eprint`, `trap`, `assert`, `expect`, `expect_eq`, `ok`, and the default handlers `heap_allocator`, `system_io` and `system_output` (§19.4) |
 | modules | `target` (§3.6) |
 
-*Transition.* Until the release after 0.1.0, the universe scope also holds `HashMap`, `hash_map` and `hash_map_with`, `#deprecated` names for the declarations of `std/collections/hash_map` (§21.5); a program may hide them like any other name.
-
 ### 21.2 Allocation
 
 ```

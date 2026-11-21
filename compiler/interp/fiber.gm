@@ -1,7 +1,7 @@
 // Fibers and continuations (§14).
 //
 // The interpreter is recursive, so a fiber suspended in the middle of its code needs a
-// stack of its own: every fiber runs as a coroutine of the host, a fiber of gammac
+// stack of its own: every fiber runs as a coroutine of the host, a fiber of gamma
 // itself. The coroutines hand control to each other explicitly (`handoff`), so exactly
 // one of them runs at any time; a scheduler, the handler of `Coro` installed when the run
 // starts, switches between them. What belongs to a coroutine rather than to the program

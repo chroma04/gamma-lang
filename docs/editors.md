@@ -38,7 +38,7 @@ The extension lives in `editors/vscode`. It is not on the Marketplace, so instal
 cd editors/vscode
 npm install
 npx @vscode/vsce package --skip-license
-code --install-extension gamma-lang-0.1.0.vsix
+code --install-extension gamma-lang-0.3.0.vsix
 ```
 
 Restart VS Code. Files ending in `.gm` open as Gamma. `gamma` code blocks in Markdown files are highlighted too.

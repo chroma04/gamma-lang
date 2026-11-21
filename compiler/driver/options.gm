@@ -1,14 +1,14 @@
-//! The driver: what gammac's commands share beyond the stages of the compiler.
+//! The driver: what gamma's commands share beyond the stages of the compiler.
 //!
 
-//! The command line of gammac: the commands and their options.
+//! The command line of gamma: the commands and their options.
 
 diag :: import "../diag"
 lint :: import "../lint"
 load :: import "../load"
 pkg :: import "../pkg"
 
-/// What gammac was asked to do.
+/// What gamma was asked to do.
 pub Command :: union { Lex, Parse, Modules, Decls, Tir, Check, Lint, Fix, Build, Run, Test, Bench }
 
 /// The build modes of §1.4 (Safe compiles with Fil-C).

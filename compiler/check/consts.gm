@@ -254,7 +254,7 @@ default_const :: fn(s: ^Sema, module: usize, d: ^const ast.Expr, ty: Ty) -> bool
 }
 
 /// Checks the initializers left to the body checker: the defaults of fields of generic
-/// types, checked once as expressions (gammac does not evaluate them per use yet).
+/// types, checked once as expressions (gamma does not evaluate them per use yet).
 pub check_consts :: fn(s: ^Sema) needs Load {
     for i in 0..s.pending_consts.items.len {
         c := s.pending_consts.items[i]

@@ -4,204 +4,151 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
-## Unreleased
+## 0.3.0 - 2026-11-21
 
-### Added
+This release makes builds, the compiler and the interpreter much faster (incremental
+native builds, a compiler that checks itself in about half the time, an interpreter two to
+four times faster, Windows test builds about eight times faster), runs tests in the
+interpreter, and keeps the language server alive across its own crashes. The language
+gains tuple spreads and thread-local foreign variables, and closes several holes where the
+compiler accepted what the specification rejects.
 
-- **Thread-local foreign variables**: `#thread_local #global x: T` in a `foreign` block
-  declares a C `_Thread_local` variable, one instance per thread (spec §19.3).
-- **`gamma test --backend=interp` and `gamma bench --backend=interp`** run tests and
-  benchmarks in the interpreter, without a C compiler. Each test runs in a process of its
-  own, so `--jobs`, `--timeout`, `--filter` and the report work as with the C back end, and
-  the output is the same; a test that reaches foreign code or assembly is compiled through C
-  and run natively, in its place in the report, and
-  `--coverage` still needs C. `--backend=interp` was a usage error for these commands.
-- **`gamma lint --target=<triple>` and `gamma fix --target=<triple>`** check the program
-  for another machine, as `gamma check --target` does, so code in `when target…` branches
-  for it is linted too.
-- **The language server survives its own crashes.** `gamma lsp` runs the server in a
-  child process; after an internal error it shows the error in the editor, fails the
-  request that caused it, and restarts the server with the open documents as they were.
-  Before, a trap in the server ended the session.
+### Breaking
+
+- **The universe names `HashMap`, `hash_map` and `hash_map_with` are gone**, as 0.2.0
+  announced: write `hm :: import "std/collections/hash_map"`, then `hm.HashMap(K, V)` and
+  `hm.hash_map(K, V)`. The error for the old names says so and offers the import.
+- **A function name or function literal written as a format value, or as an argument a type
+  parameter is inferred from, is an error** (§16.2, §21.6.1). A function converts to either
+  kind of function type, and `print("{}", loc)` where a local `loc` was meant printed the
+  address of a function `loc`. To print an address, give the function a pointer type first
+  (`p: ^fn() = f`).
+- **An integer literal given a float type must convert exactly**, as the specification
+  says: `x: f32 = 16777217` and `h: f16 = 2049` were silently rounded and are now errors
+  (write `16777217.0` for the nearest value). Exact integers above 2^53, such as
+  `x: f64 = 1 << 60`, were rejected and are now accepted.
+- **A local type alias named like a visible type is an error** (§4.6): `Point :: i32`
+  inside a function with a top-level `Point`, a type parameter or a predeclared type name
+  was accepted and hid the type.
+- **`x in t` for a tuple `t` with elements of different types** converts the elements to
+  their join, as `for` over a tuple does; a tuple without one is a compile error. Before,
+  every element was compared at the type of the first (wrong results on big-endian
+  targets).
+- **Hash values differ** from 0.2.0 (`@hash` mixes a word per step; §16.8 allows it), so
+  programs must not have stored them.
+
+### Language
+
 - **Spreads in tuple expressions.** A tuple expression takes `..e` like an argument list:
   `(1, ..t)`, `(..a)` for the elements of an array `a`, `(..p, z: 0)` to extend a named
-  tuple, and `(..p, x: 5)` to replace one of its elements. Array constructors already took
-  spreads anywhere among their elements (`[_]T(a, ..xs, b)`).
+  tuple, and `(..p, x: 5)` to replace one of its elements.
+- **Thread-local foreign variables**: `#thread_local #global x: T` in a `foreign` block
+  declares a C `_Thread_local` variable, one instance per thread (§19.3).
+- **`@hash` is a constant expression** (§16.8): a hash computed at compile time is the one
+  the program computes for the same value at run time, so a table built at compile time can
+  be searched at run time. A value holding a pointer cannot be hashed at compile time.
+- **Only a union is an error-lifting target** (§10.6): a struct error type gets no lifting
+  and no variant shorthand, since its other fields would be made up (rationale in C.8). The
+  error for `try` into a struct error type says how to convert.
+
+### Standard library
+
 - **`std/process`: running a program with a time limit.** `process.output_within(argv,
   limit, opts, input)` runs a program to completion like `output`, killing it (and its
   process group with `opts.group`) once the limit is up and setting `Output.timed_out`;
   `process.watch(child, limit)` returns a `Watchdog` that does the same for a child driven
   by hand until `disarm`.
-
-### Changed
-
-- **Faster Debug builds on Windows.** The generated code of a Debug build no longer
-  includes `<windows.h>` and Winsock in every C unit; as on other systems it includes only
-  the few standard headers the runtime's declarations need.
-- **A function name or function literal written as a format value, or as an argument a type
-  parameter is inferred from, is an error** (spec §16.2, §21.6.1). It converts to either
-  kind of function type, and `print("{}", loc)` where a local `loc` was meant printed the
-  address of a function `loc`. Give it a function pointer type first to print its address.
-- **A cache directory that `gamma` creates is private to the user** (mode 0700), since builds
-  link the objects and run the executables it holds. An existing directory keeps its mode.
-- **The C sources of packages are compiled once**, and their objects kept in the cache
-  (`native/`), instead of by every build. An object is used again only while the file
-  and every header it includes are unchanged.
-- **`gamma run` gives the program its source path as its name** (`argv[0]`), as the
-  interpreter does, instead of the path of the temporary or cached executable.
-- **Incremental native builds.** A large program is now split into one C translation unit
-  per source file, and compiled units are kept in the cache (`$GAMMA_CACHE_DIR`, by default
-  `~/.cache/gamma`), so a rebuild compiles only the units an edit changed. A build of the
-  compiler itself takes about 40 s from an empty cache (about a minute before) and 4 to 6 s
-  after an edit in one file. The generated C names
-  functions after their Gamma names (`gm_f_<name>_<hash>`), which also makes profiles and C
-  backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` above 1 writes these
-  units and the runtime, each a translation unit of its own (before: a shared header and
-  `n` units).
-- **A faster compiler.** On its own sources `gamma check` runs 41% fewer instructions
-  (1.2 s to 0.76 s), `gamma fmt --check` 39% fewer (0.46 s to 0.22 s), `gamma lint` 37%
-  and the C back end 27%; the front end's share of a small build is halved. A build split
-  by source file now lets the C compiler inline the smallest functions (accessors,
-  predicates, the comparisons of small types) into the other files that call them, which
-  every large optimized program gains from; tokens and syntax-tree nodes are less than
-  half their former size; and the parser no longer walks every level of operator
-  precedence for an operand that no operator follows, nor tries a pattern where no `:=`
-  follows on the line.
-- **Faster generated code.** Generated C is compiled with `-fno-stack-protector`: where
-  the system's C compiler adds a stack canary to every function that has an array, nearly
-  every generated function carried one, because values that are not scalars are byte
-  arrays in C (6% of the compiler's own instructions). `CFLAGS=-fstack-protector-strong`
-  restores it; the C sources of packages are compiled with the compiler's defaults as
-  before. In Debug and Checked builds, small functions whose calls go at most three
-  levels deep (accessors, predicates, small helpers) no longer check the stack
-  themselves: the check of the function that calls them covers them, within the space
-  kept free below every stack's limit (another 6%).
-- **Fewer copies in generated code.** Large values (structs, optionals, results, unions
-  bigger than 16 bytes) are copied less: a value inside a temporary (the payload of a
-  `try`, a pattern binding, a field of a call's result) is used where it is instead of
-  copied out first; `some`, `ok`, errors and union variants are built straight in their
-  destination (a variable, the result slot, the caller's destination); and a function
-  whose body reads a large value from a place copies it straight to its caller. `@write`
-  and `print` pass a string argument to the sink without formatting it, and an `@write`
-  to a function literal calls it directly. `List.push` and `List.extend` are inlined
-  where they are called, and an arena allocation takes a short path. The compiler's own
-  `gamma check` runs 13% fewer instructions (0.82 s to 0.66 s) and its C back end 21%
-  fewer.
-- **A faster `gamma fmt`.** Whether two tokens written together would lex as one is
-  remembered per file instead of lexed anew at every place; with the faster lexer and
-  lists, `gamma fmt --check` runs 21% fewer instructions on the compiler's sources. `str.find` checks the first byte before comparing the rest.
-- **A faster `@hash`.** The structural hash mixes a 64-bit word per step instead of a
-  byte: a short string key hashes in about a tenth of the instructions, an integer key in
-  a few. Hash maps with the default hashing gain accordingly (the compiler's own type
-  check runs 3% fewer instructions). Hash values differ from those of earlier versions,
-  as §16.8 allows.
-- **A faster build from the seed.** `bootstrap/build.sh` takes under a minute on four
-  cores (about two and a half before). The seed is now the units a build of the compiler
-  compiles, the script compiles them as that build would, and the seed's compiler takes
-  those objects for every unit that is unchanged in the current sources
-  (`GAMMA_UNIT_OBJECTS`, a directory of objects compiled ahead and named after the hash of
-  their unit's text) instead of compiling the compiler a second time. `JOBS` defaults to
-  the number of processors, and `CFLAGS` apply to the seed too.
-- **A faster interpreter.** `gamma run --backend=interp`, `gamma repl` and the web
-  playground run programs two to four times faster. The register machine now dispatches on
-  compact instructions specialized for their operand types, makes every call of a compiled
-  function inside its loop instead of recursing on the host stack (calls of handler
-  clauses and function values included, so iterating with `for` is much cheaper), needs no
-  frame object for functions without `defer`, handlers or closures, and compiles more of
-  the language itself: copies of structs, `try`, unwraps, assertions, slices, division,
-  shifts, pointer casts and most builtins. Finding the allocation of an address takes
-  constant time. Checked builds of every program also drop the repeated stack probe of
-  `#inline` functions. Later: performs and calls of function values reuse what their
-  first run worked out (an iterator's `yield` costs about half as much as before), `and`,
-  `or` and `not` in conditions compile to jumps, closures and 128-bit arithmetic run in
-  the register machine (a program that multiplies modulo 64-bit numbers through `u128`
-  runs about 30% faster), and the loop dispatches through a pointer to the next
-  instruction. A pointer cast from a pointer at least as aligned as the target type
-  needs no alignment check, in generated C and in the interpreter.
-- **One wording for operating-system errors.** Every command describes a failed file,
-  directory or process operation with the same table; errors it does not name get the
-  system's own message (on Windows its native text) instead of a generic "input/output
-  error". `gamma lint` reports an invalid `gamma.toml` outside `[lint]` itself, as
-  `path:line: message`.
-- **`node_modules` directories are skipped** when a package's modules are listed (builds,
-  `gamma doc`), as the language server already did.
-- **`gamma lint`: `dangling-address` leaves alone an address that a later statement of
-  the same block replaces** (`w.cur = &n`, the work, `w.cur = saved`).
-- **Faster builds and a faster compiler.** Debug builds compile the generated C at `-Og`
-  (with gcc, plus the passes that keep the code within about a quarter of `-O1`'s speed):
-  the C compiler takes about 30% less time, the conformance and example suites run 20%
-  faster. The compiler checks itself 20% faster: `x is "text"`, string `match` arms and
-  `x is .Variant(p)` compare in place without building the constant, slices of integers
-  compare with `memcmp`, a `for` over `enumerate(xs)` runs as an index loop in every back
-  end, small functions stay inlinable in split builds, and the lexer sizes its token list
-  up front.
-- **Formatting allocates less.** A string or an integer of up to 64 bits written through
-  a template (`print`, `str.format`, `List(u8).write`) no longer goes through a heap
-  buffer of its own, and `str.format` reserves room for its result up front: a loop of
-  `str.format` and `List.write` calls runs 30% to 50% faster.
-- **`gamma lint` is about 30% faster** on a large program (the compiler: 1.9 s to 1.3 s):
-  it no longer lexes and parses every file a second time, and the
-  `stale-element-pointer` rule follows list growth through calls with a worklist.
-- **The C back end generates code about a quarter faster** (`gamma build --emit-c` of the
-  compiler: 2.5 s to 2.1 s including checking): lines are formatted straight into the
-  output, and the names and per-function facts it asks for repeatedly are computed once.
 - **`List` growth asks the allocator to `resize` in place first** (an arena grows its most
   recent block), and allocates and copies only if that fails.
+
+### Tooling
+
+- **`gamma test --backend=interp` and `gamma bench --backend=interp`** run tests and
+  benchmarks in the interpreter, without a C compiler. Each test runs in a process of its
+  own, so `--jobs`, `--timeout`, `--filter` and the report work as with the C back end; a
+  test that reaches foreign code or assembly is compiled through C and run natively, in its
+  place in the report. `--coverage` still needs C.
+- **Incremental native builds.** A large program is split into one C translation unit per
+  source file, and compiled units are kept in the cache (`$GAMMA_CACHE_DIR`, by default
+  `~/.cache/gamma`), so a rebuild compiles only the units an edit changed: the compiler
+  itself builds in about 40 s from an empty cache and 4 to 6 s after an edit in one file.
+  Generated C names functions after their Gamma names (`gm_f_<name>_<hash>`), which makes
+  profiles and C backtraces readable. `gamma build --emit-c` with `GAMMA_C_UNITS` above 1
+  writes these units and the runtime, each a translation unit of its own.
+- **The C sources of packages are compiled once**, and their objects kept in the cache
+  (`native/`); an object is used again only while the file and every header it includes
+  are unchanged.
+- **The language server survives its own crashes.** `gamma lsp` runs the server in a child
+  process; after an internal error it shows the error in the editor, fails the request that
+  caused it, and restarts the server with the open documents as they were. It also reports
+  a message header without a valid `Content-Length` as a parse error and goes on reading.
+- **`gamma lint --target=<triple>` and `gamma fix --target=<triple>`** check the program for
+  another machine, as `gamma check --target` does.
+- **`gamma lint`**: `unused-declaration` reports unused local types, aliases and nested
+  functions; `dangling-address` leaves alone an address that a later statement of the same
+  block replaces; an invalid `gamma.toml` is reported outside `[lint]` itself, as
+  `path:line: message`.
+- **`gamma run` gives the program its source path as its name** (`argv[0]`), as the
+  interpreter does.
+- **A cache directory that `gamma` creates is private to the user** (mode 0700), since builds
+  link the objects and run the executables it holds.
+- **`node_modules` directories are skipped** when a package's modules are listed.
+- **One wording for operating-system errors** in every command; errors it does not name get
+  the system's own message (on Windows its native text).
+
+### Speed
+
+- **The compiler** checks its own sources in about half the instructions of 0.2.0
+  (`gamma check compiler`: 1.2 s to about 0.65 s), and `gamma fmt --check`, `gamma lint`
+  (about 30% faster) and the C back end (about a quarter faster) gain alike: smaller tokens
+  and syntax-tree nodes, a parser that skips the precedence levels no operator needs, a
+  formatter that remembers token adjacency per file, constant comparisons made in place,
+  and fewer passes over the same files. Long chains of complex-number operations check in
+  linear time.
+- **Builds.** Debug builds compile the generated C at `-Og` (with gcc, plus the passes that
+  keep the code within about a quarter of `-O1`'s speed), about 30% less C compiler time.
+  Generated code includes only the few standard headers the runtime's declarations need
+  on every system: on Windows each C unit parsed `<windows.h>` and Winsock, and the
+  conformance and example suites now run in under 3 minutes instead of 22.
+  `bootstrap/build.sh` takes under a minute on four cores (about two and a half before):
+  the seed is the units a build of the compiler compiles, and unchanged units are not
+  compiled again.
+- **Generated code.** Large values are copied less (built straight in their destination,
+  used in place inside temporaries), `List.push` and `List.extend` are inlined, small
+  functions skip their own stack check where their caller's covers them, formatting a
+  string or a 64-bit integer allocates nothing, and code is compiled with
+  `-fno-stack-protector` (`CFLAGS=-fstack-protector-strong` restores the canaries). The
+  structural hash (`@hash`) mixes a 64-bit word per step: a short string key hashes in
+  about a tenth of the instructions.
+- **The interpreter** (`gamma run --backend=interp`, `gamma repl`, the web playground)
+  runs programs two to four times faster: compact instructions specialized for their
+  operand types, calls (handler clauses and function values included) made inside the
+  dispatch loop instead of on the host stack, no frame object for functions that need
+  none, and most of the language compiled to the register machine.
+
+### Documentation
+
+- **Gamma for Zig programmers** (`docs/guide/for-zig-programmers.md`): allocation and I/O as
+  effects instead of parameters, error unions as types, compile time without type
+  functions. Its examples are checked like the other guides'.
+- The idioms handbook is folded into the guide: its patterns are now in the chapters they
+  belong to.
 
 ### Fixed
 
 - **A function in a constant table is the same pointer as at run time.** A function that
   performs no effects, stored in a constant at a function pointer type that performs some,
   compared unequal (`is`) to the same function converted at run time in native builds.
-- **Long complex-number chains check in linear time.** `1j + y + y + …` was quadratic
-  (20000 links: 6.9 s, now 0.3 s): the operator nodes are classified once, and the names
-  the compiler gives the operands of each complex operation no longer pile up in the
-  enclosing scope.
-- **A local type alias named like a visible type is an error**, as §4.6 says for every
-  local: `Point :: i32` inside a function with a top-level `Point` (or a type parameter
-  `T`, or a predeclared type name) was accepted and hid the type.
-- **`gamma lint` reports unused local types, aliases and nested functions** under
-  `unused-declaration`: `Pair :: struct { … }`, `Bytes :: []u8` or `helper :: fn() { … }`
-  inside a function body that the rest of its block never names.
-- **`@hash` in constants.** `@hash` is a constant expression, as §16.8 says: a hash computed
-  at compile time is the one the program computes for the same value when it runs, so a
-  table built at compile time can be searched at run time. A value that holds a pointer
-  cannot be hashed at compile time (a null optional pointer can) and is reported as such.
-
-- **The language server reports a message header without a valid `Content-Length`** as a
-  parse error and goes on reading. A header block that lacked the field was taken for a
-  stray blank line, and the messages after it were read out of step.
-- **An integer literal given a float type is checked for converting exactly**, as the
-  specification says, for every float type. `x: f32 = 16777217` and `h: f16 = 2049` were
-  accepted and silently rounded; they are now compile errors (write `16777217.0` to ask
-  for the nearest value). Exact integers above 2^53, such as `x: f64 = 1 << 60`, were
-  rejected and are now accepted.
-- The interpreter's message for a union value with an invalid tag printed an unsigned
-  tag as a signed number when it was written through a format template.
-- `gamma fetch` reported an archive with too many entries as unpacking "to more than 4
-  GiB", a limit it does not have.
-- **`x in t` for a tuple value `t` with elements of different types** compared every
-  element at the type of the first, reading the others at the wrong width (wrong results
-  on big-endian targets). The elements are now converted to their join, as `for` over a
-  tuple does, and a tuple without one is a compile error.
 - **A computed array length whose `<<` loses bits** (`[N << 63]u8` with `N` = 4) made the
-  compiler trap; it is now the error "the array length … overflows" that the other
-  operators give.
+  compiler trap; it is now the error "the array length … overflows".
 - **A literal default of an `f16` field** is rounded to half precision at compile time, as
   other `f16` constants are.
+- The interpreter's message for a union value with an invalid tag printed an unsigned tag
+  as a signed number.
+- `gamma fetch` reported an archive with too many entries as unpacking "to more than 4
+  GiB", a limit it does not have.
 - **`--backend=cranelift` is no longer listed** as a value `--backend` expects, and
   `gamma repl` rejects it as the other commands do.
-
-### Documentation
-
-- **Spec §10.6 states that only a union is a lifting target**: an error type that is a
-  struct gets no lifting and no variant shorthand, since its other fields would be made up
-  (rationale in C.8). The guide shows the idiom, a function that builds the error, and the
-  error for `try` into a struct error type now says so and how to convert.
-- The idioms handbook is folded into the guide: its patterns (naming and module layout,
-  scanners with `match`, binding optional payloads, when to trap, errors that unwind a
-  recursive descent, an arena per phase, pointers into lists that grow, copies of lists and
-  loop variables) are now in the chapters they belong to.
 
 ## 0.2.0 - 2026-10-30
 

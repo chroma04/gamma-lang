@@ -13,11 +13,9 @@ Decision:
   pub module decl `map` (hidden from the universe via UNIVERSE_HIDDEN; `universe_hint`
   skips module decls). Std module re-exports `core.map.HashMap/hash_map/hash_map_with/Entry`
   (like std/fs `core.File`); methods are documented in its `//!` module doc.
-- Transition: prelude has `#deprecated` aliases `HashMap`, `hash_map`, `hash_map_with` →
-  `map.*` (same declarations, so old/new spellings mix). Spec §21.1 "Transition" note.
-  REMOVE them (and the note, and the check test lines) in the release after 0.1.0; then
-  consider an import fix: `std_home` would need "std/collections/hash_map" and import_fix's
-  alias `&path[4..]` must become the last path segment (`hm`?).
+- Transition done: the `#deprecated` prelude aliases were removed in 0.3.0 (s76). The
+  unknown-name/unknown-type errors for them carry a note and an import fix
+  (sema/names.gm MOVED_TO_HASH_MAP, std_home, module_alias = last path segment).
 - Convention: import as `hm` (like `om`, `dq`).
 - Constraints stay one-type predicates; `in` only for built-in forms (§7.7 note). C.8 rows:
   relational constraints, `in` on library containers, more core containers.

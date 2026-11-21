@@ -350,20 +350,7 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
                 }
             }
             if t := s.builtin_type(id.name) { return t }
-            msg := if is_oversized_int_name(id.name) {
-                str.format("unknown type `{}`: integer types are at most 128 bits wide (§5.2)", id.name)!
-            } else {
-                str.format("unknown type `{}`", id.name)!
-            }
-            d := diag.error(e.span, msg)
-            if hint := s.universe_hint(id.name) {
-                d.add_note(hint)
-                if edits := s.import_fix(module, id.name, e.span) {
-                    last := edits.items[edits.items.len - 1].text
-                    d.add_fix_edits(str.format("write `{}`", last)!, edits.items)
-                }
-            }
-            s.emit(d)
+            s.unknown_type(module, id.name, e.span)
             return tys.error()
         }
         .Paren(inner) => return s.resolve_type(module, inner)
@@ -447,7 +434,12 @@ resolve_type_unchecked :: fn(s: ^Sema, module: usize, e: ^const ast.Expr) -> Ty 
                 return tys.error()
             }
             t := template else {
-                s.error(e.span, "expected a type")
+                // `G(args)` with a `G` that nothing declares.
+                if .Ident(id) := callee.kind and s.lookup_module_name(module, id.name) is null and s.builtin_type(id.name) is null {
+                    s.unknown_type(module, id.name, callee.span)
+                } else {
+                    s.error(e.span, "expected a type")
+                }
                 return tys.error()
             }
             targs := s.generic_type_args(module, t, args, e.span) else return tys.error()
@@ -931,4 +923,23 @@ with_operand :: fn(prefix: ^const ast.Expr, operand: ^const ast.Expr) -> ^ast.Ex
         _ => return new(operand^)!
     }
     return new(ast.Expr(id: prefix.id, kind: kind, span: prefix.span))!
+}
+
+/// Reports the type name `name` at `span`, which nothing declares, with a hint where a
+/// standard module declares it.
+unknown_type :: fn(s: ^Sema, module: usize, name: string, span: source.Span) needs Alloc {
+    msg := if is_oversized_int_name(name) {
+        str.format("unknown type `{}`: integer types are at most 128 bits wide (§5.2)", name)!
+    } else {
+        str.format("unknown type `{}`", name)!
+    }
+    d := diag.error(span, msg)
+    if hint := s.universe_hint(name) {
+        d.add_note(hint)
+        if edits := s.import_fix(module, name, span) {
+            last := edits.items[edits.items.len - 1].text
+            d.add_fix_edits(str.format("write `{}`", last)!, edits.items)
+        }
+    }
+    s.emit(d)
 }
