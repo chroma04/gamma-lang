@@ -1,9 +1,34 @@
-# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0–P2 done
+# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0–P2 + P3a done
 
 User asks (after 074): "scope out the lowered IR", then "start on the plan with P0 …
 we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 first.
 
-## State after P1 + P2 (s81) — next: P3 (passes), then P4 (cgen)
+## State after P3a (s82) — next: P3b/c only if they pay for the VM, else P4 (cgen)
+- compiler/lir/checks.gm `elide_checks` (called at the end of `lower`, only when
+  `Lw.bounds > 0`): one in-order walk; Sym = Const | Part(local, generation, offset, ty);
+  store = new generation (+ copy propagation of whole-local stores); loops havoc what they
+  store at entry (note_stores), compounds havoc what they stored after (log since mark);
+  facts (a<b / a<=b, unsigned only) from BrIf, If branches, and past an `if` whose other
+  branch `leaves`; proof = plain consts/identity or ≤2 facts chained. Not followed:
+  addressed/captured locals; `Tir` = havoc all; defer bodies not looked into (their
+  stores havoc). Golden: tests/lir/checks.gm (positive + 7 must-keep cases).
+- Pitfall found: eliding a check LOST the SliceLd fusion (check+load = 1 Bc) → slower.
+  Added Ins/Bc StepLd/StepSt (unchecked *%p+[i] word access, vm_lir `lc_step` in lc_load/
+  lc_store); in vm_run they SHARE the arm with SliceLd/SliceSt (`if i.op is .SliceLd and
+  k >= len`): separate arms made gcc -Og's vm_run +1 Ir per dispatch-ish on call/iterate/
+  perform (+0.9%, pure layout; -g builds showed no difference).
+- Measured (callgrind Ir, same builder, base = the cleanup commit): call −0.9, iterate
+  −1.3, list_push −0.5, map_insert −0.3, new_destroy −1.0, perform −0.8, safe_* −0.2..−1.2,
+  with −1.6, nbody −3.0, julia −0.9, `for x in xs` micro −2.75, indexed loop micro −0.5;
+  life/mandelbrot/sha256sum ±0.1; compile-heavy wordfreq +0.1, json_query +0.4 (pass cost:
+  ~26k Ir per function with checks; most is the 224-byte Inst walk).
+- P3 left: (b) borrow/purity/steady and (d) may-exit only matter for cgen → do with P4;
+  (c) handler specialization for the VM (`for` over an iterator calls the clause directly)
+  is the remaining VM win, bigger work. Range checks (`xs[i..j]`) not elided yet. The
+  irrefutable `for` binding lowers as `block{block{…; br}; no-arm}` (a jump per iteration
+  in the VM?) — check the selector before changing lowering.
+
+## State after P1 + P2 (s81)
 - The interpreter compiles EVERY body from LIR (interp/vm_lir.gm; no switch any more).
   Deleted: code.gm (TIR→Node), vm_compile.gm, run.gm/stmt.gm (tree evaluator), the tree
   parts of calls/place/ops/fiber/sys, Frame.labels, and Ins EvalW/EvalSlot/Discard/Stmt/

@@ -1,0 +1,301 @@
+// Removing the bounds checks that the comparisons before them prove (`elide_checks`).
+
+/// Removes from `f` each `Check(.Bounds(i, len))` whose index is known to be below the
+/// length where it runs (spec D.7): a branch on an unsigned `i < len` (or `i < x` with
+/// `x <= len`, or a constant `i < c <= len`) leads to it, and neither side has changed
+/// since. This is what makes `for i in 0..xs.len { xs[i] }` and `while i < a.len { a[i] }`
+/// check-free. Returns how many checks it removed.
+///
+/// The analysis walks the body once, in order, giving each value it can name a symbol:
+/// a constant, or the bytes at an offset of a local as one *generation* of the local holds
+/// them. Each store to a local starts a new generation, so a fact about a symbol stays
+/// true; what is stored in a loop starts a new one where the loop starts, and what is
+/// stored in a block, a loop or an `if` (or in a deferred body) a new one after it, where
+/// more than one way leads. Facts last to the end of the list they are learnt in. Locals
+/// whose address is taken or that nested functions reach are not followed.
+#allow("needless-pub")
+pub elide_checks :: fn(s: ^Sema, f: ^Func) -> u32 needs Alloc {
+    e := Elider(s: s, f: f, val: make_fill(f.temps.len, Sym.None)!, cmps: list(TempCmp), gen: make_fill(f.locals.len, u32(0))!, copy: make_fill(f.locals.len, Sym.None)!, facts: list(Fact), log: list(u32), next_gen: 1)
+    f.body = e.walk(f.body)
+    free(e.val)
+    free(e.gen)
+    free(e.copy)
+    e.cmps.deinit()
+    e.facts.deinit()
+    e.log.deinit()
+    return e.removed
+}
+
+/// What the analysis knows a value to be.
+Sym :: union {
+    None
+    /// An integer constant's bits.
+    Const: u64
+    /// The value of type `ty` at byte `off` of local `local`, in generation `gen` of it.
+    Part: (local: u32, gen: u32, off: u64, ty: Ty)
+}
+
+/// `a < b` (`strict`) or `a <= b`, unsigned.
+Fact :: struct {
+    a: Sym
+    b: Sym
+    strict: bool
+}
+
+/// The comparison a temporary holds the result of, as a fact that holds if it is true.
+Cmp :: struct {
+    a: Sym
+    b: Sym
+    strict: bool
+}
+
+TempCmp :: struct {
+    temp: u32
+    cmp: Cmp
+}
+
+Elider :: struct {
+    s: ^Sema
+    f: ^Func
+    /// What each temporary holds, and the temporaries that hold comparisons.
+    val: []Sym
+    cmps: List(TempCmp)
+    /// The generation of each local, and what it holds as a whole if that is known.
+    gen: []u32
+    copy: []Sym
+    /// What holds at the instruction being looked at.
+    facts: List(Fact)
+    /// The locals stored to, in order (a block leaves new generations of those stored in
+    /// it).
+    log: List(u32)
+    next_gen: u32
+    removed: u32 = 0
+}
+
+same :: fn(a, b: Sym) -> bool => match a {
+    .None => false
+    .Const(x) => if .Const(y) := b { x is y } else { false }
+    .Part(l, g, o, t) => if .Part(l2, g2, o2, t2) := b { l is l2 and g is g2 and o is o2 and t is t2 } else { false }
+}
+
+/// Whether local `l` is followed: its value changes only by `Store`s in this body.
+followed :: fn(e: ^Elider, l: u32) -> bool {
+    if usize(l) >= e.f.locals.len { return false }
+    x := &e.f.locals[usize(l)]
+    return not x.addressed and not x.captured
+}
+
+/// Starts a new generation of local `l`, holding something not known.
+havoc :: fn(e: ^Elider, l: u32) {
+    if usize(l) >= e.gen.len { return }
+    e.gen[usize(l)] = e.next_gen
+    e.next_gen += 1
+    e.copy[usize(l)] = .None
+}
+
+havoc_all :: fn(e: ^Elider) {
+    for l in 0..e.gen.len { e.havoc(l.trunc(u32)) }
+}
+
+sym_of :: fn(e: ^Elider, v: Value) -> Sym => match v {
+    .Temp(t) => if usize(t) < e.val.len { e.val[usize(t)] } else { .None }
+    .Word(_, bits) => .Const(bits)
+    _ => .None
+}
+
+/// What loading `p` as a value of type `ty` gives.
+load_sym :: fn(e: ^Elider, p: ^const Place, ty: Ty) -> Sym {
+    .Local(l) := p.base else return .None
+    if not e.followed(l) { return .None }
+    off: u64 = 0
+    for x in p.proj {
+        .Field(_, o) := x else return .None
+        off += o
+    }
+    match e.copy[usize(l)] {
+        .Const(c) => return if p.proj.len is 0 { .Const(c) } else { .None }
+        .Part(l2, g2, o2, _) => return .Part(l2, g2, o2 + off, ty)
+        .None => return .Part(l, e.gen[usize(l)], off, ty)
+    }
+}
+
+is_unsigned :: fn(e: ^Elider, t: Ty) -> bool => e.s.tys.is_integer(t) and not e.s.tys.is_signed_integer(t)
+
+/// The fact the comparison `op` of `a` and `b` gives when it is true.
+comparison :: fn(op: tir.BinOp, a, b: Sym) -> ?Cmp => match op {
+    .Lt => Cmp(a: a, b: b, strict: true)
+    .Le => Cmp(a: a, b: b, strict: false)
+    .Gt => Cmp(a: b, b: a, strict: true)
+    .Ge => Cmp(a: b, b: a, strict: false)
+    _ => null
+}
+
+/// The comparison temporary `t` holds the result of, if it does.
+cmp_of :: fn(e: ^Elider, t: u32) -> ?Cmp {
+    i := e.cmps.items.len
+    while i > 0 {
+        i -= 1
+        if e.cmps.items[i].temp is t { return e.cmps.items[i].cmp }
+    }
+    return null
+}
+
+/// Learns that the comparison in temporary `cond` is `truth`.
+learn :: fn(e: ^Elider, cond: Value, truth: bool) needs Alloc {
+    .Temp(t) := cond else return
+    c := e.cmp_of(t) else return
+    // Not (a < b) is b <= a; not (a <= b) is b < a.
+    fact := if truth { Fact(a: c.a, b: c.b, strict: c.strict) } else { Fact(a: c.b, b: c.a, strict: not c.strict) }
+    e.facts.push(fact)!
+}
+
+/// Whether `a <= b` (`a < b` if `strict`) holds without facts: both are constants, or
+/// they are the same.
+plain :: fn(a, b: Sym, strict: bool) -> bool {
+    if .Const(x) := a and .Const(y) := b { return if strict { x < y } else { x <= y } }
+    return not strict and same(a, b)
+}
+
+/// Whether `a <= b` (`a < b` if `strict`) holds here: plainly, or by one or two facts
+/// (`a < c <= b`, `a <= c < b`, ...).
+holds :: fn(e: ^Elider, a, b: Sym, strict: bool) -> bool {
+    if plain(a, b, strict) { return true }
+    for f in e.facts.items {
+        if not same(f.a, a) { continue }
+        rest := strict and not f.strict
+        if plain(f.b, b, rest) { return true }
+        for g in e.facts.items {
+            if same(g.a, f.b) and plain(g.b, b, rest and not g.strict) { return true }
+        }
+    }
+    return false
+}
+
+/// Whether the bounds check of `index` against `len` always passes here.
+proven :: fn(e: ^Elider, index, len: Value) -> bool {
+    if not e.is_unsigned(value_type(e.f, index)) { return false }
+    i := e.sym_of(index)
+    n := e.sym_of(len)
+    if i is .None or n is .None { return false }
+    return e.holds(i, n, true)
+}
+
+/// Walks the list `insts`, removing the checks it proves; returns what is left of it.
+walk :: fn(e: ^Elider, insts: []Inst) -> []Inst needs Alloc {
+    mark := e.facts.items.len
+    n: usize = 0
+    for i in 0..insts.len {
+        if e.step(&insts[i]) {
+            if n is not i { insts[n] = insts[i] }
+            n += 1
+        } else {
+            e.removed += 1
+        }
+    }
+    e.facts.truncate(mark)
+    return insts[0..n]
+}
+
+/// Walks a list nested in an instruction, with the fact `cond` (if any) learnt first;
+/// afterwards the locals stored in it are no longer known.
+nested :: fn(e: ^Elider, insts: []Inst, cond: ?Value, truth: bool) -> []Inst needs Alloc {
+    mark := e.facts.items.len
+    log := e.log.items.len
+    if c := cond { e.learn(c, truth) }
+    out := e.walk(insts)
+    e.facts.truncate(mark)
+    e.forget_since(log)
+    return out
+}
+
+/// Starts new generations of the locals stored since the log was `log` long.
+forget_since :: fn(e: ^Elider, log: usize) {
+    for i in log..e.log.items.len { e.havoc(e.log.items[i]) }
+}
+
+/// Records a store to local `l` holding `v` as a whole (or, `whole` false, in part).
+stored :: fn(e: ^Elider, l: u32, v: Sym, whole: bool) needs Alloc {
+    if not e.followed(l) { return }
+    e.havoc(l)
+    if whole { e.copy[usize(l)] = v }
+    e.log.push(l)!
+}
+
+/// Adds the locals stored in `insts` (at any depth) to the log, starting new generations
+/// of them; true if the list has a `Tir` instruction, which may store any.
+note_stores :: fn(e: ^Elider, insts: []const Inst) -> bool needs Alloc {
+    any := false
+    for i in insts {
+        match i.op {
+            .Store(p, _) => if .Local(l) := p.base { e.stored(l, .None, false) }
+            .Tir(_) => { any = true }
+            .Block(_, body), .Loop(_, body), .Defer(_, body), .DebugOnly(body) => if e.note_stores(body) { any = true }
+            .If(_, a, b) => {
+                if e.note_stores(a) { any = true }
+                if e.note_stores(b) { any = true }
+            }
+            .With(_, _, a, _, b) => {
+                if e.note_stores(a) { any = true }
+                if e.note_stores(b) { any = true }
+            }
+            _ => {}
+        }
+    }
+    return any
+}
+
+/// Whether control never reaches the end of `insts`: its last instruction leaves.
+leaves :: fn(insts: []const Inst) -> bool {
+    if insts.len is 0 { return false }
+    return match insts[insts.len - 1].op {
+        .Return(_), .Br(_), .Exit(_), .Trap(_), .Assert(_), .NoArm, .Unreachable => true
+        _ => false
+    }
+}
+
+/// Looks at one instruction; false if it is a check that can go.
+step :: fn(e: ^Elider, inst: ^Inst) -> bool needs Alloc {
+    match inst.op {
+        .Check(c) => if .Bounds(i, n) := c and e.proven(i, n) { return false }
+        .Move(d, v) => { e.val[usize(d)] = e.sym_of(v) }
+        .Load(d, p) => { e.val[usize(d)] = e.load_sym(&p, e.f.temps[usize(d)]) }
+        .Bin(d, op, a, b) => if e.is_unsigned(value_type(e.f, a)) {
+            x := e.sym_of(a)
+            y := e.sym_of(b)
+            if x is not .None and y is not .None {
+                if c := comparison(op, x, y) { e.cmps.push(TempCmp(temp: d, cmp: c))! }
+            }
+        }
+        .Store(p, v) => if .Local(l) := p.base { e.stored(l, e.sym_of(v), p.proj.len is 0) }
+        .BrIf(c, negated, _) => e.learn(c, negated)
+        .If(c, then, else_) => {
+            a := e.nested(then, c, true)
+            b := e.nested(else_, c, false)
+            inst.op = .If(c, a, b)
+            // Past an `if` one of whose branches always leaves, the other was taken.
+            if leaves(a) and not leaves(b) { e.learn(c, false) }
+            if leaves(b) and not leaves(a) { e.learn(c, true) }
+        }
+        .Block(l, body) => { inst.op = .Block(l, e.nested(body, null, false)) }
+        .Loop(l, body) => {
+            log := e.log.items.len
+            if e.note_stores(body) { e.havoc_all() }
+            inst.op = .Loop(l, e.nested(body, null, false))
+            e.forget_since(log)
+        }
+        .DebugOnly(body) => { inst.op = .DebugOnly(e.nested(body, null, false)) }
+        .With(l, tl, install, on, body) => {
+            log := e.log.items.len
+            a := e.nested(install, null, false)
+            b := e.nested(body, null, false)
+            inst.op = .With(l, tl, a, on, b)
+            e.forget_since(log)
+        }
+        // A deferred body runs when its block is left: not where it is written, so it is
+        // not looked into, but what it stores is not known after the block.
+        .Defer(_, body) => if e.note_stores(body) { e.havoc_all() }
+        .Tir(_) => e.havoc_all()
+        _ => {}
+    }
+    return true
+}

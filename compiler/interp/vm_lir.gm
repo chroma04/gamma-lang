@@ -2280,6 +2280,10 @@ lc_read :: fn(c: ^Lc, r: u32, w: LcPlace, size: u32, align: u32, t: Ty, span: so
 }
 
 lc_load :: fn(c: ^Lc, r: u32, pl: lir.Place, t: Ty, span: source.Span) needs Alloc {
+    if s := c.lc_step(pl, t) {
+        c.lc_emit(.StepLd(r, s.p, s.i, s.esz, s.size, s.align, c.lc_node(t, span)))
+        return ()
+    }
     scratch := list(u32)
     w := c.lc_place(pl, span, &scratch, true)
     c.lc_read(r, w.where, c.m.size(t).trunc(u32), w.align.trunc(u32), t, span)
@@ -2299,6 +2303,10 @@ lc_store :: fn(c: ^Lc, pl: lir.Place, v: lir.Value, span: source.Span) needs All
     t := lir.value_type(c.f, v)
     size := c.m.size(t).trunc(u32)
     if size is 0 { return () }
+    if s := c.lc_step(pl, t) {
+        c.lc_emit(.StepSt(s.p, s.i, s.esz, s.size, s.align, c.lc_val(v), c.lc_node(t, span)))
+        return ()
+    }
     scratch := list(u32)
     w := c.lc_place(pl, span, &scratch, true)
     rv := c.lc_val(v)
@@ -2315,6 +2323,21 @@ lc_store :: fn(c: ^Lc, pl: lir.Place, v: lir.Value, span: source.Span) needs All
         .Mem(b, off) => c.lc_emit(.Store(b, off.trunc(u32), size, w.align.trunc(u32), rv, c.lc_node(t, span)))
     }
     for x in scratch.items { c.lc_give(x) }
+}
+
+/// For a word `t` at element `i` of the sequence a temporary points to (`*%p+[i]`, an
+/// element whose index is not checked or was proven): the registers of the pointer and
+/// the index, for one `StepLd` or `StepSt`.
+lc_step :: fn(c: ^Lc, pl: lir.Place, t: Ty) -> ?(p: u32, i: u32, esz: u64, size: u32, align: u32) needs Alloc {
+    .Deref(pt) := pl.base else return null
+    if pl.proj.len is not 1 { return null }
+    .Step(si, esz) := pl.proj[0] else return null
+    if not c.lc_in_reg(si) { return null }
+    m := c.m
+    if is_packed(m, t) { return null }
+    size := m.size(t)
+    if size is 0 or size > 8 { return null }
+    return (p: c.reg.items[usize(pt)], i: c.lc_val(si), esz: esz, size: size.trunc(u32), align: m.align(t).max(1).trunc(u32))
 }
 
 /// Copies the `size` bytes at place `pl` to the slot at `at`.

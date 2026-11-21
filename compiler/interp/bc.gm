@@ -117,6 +117,10 @@ BcOp :: union {
     /// element `c` of the slice in `a` and the register after it.
     SliceLd
     SliceSt
+    /// `a` = element `c` (of `f` bytes, `w` apart) of the sequence the pointer in `b`
+    /// starts, unchecked; `StepSt` writes register `b` to element `c` of the one in `a`.
+    StepLd
+    StepSt
     /// The address of element `b`, `c` bytes apart, of the many-pointer in `a`, unchecked.
     PtrIdx
     /// `a = b >> c` on unsigned (`ShrU`) or signed (`ShrS`) integers of `w` bits, and
@@ -447,6 +451,14 @@ bc_of :: fn(i: ^const Ins, words: bool) -> Bc {
         .SliceSt(x) => {
             if not words or not word_size(u64(x.size)) or x.align is not x.size or x.len is not x.p + 1 or not fits16(x.esz) { return bc_free() }
             return Bc(op: .SliceSt, f: x.size.trunc(u8), w: x.esz.trunc(u16), a: x.p, b: x.v, c: x.i)
+        }
+        .StepLd(x) => {
+            if not words or not word_size(u64(x.size)) or x.align is not x.size or not fits16(x.esz) { return bc_free() }
+            return Bc(op: .StepLd, f: x.size.trunc(u8), w: x.esz.trunc(u16), a: x.r, b: x.p, c: x.i)
+        }
+        .StepSt(x) => {
+            if not words or not word_size(u64(x.size)) or x.align is not x.size or not fits16(x.esz) { return bc_free() }
+            return Bc(op: .StepSt, f: x.size.trunc(u8), w: x.esz.trunc(u16), a: x.p, b: x.v, c: x.i)
         }
         .PtrIdx(x) => {
             if not fits32(x.esz) { return bc_free() }

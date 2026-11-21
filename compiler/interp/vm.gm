@@ -114,6 +114,11 @@ Ins :: union {
     /// from `v`; traps if `i` is out of bounds.
     SliceLd: (r: u32, p: u32, len: u32, i: u32, esz: u64, size: u32, align: u32, n: ^Node)
     SliceSt: (p: u32, len: u32, i: u32, esz: u64, size: u32, align: u32, v: u32, n: ^Node)
+    /// Element `i` (a register) of the sequence the pointer in register `p` starts, of
+    /// `size` bytes aligned to `align`, unchecked: read into `r`, or (`StepSt`) written
+    /// from `v`.
+    StepLd: (r: u32, p: u32, i: u32, esz: u64, size: u32, align: u32, n: ^Node)
+    StepSt: (p: u32, i: u32, esz: u64, size: u32, align: u32, v: u32, n: ^Node)
     /// The address of element `i` of the many-pointer in `p`, into `p`.
     PtrIdx: (p: u32, i: u32, esz: u64)
     /// Adds a constant to a register (an address).
@@ -435,15 +440,15 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     p := m.vm_view(regs[usize(i.a)] +% u64(i.c), 8, u64(i.w), true) else break
                     st8(p, regs[usize(i.b)])
                 }
-                .SliceLd => {
+                .SliceLd, .StepLd => {
                     k := regs[usize(i.c)]
-                    if k >= regs[usize(i.b) + 1] { break }
+                    if i.op is .SliceLd and k >= regs[usize(i.b) + 1] { break }
                     p := m.vm_view(regs[usize(i.b)] +% k *% u64(i.w), u64(i.f), u64(i.f), false) else break
                     regs[usize(i.a)] = ldn(p, i.f)
                 }
-                .SliceSt => {
+                .SliceSt, .StepSt => {
                     k := regs[usize(i.c)]
-                    if k >= regs[usize(i.a) + 1] { break }
+                    if i.op is .SliceSt and k >= regs[usize(i.a) + 1] { break }
                     p := m.vm_view(regs[usize(i.a)] +% k *% u64(i.w), u64(i.f), u64(i.f), true) else break
                     stn(p, i.f, regs[usize(i.b)])
                 }
@@ -1183,6 +1188,14 @@ vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: [
             len := regs[usize(x.len)]
             if i >= len { return !m.bounds_trap(x.n, i, len) }
             b := m.mem.write_view(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            m.wr_word(b, regs[usize(x.v)])
+        }
+        .StepLd(x) => {
+            b := m.mem.read(regs[usize(x.p)] +% regs[usize(x.i)] *% x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
+            regs[usize(x.r)] = m.rd_word(b)
+        }
+        .StepSt(x) => {
+            b := m.mem.write_view(regs[usize(x.p)] +% regs[usize(x.i)] *% x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
             m.wr_word(b, regs[usize(x.v)])
         }
         .PtrIdx(x) => {

@@ -22,8 +22,9 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 s77 (decisions/072) measured every item of the old list: kept the cheap wins, closed the
 rest with numbers. What is left needs a structural change; do it only if asked:
 - Lowered IR (decisions/075; user approved the detour, P5/LLVM dropped). P0–P2 done
-  (s79–s81: the interp runs everything from LIR, no tree evaluator). NEXT: P3 passes
-  (bounds-check elimination), P4 cgen on LIR (075 "State after P1 + P2", follow-ups).
+  (s79–s81: the interp runs everything from LIR, no tree evaluator); P3a bounds-check
+  elimination done (s82). NEXT: P4 cgen on LIR, or P3c handler specialization for the VM
+  (075 "State after P3a").
 - Interp: push without copying constants (consts as immediates in Bc) and without the
   frame memset (needs proof registers are written before read); `with` re-resolves its
   perform site per ctx.

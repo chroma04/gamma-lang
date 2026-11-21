@@ -98,7 +98,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/check/` | checking function bodies and lowering them to TIR: expressions, calls, methods, patterns, `match`, exhaustiveness, literal inference, effects, handlers, iterators, generics, escape and dangling-pointer checks, continuations, `@stack_size`, format templates, vectors; the `gamma tir` dump |
 | `compiler/tir/` | the typed intermediate representation, compile-time values, deep copies for generic instances |
 | `compiler/eval/` | compile-time evaluation (spec §17) over TIR |
-| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends (the interpreter compiles from it in `interp/vm_lir.gm`): its instructions (`lir.gm`), the lowering (`lower.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
+| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends (the interpreter compiles from it in `interp/vm_lir.gm`): its instructions (`lir.gm`), the lowering (`lower.gm`), the removal of proven bounds checks (`checks.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
 | `compiler/interp/` | the interpreter |
 | `compiler/cgen/` | the C back end |
 | `compiler/driver/` | the C toolchain and target selection, native builds, the cache of runtimes and programs, library paths, the interpreter entry, the options and the table of command-line options (`flags.gm`), from which the usage text is generated |
@@ -470,6 +470,16 @@ example lowers to well-formed LIR with nothing left to TIR.
   the TIR expression (`Func.escapes` counts them). Only what generic checking leaves in
   generic bodies is one, and those are lowered only in their instances, so the bodies of
   a program have none; the interpreter traps on one as an internal error.
+- **Proven checks** (`checks.gm`). After lowering, `elide_checks` removes each bounds check
+  whose index an unsigned comparison before it proves below the length (`i < len`, or
+  `i < n` with `n <= len`, or constants), as spec D.7 asks: `for i in 0..xs.len { xs[i] }`
+  and `while i < a.len { a[i] … }` keep no check. It walks the body once, naming values
+  by the *generation* of the local they were loaded from; a store starts a new generation,
+  a loop starts new ones for what it stores, and what a block, loop or `if` stores gets
+  new ones after it. Facts come from `BrIf` and `If` (and from an `if` one of whose
+  branches always leaves) and last to the end of their list. Locals whose address is taken
+  or that nested functions reach are not followed. Functions without a bounds check skip
+  the pass.
 - **Verification** (`verify.gm`). The verifier checks the rules above (temporaries
   written once and read where their write is visible, branches to enclosing blocks only and
   never out of a `defer`'s body, a `Defer` directly in a block) and the types of loads and
@@ -505,7 +515,8 @@ every checked operation checked.
     register while nothing stores to the local (and no function captures it), a value
     stored straight into such a local is computed there, a comparison read only by the
     branch after it becomes a compare-and-jump, and a bounds check followed by the access
-    it guards becomes `SliceLd`/`SliceSt`. A larger temporary gets a slot, given out
+    it guards becomes `SliceLd`/`SliceSt` (an unchecked element access, `StepLd`/`StepSt`).
+    A larger temporary gets a slot, given out
     before compiling in order of position and reused once the temporary is dead; an
     instruction that needs bytes for a moment (a 128-bit constant, the value an unwrap
     reports) has a scratch slot of its own.
