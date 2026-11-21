@@ -1,9 +1,35 @@
-# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0 done in s79
+# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0 + P1a done
 
 User asks (after 074): "scope out the lowered IR", then "start on the plan with P0 …
 we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 first.
 
-## State after P0 (s79) — start P1 here
+## State after P1a (s80) — continue P1 here
+- interp/vm_lir.gm: LIR → Ins for covered bodies (lir_prepare → LirBody{func, an};
+  lir_compile). DEFAULT ON (Machine.use_lir; GAMMA_INTERP_LIR=0 = old path). frames.gm
+  make_fn_info: covered bodies get a placeholder tree node (enter runs info.vm). FnInfo
+  extended with LIR's synthetic locals (lir_extend, same rules as make_info).
+- Covered (lir_op_ok): Move/Load/Store/AddrOf (bases Local, Upvar w/ const proj, Deref;
+  not Global/Const), Bin/Un/Eq on words, Coerce IntWiden/PtrToPtr/TupleRename/FnPtrWiden,
+  Builtin Convert/Trunc/Sat on word ints, Call(Fn) only, Check.Bounds (unsigned index),
+  Block/Loop/If/Br/BrIf/Return/NoArm/Unreachable; all temps 1..8 bytes; no escapes; no
+  Uninit values. New Ins `Bounds(i, len, n)` (vm_free arm, no Bc form).
+- Codegen tricks (each measured): temp regs freed at last use, extended over loops read
+  in; Load of a register local (or 8-aligned word field of a frame local,
+  lc_frame_reg) aliases the register if no Store to that local in its lifetime;
+  value + Store-to-register-local retargeted; Cmp/Eq fused into BrIf/If (JCmp/JEq);
+  Bounds + Load/Store(Deref t, [Step i]) → SliceLd/SliceSt.
+- Measured (callgrind Ir, tree → LIR): collatz+fib 3785 → 3779 M; slice-sum loop 79.7 →
+  67.8 M; bench/programs within ±0.3% (iterate −2.9%, with −1.7%); json_query (short,
+  compile-heavy) +1.1% = lowering bodies that are then rejected. Coverage 1051 of 8250
+  compiled functions (conformance run + examples).
+- Tests: suite `lir` `interp/<name>`: each single-file conformance run program in the
+  interp with GAMMA_INTERP_LIR=0 vs default, stdout/stderr/status equal (493 programs, 0
+  diffs). Debug aid (not committed): a Machine `dumped` list printing each fn's Ins.
+- P1 next, by value: cover non-word temps (slots: aggregates, strings, optionals; needed
+  by most remaining bodies), Perform/CallValue, IsPresent/TagIs (patterns on unions),
+  Defer, then `with` and escapes (lower the TIR subtree with code.gm → EvalW). Then P2.
+
+## State after P0 (s79)
 - compiler/lir/: lir.gm (types, place_type, value_type, dst_of), lower.gm (Ctx/context,
   lower), verify.gm (verify = structure + load/store/bounds types; verify_structure;
   unit tests), dump.gm (program_dump for `gamma lir`, same fn set as `gamma tir` +
@@ -26,9 +52,7 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   Assert/Sys/Get…/Asm/Fiber/Cover/Unreachable/StaticAssert) 660, constants 514 (u128,
   f16, untyped), non-local break/return/continuation ~310, the rest small. 0 verifier
   faults. Scratch sweep: run `gamma lir` per file, grep `^!` and `tir <kind>$`.
-- P1 next: the VM selector LIR → Ins (per function; escapes → lower the TIR subtree
-  with code.gm and EvalW it, as today). Lower `with` first (needed for `for` over
-  iterators), then non-local exits, then builtins. Keep `Tir` until P2 deletes the tree.
+- (P1a done in s80: see above.)
 
 ## Problem, in lines of code (compiler/, s79)
 Function bodies are lowered three times, by hand, from TIR (a typed tree):

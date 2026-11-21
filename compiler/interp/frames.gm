@@ -40,9 +40,13 @@ make_fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
     m.infos.items[i] = made
     made.frame_size = made.store_size
     if b := def.body {
-        body := lower_body(m, made, b)
+        // From LIR where it covers the body (it gives the frame its own locals first).
+        func: ?LirBody = if m.use_lir { m.lir_prepare(f, made) } else { null }
+        // A body compiled from LIR needs no tree: the machine always runs it (`enter`
+        // runs `FnInfo.vm` when there is one), so a placeholder stands for it.
+        body := if func is not null { new(Node(op: .Leftover, ty: def.ret, size: 0, span: b.span, place: false))! } else { lower_body(m, made, b) }
         made.body = body
-        c := vm_compile(m, made, body)
+        c := if lf := func { m.lir_compile(made, lf) } else { vm_compile(m, made, body) }
         m.vm_assemble(made, c)
         made.vm = c
         made.frame_size = c.size
