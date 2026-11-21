@@ -136,8 +136,11 @@ pub default_cc :: fn() -> ?string needs Alloc + Env + Fs {
 /// here: it is on `PATH` and the host is not Windows, where the toolchain is chosen as
 /// `default_cc` says.
 pub optimizing_cc :: fn(cc: string) -> ?string needs Alloc + Env + Fs {
-    when target.os is .Windows { return null }
-    return if program_on_path(cc) { cc } else { null }
+    when target.os is .Windows {
+        return null
+    } else {
+        return if program_on_path(cc) { cc } else { null }
+    }
 }
 
 test "the executable is named by an absolute path" {

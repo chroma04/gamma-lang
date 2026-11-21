@@ -47,7 +47,7 @@ pub from_env :: fn() -> string!Toolchain needs Alloc + Env + Fs {
 /// The toolchain of a build for the host, from the environment: as `from_env`, except that
 /// an `optimized` build (Checked or Fast) without `CC` uses `OPTIMIZING_CC` if it is on
 /// `PATH` (not on Windows).
-pub host_from_env :: fn(optimized: bool) -> string!Toolchain needs Alloc + Env + Fs {
+host_from_env :: fn(optimized: bool) -> string!Toolchain needs Alloc + Env + Fs {
     if not optimized or env_var("CC") is not null { return from_env() }
     cc := load.optimizing_cc(OPTIMIZING_CC) else return from_env()
     t := try from_vars(cc, env_var("CFLAGS"), env_var("LDFLAGS"))

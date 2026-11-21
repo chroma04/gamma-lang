@@ -119,6 +119,26 @@ static void test_ints(void) {
     check_int(&ty_i128, &i128, "-1000000000000000000000000000000000000");
 }
 
+/* gm_muloti4, the stand-in for compiler-rt's __muloti4, agrees with the compiler's own
+ * checked multiplication over values near the edges of the range. */
+static void test_muloti4(void) {
+    __int128 max = (__int128)(((unsigned __int128)1 << 127) - 1);
+    __int128 min = -max - 1;
+    __int128 vals[] = {0, 1, -1, 2, -2, 3, -3, 7, (__int128)1 << 63, -((__int128)1 << 63),
+                       (__int128)1 << 64, -((__int128)1 << 64), max, min, max / 2, min / 2,
+                       max / 3, min / 3, (__int128)0x123456789abcdefLL * 1000003};
+    size_t n = sizeof vals / sizeof vals[0];
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j < n; j++) {
+            __int128 want;
+            int want_o = __builtin_mul_overflow(vals[i], vals[j], &want);
+            int o = -1;
+            __int128 got = gm_muloti4(vals[i], vals[j], &o);
+            if (got != want || o != want_o) FAIL("muloti4 of values %zu and %zu: overflow %d, want %d", i, j, o, want_o);
+        }
+    }
+}
+
 static void test_floats(void) {
     double d;
     float f;
@@ -709,6 +729,7 @@ int main(int argc, char **argv) {
     saved_argv = argv;
     if (argc > 1) return scenario(argv[1]);
     test_ints();
+    test_muloti4();
     test_byte_order();
     test_floats();
     test_float_shortest();
