@@ -10,7 +10,7 @@ no back-end code changed. Supersedes the "Why C not LLVM" line of 002 with numbe
   compile time, for clang users only, at the price of a second native code generator,
   since the C back end must stay (seed bootstrap, gcc, MinGW, Fil-C Safe, s390x).
 - No LLVM JIT for the interpreter: it would add work, not remove it (see below).
-- Cheap wins inside the C path were measured and are on roadmap/next.md §2.
+- Cheap wins inside the C path: done in s79, see "Follow-up (s79)" at the end.
 - If the interpreter's cost is the real problem, the structural fix is a shared lowered
   IR under TIR (below), and an LLVM emitter becomes cheap only after that.
 
@@ -46,7 +46,7 @@ overhead (exit tests, stack checks) stands out.
 ## What direct IR could say that our C does not (and whether C can)
 Sound for Gamma and expressible in GNU C/clang C, but not emitted by cgen today:
 - `^T` never null → `nonnull`/`returns_nonnull`, `__builtin_assume(p)`.
-- `gm_out` never overlaps what the callee reads (`read_during_build`) → `restrict`.
+- (WRONG, see follow-up) `gm_out` → `restrict`.
 - in-place large params (borrow.gm proves no writer) → `const T *restrict`.
 - borrow.gm "pure" functions → `__attribute__((pure))`.
 - union tag switches → `default: __builtin_unreachable()`; odd-width ints → assume range.
@@ -90,3 +90,25 @@ the version), bitcode is stable but a big writer; a third back end in difftest/c
 ## Scratch (rebuild if needed)
 k.gm / loop.gm kernels; `clang $BASE_CFLAGS -O2 -S -emit-llvm -fno-inline` on emitted C;
 exit/{none,tls,swift}.c micro-benchmarks; seed compiled with `-flto=thin` + `-fuse-ld=lld`.
+
+## Follow-up (s79, same session): the cheap wins, implemented and measured
+Interleaved best-of-12 wall (gcc → clang → clang+ThinLTO): `check compiler` 702 → 597 →
+610 ms; `--emit-c compiler` 1582 → 1517 → 1457 ms. The earlier "−23%" was one noisy run.
+- KEPT clang for Checked/Fast without CC (toolchain.gm OPTIMIZING_CC, load.optimizing_cc,
+  Toolchain.host = chosen for host so no `-dM -E` probe; build.sh same). Debug keeps cc:
+  clang -Og built json_query/sha256sum/life 13–50% slower (783→1061, 475→524, 259→387 ms).
+- KEPT ThinLTO for split optimized builds (native.gm thin_lto/lto_link_flags; clang +
+  ld.lld + host + cache; lld cache in <cache>/thinlto, 1 GiB, 1 week; `cache clean --all`
+  removes it). Compiler: Ir check compiler/fmt 303.7 → 277.9 M (−8.5%); cold build 42 s
+  (clang plain 32, gcc 46); no-op rebuild 3.2 s; one-file edit 3.5 s.
+- KEPT `default: __builtin_unreachable()` in union tag switches (patterns.gm): interp
+  map_insert Ir −1.0% (clang) / −3.6% (gcc), call −0.5% / −3.4%; check ±0.3%.
+- DROPPED nonnull/returns_nonnull (^T params, by-ref params, gm_out) and restrict on
+  borrowed by-ref params: no measurable change on top of the switch hint (check
+  278.8 vs 278.8 M, interp equal), and nonnull would turn Fast-mode unspecified null
+  pointers into C UB.
+- DROPPED `restrict` on gm_out: UNSOUND. Callers pass the assigned place itself
+  (`a[i] = f(&a)`); the callee may read a[i] through its parameter before writing.
+- DROPPED `pure` (borrow.gm is_pure): clang makes pure functions willreturn and deletes
+  unused calls; a Gamma pure function may trap or loop, which must still happen.
+- DROPPED cold/preserve_most on trap calls: gm_trap* are _Noreturn, already cold paths.

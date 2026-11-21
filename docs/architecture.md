@@ -646,7 +646,10 @@ scrutinee is a large value (a union, say) that is a place and no arm has a guard
 can then write the place between the tests, which only read it, and the patterns are
 tested where it is (a condition `if p := place` always is). A `match` of three or more arms
 on a union first switches on its tag to the first arm that can match each variant, so that
-dispatch costs one jump rather than a test per arm; the arms' own tests still run, so an
+dispatch costs one jump rather than a test per arm (its `default` is
+`__builtin_unreachable()`, since a union holds one of its variants' tags or the program
+has undefined behavior, §18.4; without the range check this saves the interpreter's
+dispatch loop 1–3.5% of its instructions); the arms' own tests still run, so an
 arm whose nested pattern or guard fails falls through to the next as before.
 
 A function that is long because it has many statements, rather than one long chain, is

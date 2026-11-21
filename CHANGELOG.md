@@ -17,6 +17,9 @@ Versions and what each kind of change means are described in
   with lld when it uses Clang and `ld.lld` is installed, with lld's cache in the cache
   directory: the compiler runs 8% fewer instructions. Building it from nothing takes about
   10 s longer; after an edit, the link redoes only what changed.
+- **A `match` on a union dispatches without a range check**: the `switch` on its tag tells
+  the C compiler that no other tag occurs. The interpreter, whose instruction loop is such a
+  `match`, runs 1–3.5% fewer instructions.
 - **Formatting functions no longer get a copy per template.** A generic function whose
   `template :: string` parameter is the template of its `@write`s (and is otherwise used
   only as a run-time string), such as `str.format`, `List(u8).write` or a logging wrapper,

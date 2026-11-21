@@ -28,12 +28,6 @@ rest with numbers. What is left needs a structural change; do it only if asked:
   frame memset (needs proof registers are written before read); `with … on` and value
   loops still run on the tree evaluator; `with` re-resolves its perform site per ctx.
 - cgen: build results in place (068: `Abort!ast.Expr` copied 2–3x per parser level).
-- C-path wins found in the LLVM review (decisions/074; measure each, Ir + wall):
-  (a) clang when present: compiler built with clang checks 23% faster, builds 30%
-  faster, binary 19% smaller; user programs mixed ±15%: decide per mode, keep gcc
-  fallback, mind cache keys. (b) ThinLTO for split builds with clang+lld: −8% Ir.
-  (c) emit facts cgen knows: nonnull (`^T`), restrict (`gm_out`, in-place params),
-  pure (borrow.gm), unreachable tag-switch defaults, preserve_most on trap calls.
 - Template sharing follow-ups (decisions/073): forward a template to another template
   parameter (kit.check → str.format, cgen linef → str.format); thunks without the
   generic's unused locals.

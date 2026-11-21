@@ -69,7 +69,9 @@ match_switch :: fn(fg: ^FnGen, t: Ty, a: string, arms: []tir.Arm) -> ?List(strin
     out := list(u8)
     out.write("switch ({}) {{ ", tv)!
     for k, v in enumerate(variants) { out.write("case {}: goto {}; ", fg.int_lit(tag, v.tag), labels.items[first(k.trunc(u32))])! }
-    out.write("default: goto {}; }}", labels.items[first(null)])!
+    // Every value of a union has one of its variants' tags (§18.4: anything else is
+    // undefined behavior), so no other case is reached.
+    out.write("default: __builtin_unreachable(); }}")!
     fg.line(out.items)
     return labels
 }
