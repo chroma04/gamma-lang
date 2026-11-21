@@ -69,16 +69,30 @@ pub universe_hidden :: fn(s: ^const Sema, d: usize) -> bool => s.l.decls.items[d
 /// For an unknown name that the core library declares but leaves out of the universe
 /// scope, how to reach it.
 universe_hint :: fn(s: ^Sema, name: string) -> ?string needs Alloc {
+    // Names that left the universe scope for a standard module.
+    if name in MOVED_TO_HASH_MAP {
+        return str.format("`{}` is declared by `std/collections/hash_map`: import it and write `hash_map.{}`", name, name)!
+    }
     prelude := s.l.prelude else return null
     d := s.l.lookup(prelude, name) else return null
     if not s.universe_hidden(d) or s.l.decls.items[d].state is .Module(_) { return null }
     if m := std_home(name) {
-        return str.format("`{}` is declared by `{}`: import it and write `{}.{}`", name, m, m[4..], name)!
+        return str.format("`{}` is declared by `{}`: import it and write `{}.{}`", name, m, module_alias(m), name)!
     }
     return str.format("`{}` is a method of `Instant` or `Duration`: write `x.{}(…)`", name, name)!
 }
 
+/// The names of the hash map, which the universe scope held until 0.3.0.
+MOVED_TO_HASH_MAP :: [3]string("HashMap", "hash_map", "hash_map_with")
+
+/// The name a program usually binds the standard module `path` to: its last part.
+module_alias :: fn(path: string) -> string {
+    i := str.rfind(path, "/") else return path
+    return path[i + 1..]
+}
+
 std_home :: fn(name: string) -> ?string {
+    if name in MOVED_TO_HASH_MAP { return "std/collections/hash_map" }
     if name in ("Socket", "Listener", "Shutdown") { return "std/net" }
     if name in ("File", "Dir", "OpenOptions", "FileKind", "FileInfo", "DirEntry", "SeekFrom") { return "std/fs" }
     if name in ("Child", "Stdio", "Stream", "SpawnOptions", "Chunk", "ExitStatus") { return "std/process" }
@@ -99,7 +113,7 @@ import_fix :: fn(s: ^Sema, module: usize, name: string, span: source.Span) -> ?L
     path := std_home(name) else return null
     m := &s.l.modules.items[module]
     if m.is_prelude or m.is_std { return null }
-    alias := path[4..]
+    alias := module_alias(path)
     edits := list(diag.Edit)
     existing: ?string = null
     last_import_end: ?u32 = null

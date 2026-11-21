@@ -1,8 +1,8 @@
-//! The Gamma playground's program: a WASI command, built by `gammac build
+//! The Gamma playground's program: a WASI command, built by `gamma build
 //! --target=wasm32-wasi`, that reads a Gamma program from standard input and
 //!
-//!     play run    checks it and runs it in the interpreter, as `gammac run --backend=interp` does
-//!     play fmt    prints it formatted, as `gammac fmt -` does
+//!     play run    checks it and runs it in the interpreter, as `gamma run --backend=interp` does
+//!     play fmt    prints it formatted, as `gamma fmt -` does
 //!     play init   loads the core library and exits
 //!
 //! The exit status is the program's; 1 for a program with errors; 134 after a trap.

@@ -1,4 +1,4 @@
-//! The options of gammac's command line, described once: `OPTIONS` gives the spellings of
+//! The options of gamma's command line, described once: `OPTIONS` gives the spellings of
 //! each option, whether and how it takes a value, the commands it is for and its help line.
 //! `scan` reads an option from the arguments by this table, for `gamma` and `gamma repl`
 //! alike, and `options_help` writes the `options:` part of the usage text from it.

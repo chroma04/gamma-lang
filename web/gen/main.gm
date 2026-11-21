@@ -4,7 +4,7 @@
 //! `web/pages/` into the layout `web/layout.html`, copies `web/static/` to `assets/`, writes
 //! the playground's example list and finally checks all internal links.
 //!
-//! Usage: `gammac run web/gen --out <dir> [--root <repo dir>]` (the root defaults to the
+//! Usage: `gamma run web/gen --out <dir> [--root <repo dir>]` (the root defaults to the
 //! current directory). The exit status is 0 if the link check is clean.
 
 arena :: import "std/arena"

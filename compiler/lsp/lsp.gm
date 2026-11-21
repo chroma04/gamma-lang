@@ -8,7 +8,7 @@
 //! the open documents standing in for the files on disk; see `docs/architecture.md`.
 
 /// The version the server reports to its client.
-VERSION :: "0.2.0"
+VERSION :: "0.3.0"
 
 /// Serves LSP on standard input and output until the client says `exit` or closes the
 /// input (`gamma lsp --worker`, the supervisor's child). Returns the process exit code: 0

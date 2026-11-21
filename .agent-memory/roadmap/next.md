@@ -4,7 +4,8 @@ Homebrew, macOS signing, VS Code Marketplace/Open VSX and Zed extension publishi
 Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability reporting.
 
 ## Always
-- Keep `CHANGELOG.md` `## Unreleased` current (0.2.0 is the last release section).
+- Keep `CHANGELOG.md` `## Unreleased` current (0.3.0 is the last release section; start
+  `## Unreleased` above it with the first change after it).
 - New diagnostics follow spec ch. 23 (kinds, what is an error, limits in §23.5).
 - Regenerate `docs/std` after std changes: `gamma doc lib/std --all -o docs/std`.
 

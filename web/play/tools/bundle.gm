@@ -1,6 +1,6 @@
 //! Writes the libraries the playground serves to the compiler as one JSON object:
 //!
-//!     gammac run web/play/tools/bundle.gm OUT.json /std=lib/std /core=lib/core
+//!     gamma run web/play/tools/bundle.gm OUT.json /std=lib/std /core=lib/core
 //!
 //! Every `.gm` file below each directory becomes a member whose name is the mount point
 //! (`/std`) followed by the file's path in the directory, and whose value is the text.

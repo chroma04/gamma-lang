@@ -1,7 +1,8 @@
 # Gamma: agent memory INDEX (read first)
 
 ## State (2026-11-20)
-- `main` = PRs #1–#130 merged; PR #131 (s75) open. Released: 0.1.0, 0.2.0 (CHANGELOG `## Unreleased` open).
+- `main` = PRs #1–#130 merged; PR #131 (s75) open. Released: 0.1.0, 0.2.0; 0.3.0 prepared in s76 (PR, then tag v0.3.0 on the merge commit;
+  no `## Unreleased` until the next change adds one).
   Tag `rust-reference-final` marks the last Rust implementation.
 - The compiler is self-hosted: `compiler/` (Gamma) builds `gamma` from the C seed in
   `bootstrap/seed/` (= the build's C units; refresh with `tools/refresh-seed.sh` after

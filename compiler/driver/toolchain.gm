@@ -8,7 +8,7 @@
 //! `GAMMA_RUNNER` names the emulator that runs the executables such a compiler builds.
 //!
 //! When any of them is set, the target is asked of the compiler itself (`target`), so a
-//! cross compiler yields layouts for the machine it compiles for rather than the one gammac
+//! cross compiler yields layouts for the machine it compiles for rather than the one gamma
 //! runs on.
 
 arena :: import "std/arena"

@@ -779,15 +779,6 @@ LiveBlock :: struct {
     site: ?SourceLocation = null
 }
 
-// The hash map was in the universe scope before it moved to `std/collections/hash_map`;
-// these names stay for one release.
-#deprecated("import \"std/collections/hash_map\" as `hm` and write `hm.HashMap`")
-pub HashMap :: map.HashMap
-#deprecated("import \"std/collections/hash_map\" as `hm` and write `hm.hash_map`")
-pub hash_map :: map.hash_map
-#deprecated("import \"std/collections/hash_map\" as `hm` and write `hm.hash_map_with`")
-pub hash_map_with :: map.hash_map_with
-
 TestTracker :: struct {
     live: usize
     inner: Allocator

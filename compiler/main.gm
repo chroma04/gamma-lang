@@ -53,7 +53,7 @@ testing :: import "./testing"
 thread :: import "std/thread"
 fiber :: import "std/fiber"
 
-VERSION :: "0.2.0"
+VERSION :: "0.3.0"
 
 USAGE_HEAD :: `
 usage: gamma <command> [options] <file>
