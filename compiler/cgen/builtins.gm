@@ -1,91 +1,5 @@
 // The builtins (`@name(…)`), system operations, atomics and conversions between scalar types.
 
-/// The bytes of an `@asm` string literal, as a C string.
-asm_text :: fn(e: ^Expr) -> string needs Alloc {
-    .Str(s) := e.kind else @unreachable()
-    return c_string(s)
-}
-
-/// `@asm` (§19.5): a volatile GNU C `asm` statement. Outputs are written through their
-/// pointers.
-arith_asm :: fn(fg: ^FnGen, args: []Expr, outputs: usize, inputs: usize) -> Unsup!string needs sema.Load {
-    outs := list(string)
-    for i in 0..outputs {
-        c := &args[1 + 2 * i]
-        p := &args[2 + 2 * i]
-        .Ptr(_, pointee) := fg.g.ty.kind(p.ty) else @unreachable()
-        ct := fg.g.ty.cty(pointee)
-        pv := try fg.expr(p)
-        outs.push(str.format("{}(*({} *){})", asm_text(c), ct, pv)!)!
-    }
-    ins := list(string)
-    for i in 0..inputs {
-        c := &args[1 + 2 * (outputs + i)]
-        v := &args[2 + 2 * (outputs + i)]
-        vv := try fg.expr(v)
-        ins.push(str.format("{}({})", asm_text(c), vv)!)!
-    }
-    clobbers := list(string)
-    for k in (1 + 2 * (outputs + inputs))..args.len { clobbers.push(asm_text(&args[k]))! }
-    fg.linef("__asm__ volatile ({} : {} : {} : {});", asm_text(&args[0]), str.join(outs.items, ", ")!, str.join(ins.items, ", ")!, str.join(clobbers.items, ", ")!)
-    return fg.unit()
-}
-
-builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
-    if r := try fg.vector_builtin(e, op, args) { return r }
-    t := e.ty
-    loc := fg.loc(e)
-    tys := &fg.g.ty.s.tys
-    match op {
-        .Assert => return fg.assert(e, args)
-        .Fiber => return try fg.fiber_builtin(e, args)
-        .Asm(counts) => return try fg.arith_asm(args, usize(counts.outputs), usize(counts.inputs))
-        // `@name(args)` calls the runtime's `gm_name`, with slices passed as a pointer and
-        // a length.
-        .Sys(sop) => return fg.sys_builtin(e, sop, args)
-        .Cover(id) => {
-            fg.linef("GM_COVER({});", id)
-            return fg.unit()
-        }
-        .Unreachable => {
-            fg.linef("gm_trap(\"reached `@unreachable()`\", {});", loc)
-            return fg.zero(t)
-        }
-        .Get, .GetPtr, .First, .Last => return try fg.arith_get(e, op, args)
-        .HeapAlloc => {
-            s := try fg.expr(&args[0])
-            a := try fg.expr(&args[1])
-            fg.linef("if (({}) == 0 || (({}) & (({}) - 1)) != 0) gm_trap(\"allocation alignment is not a power of two\", {});", a, a, a, loc)
-            p := fg.tmp(tys.intern(.Rawptr), str.format("gm_heap_alloc({}, {})", s, a)!)
-            return fg.tmp(t, p)
-        }
-        .AllocTag, .AllocCheck => return fg.alloc_tag(e, op, args)
-        .HeapFree => {
-            p := try fg.expr(&args[0])
-            s := try fg.expr(&args[1])
-            a := try fg.expr(&args[2])
-            fg.linef("gm_heap_free({}, {}, {}, {});", p, s, a, loc)
-            return fg.unit()
-        }
-        .CopyElems => {
-            .Slice(_, elem) := tys.kind(args[0].ty) else return fg.unit()
-            d := fg.addr_of(args[0].ty, try fg.expr(&args[0]))
-            s := fg.addr_of(args[1].ty, try fg.expr(&args[1]))
-            n := fg.slice_len(d)
-            fg.linef("if ({} != 0) memmove({}, {}, {} * {});", n, slice_ptr(d), slice_ptr(s), n, fg.g.ty.size(elem))
-            return fg.unit()
-        }
-        _ => {}
-    }
-    vals := list(string)
-    arg_tys := list(Ty)
-    for i in 0..args.len {
-        vals.push(try fg.expr(&args[i]))!
-        arg_tys.push(args[i].ty)!
-    }
-    return try fg.builtin_values(e.span, t, op, arg_tys.items, vals.items)
-}
-
 /// Builtin `op`, of type `t`, of the values `vals` of types `tys`: the builtins whose
 /// arguments are plain values.
 builtin_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys: []const Ty, vals: []const string) -> Unsup!string needs sema.Load {
@@ -205,36 +119,6 @@ builtin_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys:
     }
 }
 
-/// `assert(cond, message)`.
-assert :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load {
-    loc := fg.loc(e)
-    // Fast builds remove `assert`, argument and all (§21.6).
-    if not fg.g.opts.checks { return fg.unit() }
-    c := try fg.expr(&args[0])
-    fg.linef("if (!{}) {{", c)
-    fg.indent += 1
-    m := try fg.expr(&args[1])
-    a := fg.addr_of(args[1].ty, m)
-    p := slice_ptr(a)
-    l := fg.slice_len(a)
-    prefix := "assertion failed"
-    fg.linef("gm_buf mb = {{0}}; size_t ml = {}; const uint8_t *mp = {}; if (ml == {} && memcmp(mp, \"{}\", {}) == 0) gm_buf_push(&mb, mp, ml); else {{ gm_buf_push(&mb, \"{}: \", {}); gm_buf_push(&mb, mp, ml); }} gm_trap_bytes(mb.data, mb.len, {});", l, p, prefix.len, prefix, prefix.len, prefix, prefix.len + 2, loc)
-    fg.indent -= 1
-    fg.line("}")
-    return fg.unit()
-}
-
-/// `@name(args)`, a call of the runtime's `gm_name`, with slices passed as a pointer and a length.
-sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!string needs sema.Load {
-    vals := list(string)
-    tys := list(Ty)
-    for i in 0..args.len {
-        vals.push(try fg.expr(&args[i]))!
-        tys.push(args[i].ty)!
-    }
-    return fg.sys_values(e.ty, sop, tys.items, vals.items)
-}
-
 /// System operation `sop` of type `t` on the values `vals` of types `tys`.
 sys_values :: fn(fg: ^FnGen, t: Ty, sop: tir.SysOp, tys: []const Ty, vals: []const string) -> string needs sema.Load {
     // The arguments and variables come from the runtime as slices and strings.
@@ -269,18 +153,6 @@ sys_values :: fn(fg: ^FnGen, t: Ty, sop: tir.SysOp, tys: []const Ty, vals: []con
         return fg.unit()
     }
     return fg.tmp(t, call)
-}
-
-/// `@alloc_tag` and `@alloc_check`, which only debug builds keep.
-alloc_tag :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
-    if not fg.g.opts.debug { return fg.unit() }
-    vals := list(string)
-    tys := list(Ty)
-    for i in 0..args.len {
-        vals.push(try fg.expr(&args[i]))!
-        tys.push(args[i].ty)!
-    }
-    return fg.alloc_tag_values(e.span, op, tys.items, vals.items)
 }
 
 /// `@alloc_tag` or `@alloc_check` (Debug builds) on the values `vals` of types `tys`.
@@ -464,64 +336,6 @@ black_box :: fn(fg: ^FnGen, t: Ty, v0: string) -> Unsup!string needs sema.Load {
     p := fg.fresh_tmp()
     fg.linef("{} *volatile {} = &{};", c, p, slot)
     return fg.tmp(t, str.format("*{}", p)!)
-}
-
-/// `a.get(i)`, `a.get_ptr(i)`, `a.first()`, `a.last()`: `null` when out of range.
-arith_get :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
-    base := &args[0]
-    ptr: string = ""
-    len: string = ""
-    match fg.g.ty.kind(base.ty) {
-        .Slice(_, _) => {
-            v := try fg.expr(base)
-            a := fg.addr_of(base.ty, v)
-            ptr = str.format("((uint8_t *){})", slice_ptr(a))!
-            len = fg.slice_len(a)
-        }
-        .Array(n, _, _) => {
-            ptr = try fg.place_addr(base)
-            len = str.format("{}", n)!
-        }
-        .Ptr(_, pointee) => match fg.g.ty.kind(pointee) {
-            .Array(n, _, _) => {
-                v := try fg.expr(base)
-                ptr = str.format("((uint8_t *){})", v)!
-                len = str.format("{}", n)!
-            }
-            _ => return !unsupported(e.span, "get on a pointer")
-        }
-        _ => return !unsupported(e.span, str.format("get on `{}`", fg.g.ty.show(base.ty))!)
-    }
-    tys := &fg.g.ty.s.tys
-    ptr = fg.tmp(tys.ptr(false, tys.u8_ty()), ptr)
-    len = fg.tmp(fg.g.ty.usize_ty(), str.format("(uintptr_t){}", len)!)
-    i: string = match op {
-        .First => "(uintptr_t)0"
-        .Last => str.format("({} - 1)", len)!
-        _ => {
-            v := try fg.expr(&args[1])
-            fg.bound(args[1].ty, v)
-        }
-    }
-    i = fg.tmp(fg.g.ty.usize_ty(), i)
-    .Optional(inner) := fg.g.ty.kind(t) else return !unsupported(e.span, "get")
-    elem := inner
-    if op is .GetPtr {
-        if .Ptr(_, pointee) := fg.g.ty.kind(inner) { elem = pointee }
-    }
-    esz := fg.g.ty.size(elem)
-    res := fg.tmp_uninit(t)
-    fg.linef("if ({} < {}) {{", i, len)
-    addr := str.format("((uint8_t *){} + {} * {})", ptr, i, esz)!
-    v: string = if op is .GetPtr { str.format("(void *){}", addr)! } else { fg.load(inner, addr) }
-    some := fg.make_some(t, v)
-    fg.linef("    {} = {};", res, some)
-    fg.line("} else {")
-    none := fg.make_none(t)
-    fg.linef("    {} = {};", res, none)
-    fg.line("}")
-    return res
 }
 
 /// The numeric conversions `T(x)`, `.trunc`, `.round`, `.floor`, `.ceil`, `.checked`, `.sat`.

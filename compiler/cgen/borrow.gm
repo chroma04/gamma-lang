@@ -136,29 +136,6 @@ steady_arg :: fn(g: ^Gen, caller: u32, a: ^Expr, written: []const u32, captured:
     return g.is_const_arg(a)
 }
 
-/// For each parameter of `f`: whether it is used in place and also appears inside an
-/// aggregate or array construction, which `expr_into` may build directly in the result
-/// destination while still reading the parameter. A caller must then not pass a
-/// destination that overlaps the parameter's value.
-read_during_build :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
-    if r := g.early_memo.get(f) { return r }
-    r := g.borrowed_params(f)
-    any := false
-    for x in r {
-        if x { any = true }
-    }
-    if any {
-        def := g.prog.func(f)
-        used := list(u32)
-        if body := def.body { locals_in_aggregates(body, false, &used) }
-        for i, p in enumerate(def.params) {
-            if r[i] and p not in used.items { r[i] = false }
-        }
-    }
-    g.early_memo.put(f, r)!
-    return r
-}
-
 /// Whether `f` is pure in the sense of the file's comment: a named function or a literal
 /// that captures nothing, with no effects, that stores only into its own locals and calls
 /// only pure functions.
@@ -353,13 +330,4 @@ direct_calls :: fn(e: ^Expr, out: ^List(DirectCall)) needs Alloc {
         if .Fn(f) := callee { out.push(DirectCall(callee: f, args: args))! }
     }
     tir.for_each_child(e, fn(x: ^Expr) { direct_calls(x, out) })
-}
-
-/// Collects the locals read inside the construction of an aggregate or array in `e`.
-locals_in_aggregates :: fn(e: ^Expr, inside: bool, out: ^List(u32)) needs Alloc {
-    if inside {
-        if .Local(l) := e.kind { out.push(l)! }
-    }
-    in2 := inside or e.kind is .Aggregate(_) or e.kind is .Array(_)
-    tir.for_each_child(e, fn(x: ^Expr) { locals_in_aggregates(x, in2, out) })
 }

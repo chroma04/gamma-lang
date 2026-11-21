@@ -1,7 +1,4 @@
-// Function bodies from LIR (`Options.lir`): the lowered form the interpreter compiles from,
-// translated to C. A function whose LIR uses an instruction this file does not translate
-// yet (`lir_unsupported`) is generated from TIR as before, so the two paths never mix
-// inside a body.
+// Function bodies from LIR: the lowered form the interpreter compiles from, translated to C.
 //
 // Each temporary becomes a C temporary (`tN`) or, for a value that needs no variable, the
 // C expression itself; each local keeps its C lvalue (`local_lv`), and the locals that
@@ -11,13 +8,17 @@
 
 /// The LIR of function `f`, from the lowering context kept on the generator.
 lir_of :: fn(g: ^Gen, f: u32) -> lir.Func needs sema.Load {
+    // The frame's layout and the body ask for the same function in turn.
+    if last := g.lir_last and last.f is f { return last.func }
     if g.lir_cx is null { g.lir_cx = new(lir.context(g.prog.s))! }
     cx := g.lir_cx else @unreachable()
-    return cx.lower(f)
+    func := cx.lower(f)
+    g.lir_last = (f: f, func: func)
+    return func
 }
 
 /// Whether function `f` is the parent of a nested function: its loops and `with`s may be
-/// the targets of exits from that function, which this path does not handle yet.
+/// the targets of exits from that function (`loop_scope` rungs).
 has_nested :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
     if g.lir_parents.items.len is 0 {
         for _ in 0..g.prog.s.defs.items.len { g.lir_parents.push(false)! }
@@ -28,16 +29,11 @@ has_nested :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
     return usize(f) < g.lir_parents.items.len and g.lir_parents.items[usize(f)]
 }
 
-/// Why the body of `f` (whose LIR is `func`) is not generated from LIR, or `null` if it is.
-lir_unsupported :: fn(g: ^Gen, f: u32, func: ^const lir.Func) -> ?string needs sema.Load {
-    if func.escapes > 0 { return "an escape to TIR" }
-    // A nested function may leave a loop of this one with a value (into `result`).
-    if has_nested(g, f) {
-        for l in func.loops {
-            if l.result is not null and l.brk is not l.cont { return "a loop with a value, in a function with nested functions" }
-        }
-    }
-    return lir_list_unsupported(g, func, func.body)
+/// Checks that the body `func` of `def` has only what this file translates: lowering leaves
+/// an expression it cannot lower (`Tir`) only in code that generic checking left behind.
+lir_check :: fn(g: ^Gen, def: ^const Func, func: ^const lir.Func) -> Unsup!() needs sema.Load {
+    why := lir_list_unsupported(g, func, func.body) else return ()
+    return !unsupported(def.span, str.format("the C back end cannot translate {} in `{}`", why, def.name)!)
 }
 
 lir_list_unsupported :: fn(g: ^Gen, func: ^const lir.Func, insts: []const lir.Inst) -> ?string needs sema.Load {
@@ -78,7 +74,7 @@ lir_inst_unsupported :: fn(g: ^Gen, func: ^const lir.Func, i: ^const lir.Inst) -
             if on is not null and reads_outer_temp(body) { return "a `with … on` body reading an outer temporary" }
             return lir_list_unsupported(g, func, install) else lir_list_unsupported(g, func, body)
         }
-        .Tir(_) => return "an escape to TIR"
+        .Tir(_) => return "an expression left over from generic checking"
     }
 }
 
@@ -499,8 +495,9 @@ inst_weight :: fn(i: ^const lir.Inst, cap: u32) -> u32 {
 LONG_LIST: u32 : 256
 
 /// The weight of a segment of a long list, each a C block of its own: the temporaries
-/// live in any C block stay few, which the C compilers' time depends on (as for a long
-/// chain of operations, see `chain.gm`).
+/// live in any C block stay few, which the C compilers' time depends on (Clang tracks the
+/// lifetime of each variable of a scope at every branch out of it, so a chain of tens of
+/// thousands of operations in one block takes minutes).
 SEG_WEIGHT: u32 : 64
 
 /// The weight of a segment moved into a helper in a long function (`outline.gm`), and the
@@ -1042,7 +1039,7 @@ lc_op :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
                         fg.spec_next = sc.spec
                     }
                     fg.call_dest = fg.dest_call_lir
-                    x := try fg.call_fn(rt, null, f, vals.items)
+                    x := try fg.call_fn(rt, f, vals.items)
                     // `result_var` takes the destination when the call writes there.
                     c.dest_taken = fg.dest_call_lir is not null and fg.call_dest is null
                     fg.call_dest = null
@@ -1401,7 +1398,7 @@ lc_op :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
         }
         .Defer(is_err, body) => {
             top := &fg.scopes.items[fg.scopes.items.len - 1]
-            top.defers.push(Defer(is_err: is_err, body: null, lir: body))!
+            top.defers.push(Defer(is_err: is_err, lir: body))!
         }
         .Loop(_, body) => {
             fg.line("for (;;) {")

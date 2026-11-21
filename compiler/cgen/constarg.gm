@@ -25,16 +25,6 @@ pub SiteConst :: struct {
     name: string = ""
 }
 
-same_site_const :: fn(a, b: ^const SiteConst) -> bool {
-    if a.ty is not b.ty or a.bytes.items is not b.bytes.items or a.relocs.items.len is not b.relocs.items.len { return false }
-    for i in 0..a.relocs.items.len {
-        x := a.relocs.items[i]
-        y := b.relocs.items[i]
-        if x.offset is not y.offset or x.data is not y.data { return false }
-    }
-    return true
-}
-
 /// A zeroed constant of type `t`.
 new_site_const :: fn(g: ^Gen, t: Ty) -> SiteConst needs sema.Load {
     size := g.ty.size(t)
@@ -42,29 +32,6 @@ new_site_const :: fn(g: ^Gen, t: Ty) -> SiteConst needs sema.Load {
     v.bytes.reserve(size.trunc(usize))!
     for _ in 0..size { v.bytes.push(0)! }
     return v
-}
-
-/// The C address (`uint8_t *`) of static storage holding the value of `e`, if `e` is built
-/// from literals only.
-const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
-    v := new_site_const(g, e.ty)
-    if not g.const_into(e, 0, &v) { return null }
-    i := g.site_consts.items.len
-    for k in 0..g.site_consts.items.len {
-        if same_site_const(&g.site_consts.items[k], &v) {
-            i = k
-            break
-        }
-    }
-    if i is g.site_consts.items.len {
-        key := list(u8)
-        key.write("{}|{}|", g.ty.show(v.ty), v.bytes.items.len)!
-        key.extend(v.bytes.items)!
-        for r in v.relocs.items { key.write("|{}:{}", r.offset, r.data)! }
-        v.name = g.names.keyed("gm_k", key.items)
-        g.site_consts.push(v)!
-    }
-    return str.format("((uint8_t *){})", g.site_consts.items[i].name)!
 }
 
 /// Whether `e` is built from literals only, so that `const_arg` passes it from static

@@ -102,11 +102,6 @@ vec_lane_at :: fn(fg: ^FnGen, lane: Ty, bytes: u64, p: string, i: string) -> str
     return fg.tmp(lane, str.format("GM_LD({}, {} + {} * {})", ce, p, i, bytes)!)
 }
 
-vector_unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
-    v := try fg.expr(x)
-    return try fg.vector_unary_value(e.span, e.ty, op, v)
-}
-
 /// The unary operator `op` on the vector `v` of type `t`; traps report `span`.
 vector_unary_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.UnOp, v: string) -> Unsup!string needs sema.Load {
     vp := vec_parts(fg, t)
@@ -137,12 +132,6 @@ vector_unary_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.UnOp, v: 
         r = str.format("~{}", a)!
     }
     return fg.vec_store(t, r)
-}
-
-vector_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!string needs sema.Load {
-    a := try fg.expr(l)
-    b := try fg.expr(r)
-    return try fg.vector_binary_value(e.span, e.ty, op, a, b)
 }
 
 /// The binary operator `op` on the vector `a` (of type `t`) and `b` (a vector of type `t`,
@@ -235,25 +224,6 @@ vec_blend :: fn(fg: ^FnGen, t: Ty, m: string, a: string, b: string) -> string ne
     mm := str.format("m{}", fg.fresh())!
     fg.linef("{} {} = ({})-__builtin_convertvector({}, {});", u, mm, u, m, w)
     return str.format("({})((({}){} & {}) | (({}){} & ~{}))", s, u, a, mm, u, b, mm)!
-}
-
-/// The vector builtins (§21.3), or `null` if `op` is not one.
-vector_builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!?string needs sema.Load {
-    if not is_vector_builtin(op) { return null }
-    tys := list(Ty)
-    vals := list(string)
-    lanes := list(u64)
-    for k, a in enumerate(args) {
-        if op is .Shuffle and k > 0 {
-            x: u64 = 0
-            if .Int(i) := a.kind { x = bigint.to_u64(i) else 0 }
-            lanes.push(x)!
-            continue
-        }
-        tys.push(a.ty)!
-        vals.push(try fg.expr(&args[k]))!
-    }
-    return try fg.vector_builtin_values(e.span, e.ty, op, tys.items, vals.items, lanes.items)
 }
 
 /// Whether `op` is a vector builtin (`vector_builtin_values`).

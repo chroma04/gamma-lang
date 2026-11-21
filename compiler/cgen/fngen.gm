@@ -1,17 +1,5 @@
 // The state of generating one C function.
 
-/// Who can observe the destination of `expr_into` while the value is evaluated.
-pub Observed :: union {
-    /// Nothing: a new variable, or a result slot of this function.
-    Fresh
-    /// The caller's destination (`gm_out`): only code that reads memory other than this
-    /// function's own frame can see it.
-    Out
-    /// Any code: an assignment to a place, which is part of this local if it is known to
-    /// be.
-    Any: ?u32
-}
-
 /// The C labels of a loop scope.
 pub LoopLabels :: struct {
     /// The label of the loop, as `break` and `continue` name it.
@@ -43,9 +31,8 @@ pub ScopeKind :: union {
 /// A `defer` (or `errdefer`) registered in a block.
 pub Defer :: struct {
     pub is_err: bool
-    /// The deferred code: TIR, or (`null`) the LIR list `lir`.
-    pub body: ?^Expr
-    pub lir: []const lir.Inst = empty_slice(lir.Inst)
+    /// The deferred code.
+    pub lir: []const lir.Inst
 }
 
 /// A scope of the function being generated.
@@ -59,14 +46,6 @@ pub Scope :: struct {
     pub used: usize = 0
 }
 
-/// A call whose large result goes straight into a destination (see `expr_into`).
-pub DestCall :: struct {
-    pub call: ^const Expr
-    /// A C lvalue.
-    pub dest: string
-    pub obs: Observed
-}
-
 pub FnGen :: struct {
     pub g: ^Gen
     pub fid: u32
@@ -74,18 +53,12 @@ pub FnGen :: struct {
     pub tag: string
     /// Set when generating a specialized clone: the node of the handler is `cx`.
     pub spec: ?u32 = null
-    /// The call that a `with` being generated specializes for its handler.
-    pub spec_call: ?SpecCall = null
-    /// The clone the next direct call (`call_fn`) runs, chosen by a `with` from LIR.
+    /// The clone the next direct call (`call_fn`) runs, chosen by a `with` (`lc_op`).
     pub spec_next: ?u32 = null
-    /// The link of a long chain being emitted; see `chain.gm`.
-    pub spine: ?Spine = null
-    /// The call expression whose large result goes straight into a destination, and that
-    /// destination; see `expr_into`.
-    pub dest_call: ?DestCall = null
-    /// The destination of the call being emitted, from `dest_call`.
+    /// The destination of the large result of the call being emitted (`call_fn` clears it
+    /// when the call writes there).
     pub call_dest: ?string = null
-    /// From LIR: the destination of the large result of the call being emitted.
+    /// The destination `lc_list` chose for the next call (`lc_call_dest`).
     pub dest_call_lir: ?string = null
     pub def: ^const Func
     pub out: List(u8)
