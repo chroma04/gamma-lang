@@ -270,7 +270,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     // keeps only them and the index of the instruction in variables of its own; the rest
     // of what is running is in its record `cur`: this one for the body, and one in
     // scratch memory for each call made in the loop.
-    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), tm: 0, dbase: if body.sub { a.fr.defers.items.len } else { 0 })
+    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), dbase: if body.sub { a.fr.defers.items.len } else { 0 })
     cur := &base
     regs := cur.regs
     bc := body.bc.ptr
@@ -632,7 +632,6 @@ vm_ret :: fn(m: ^Machine, r: ^CallRec, word: bool, v: u64) -> Flow!^CallRec need
         if word { m.wr_word(r.dst, v) }
         res: Flow!() = ()
         if fr.defers.items.len is not 0 or r.cx is not r.base_cx { res = m.vm_return(Act(fr: fr, cx: r.cx), r.base_cx, r.dst) }
-        if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
         m.end_frame(fr)
         m.vm_pop(r)
         res else g => {
@@ -683,7 +682,6 @@ vm_raise :: fn(m: ^Machine, start: ^CallRec, flow: Flow) -> Flow!^CallRec needs 
         returned := false
         if fr := r.fr {
             if .Return(frame, _) := f and frame is fr.id { returned = true }
-            if m.temps.items.len > r.tm { m.kill_temps(r.tm) }
             m.end_frame(fr)
         }
         if not returned {
@@ -967,7 +965,6 @@ vm_push_site :: fn(m: ^Machine, cur: ^CallRec, pc: usize, s: ^const CallSite, cx
     n.ret_reg = s.ret_reg
     n.buf = [8]u8(fill: 0)
     n.mark = Mark(cur: sc.cur, top: sc.top)
-    n.tm = m.temps.items.len
     n.dst = if s.out_kind is 0 { n.buf[0..usize(s.out_size)] } else if s.out_kind is 1 { fat(regs, usize(s.out_at))[0..usize(s.out_size)] } else { cur.dst }
     sc.top = top +% head +% s.frame_size
     vm_consts(callee, frame)
@@ -1050,7 +1047,6 @@ vm_push_fn :: fn(m: ^Machine, cur: ^CallRec, pc: usize, f: u32, env: ?^Frame, ca
     r.pc = 0
     r.f = f
     r.mark = mk
-    r.tm = m.temps.items.len
     if e := env and callee.env_reg is not NO_REG { r.regs[usize(callee.env_reg)] = u64(e.addr()) }
     r.ret_reg = NO_REG
     size := us(n.size)
@@ -1532,11 +1528,9 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
     while fr.defers.items.len > height {
         d := fr.defers.pop() else break
         if d.is_err and not run_err { continue }
-        tm := m.temps.items.len
         mk := m.mark()
         r := m.vm_sub(Act(fr: fr, cx: d.cx), d.code)
         span := source.DUMMY
-        m.kill_temps(tm)
         m.release(mk)
         r else f => {
             if f is .Trap(_) { return !f }
@@ -1563,12 +1557,10 @@ vm_call :: fn(m: ^Machine, cx: u32, caller: ^const Code, f: u32, args: []Arg, ds
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
     direct := m.vm_direct(caller, dst, regs)
     d := m.vm_dest(dst, direct, n, regs, ret, b[..])
-    tm := m.temps.items.len
     callee := m.new_frame(f, info, d, null, store)
     m.depth += 1
     r := m.vm_run(Act(fr: callee, cx: cx), code, d)
     m.depth -= 1
-    if m.temps.items.len > tm { m.kill_temps(tm) }
     id := callee.id
     m.end_frame(callee)
     m.release(mk)

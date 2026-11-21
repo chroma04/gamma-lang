@@ -16,13 +16,6 @@ alloc_mem :: fn(m: ^Machine, span: source.Span, size: u64, align: u64, kind: All
     return m.mem.alloc(size, align, kind, mutable) else e => return !m.mem_trap(span, e)
 }
 
-kill_temps :: fn(m: ^Machine, mk: usize) needs Alloc {
-    while m.temps.items.len > mk {
-        a := m.temps.pop() else break
-        _ = m.mem.kill(a)
-    }
-}
-
 /// The address of static (read-only) bytes, made once per `bytes` (a string literal),
 /// followed by a 0 byte if `nul`.
 string_literal :: fn(m: ^Machine, span: source.Span, bytes: []const u8, nul: bool) -> Flow!u64 needs Alloc {

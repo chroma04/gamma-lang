@@ -192,13 +192,11 @@ CallRec :: struct {
     /// While it calls: the index of the call; when it resumes: of its next instruction.
     pc: usize
     /// As a callee: its function, the caller's register its result goes to from `buf`
-    /// (`NO_REG`: none), the scratch memory before the call and how many temporaries
-    /// there were (its own die when it returns).
+    /// (`NO_REG`: none) and the scratch memory before the call.
     f: u32
     ret_reg: u32
     buf: [8]u8
     mark: Mark
-    tm: usize
     /// For a sub-code (`Code.sub`): the height of the frame's deferred statements when it
     /// started.
     dbase: usize = 0

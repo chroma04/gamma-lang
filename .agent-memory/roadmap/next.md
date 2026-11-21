@@ -26,7 +26,7 @@ rest with numbers. What is left needs a structural change; do it only if asked:
   (bounds-check elimination), P4 cgen on LIR (075 "State after P1 + P2", follow-ups).
 - Interp: push without copying constants (consts as immediates in Bc) and without the
   frame memset (needs proof registers are written before read); `with` re-resolves its
-  perform site per ctx; remove the dead Machine.temps/kill_temps.
+  perform site per ctx.
 - cgen: build results in place (068: `Abort!ast.Expr` copied 2–3x per parser level).
 - Template sharing follow-ups (decisions/073): forward a template to another template
   parameter (kit.check → str.format, cgen linef → str.format); thunks without the

@@ -209,8 +209,6 @@ pub Machine :: struct {
     ptr_bytes: u64
     mem: Memory
     scratch: Scratch
-    /// Temporaries whose address was taken; each statement kills the ones it made.
-    temps: List(u64)
     frames: List(?^Frame)
     /// The sizes of types by id (`~0`: not known yet).
     sizes: List(u64)
@@ -326,7 +324,6 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         ptr_bytes: p.target.ptr_bytes,
         mem: memory(data_base, p.target.ptr_bytes),
         scratch: Scratch(chunks: list([]u8), cur: 0, top: 0),
-        temps: list(u64),
         frames: list(?^Frame),
         frame_pool: null,
         pooled: 0,
@@ -489,7 +486,6 @@ deinit :: fn(m: ^Machine) needs Alloc {
     for c in m.scratch.chunks.items { free(c) }
     m.scratch.chunks.deinit()
     m.infos.deinit()
-    m.temps.deinit()
     while fr := m.frame_pool {
         m.frame_pool = fr.next_free
         fr.allocs.deinit()

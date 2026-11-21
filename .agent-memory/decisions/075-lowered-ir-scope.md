@@ -40,8 +40,7 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   −3.3, mandelbrot −2.1; short compile-heavy runs json_query +1.0, wordfreq +1.1,
   sha256sum +0.7 (lowering + analysis cost per first call). Profiling aid used (not
   committed): count `str.format("{}", ins)` of Ins reaching vm_free / GenOps in vm_gen.
-- Not done / follow-ups: Machine.temps + kill_temps are dead since alloc_temp went (only
-  the tree used it; remove); P3 passes (bounds-check elimination first); P4 cgen on LIR;
+- Not done / follow-ups (Machine.temps/kill_temps/CallRec.tm removed in s82): P3 passes (bounds-check elimination first); P4 cgen on LIR;
   the big-endian path (!word_locals) was tested only by forcing word_locals off on x86.
 
 ## State after P0 (s79)
