@@ -301,7 +301,7 @@ lir_walk :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func, an: ^Lir
                 withs.items[top].push(NO_REG - 1 - p)!
             }
         }
-        lir_values(&inst.op, fn(v: lir.Value) {
+        lir.for_each_value(&inst.op, fn(v: lir.Value) {
             match v {
                 .Word(ty, bits) => {
                     k := m.word_bits(ty, bits)
@@ -433,7 +433,7 @@ lir_slots :: fn(m: ^Machine, func: ^const lir.Func, an: ^LirAnalysis) needs Allo
 /// large tag reads.
 lir_scratch_need :: fn(m: ^Machine, func: ^const lir.Func, op: ^const lir.Op) -> u32 needs Alloc {
     n: u64 = 0
-    lir_values(op, fn(v: lir.Value) {
+    lir.for_each_value(op, fn(v: lir.Value) {
         match v {
             .Big(t, _) => { n += (m.size(t) + 7) / 8 * 8 }
             .Uninit(t) => if m.size(t) > 8 { n += (m.size(t) + 7) / 8 * 8 }
@@ -442,7 +442,7 @@ lir_scratch_need :: fn(m: ^Machine, func: ^const lir.Func, op: ^const lir.Op) ->
     })
     if not m.word_locals {
         // Words are written to scratch to be read as bytes (`lc_arg`).
-        lir_values(op, fn(v: lir.Value) {
+        lir.for_each_value(op, fn(v: lir.Value) {
             k := m.size(lir.value_type(func, v))
             if k > 0 and k <= 8 { n += 8 }
         })
@@ -533,7 +533,7 @@ lir_list_positions :: fn(insts: []const lir.Inst) -> u32 {
 
 /// Calls `f` on each temporary instruction `op` reads (not in its nested lists).
 lir_operands :: fn(op: ^const lir.Op, f: fn(t: u32)) {
-    lir_values(op, fn(v: lir.Value) {
+    lir.for_each_value(op, fn(v: lir.Value) {
         if .Temp(t) := v { f(t) }
     })
     match op^ {
@@ -541,70 +541,6 @@ lir_operands :: fn(op: ^const lir.Op, f: fn(t: u32)) {
             if .Deref(t) := p.base { f(t) }
         }
         .Check(.Unwrap(_, p, _)) => if .Deref(t) := p.base { f(t) }
-        _ => {}
-    }
-}
-
-/// Calls `f` on each value instruction `op` reads (not in its nested lists), the indexes
-/// of its place included.
-lir_values :: fn(op: ^const lir.Op, f: fn(v: lir.Value)) {
-    place :: fn(p: ^const lir.Place) {
-        for x in p.proj {
-            match x {
-                .Elem(i, _), .Step(i, _) => f(i)
-                _ => {}
-            }
-        }
-    }
-    match op^ {
-        .Move(_, v), .Un(_, _, v), .Coerce(_, _, v), .Fill(_, v), .Trap(v), .BitsGet(_, v, _), .Cancel(v) => f(v)
-        .Load(_, p), .AddrOf(_, p), .IsPresent(_, p, _), .TagIs(_, p, _) => place(&p)
-        .Store(p, v) => {
-            place(&p)
-            f(v)
-        }
-        .Bin(_, _, a, b), .Eq(_, _, a, b), .In(_, _, a, b), .BitsSet(_, a, _, b), .Resume(a, b) => {
-            f(a)
-            f(b)
-        }
-        .Builtin(_, _, args), .Aggregate(_, args) => for v in args { f(v) }
-        .Call(_, c, args) => {
-            if .Value(v) := c { f(v) }
-            for v in args { f(v) }
-        }
-        .Variant(_, _, ?v), .Wrap(_, _, ?v), .Assert(?v), .Exit(_, ?v) => if x := v { f(x) }
-        .Check(c) => match c {
-            .Bounds(a, b) => {
-                f(a)
-                f(b)
-            }
-            .Range(lo, hi, ?len, _) => {
-                f(lo)
-                f(hi)
-                if x := len { f(x) }
-            }
-            .Unwrap(v, p, _) => {
-                f(v)
-                place(&p)
-            }
-        }
-        .MakeSlice(_, a, b, c, _, _) => {
-            f(a)
-            f(b)
-            f(c)
-        }
-        .Write(sink, _, _, args, ?table) => {
-            if .Value(v) := sink { f(v) }
-            for v in args { f(v) }
-            if x := table { f(x) }
-        }
-        .If(c, _, _), .BrIf(c, _, _) => f(c)
-        .Return(?v) => if x := v { f(x) }
-        .With(_, _, _, ?on, _) => if x := on { f(x) }
-        .Install(h) => match h {
-            .Value(_, v), .Decl(_, v) => f(v)
-            .Lit(_) => {}
-        }
         _ => {}
     }
 }

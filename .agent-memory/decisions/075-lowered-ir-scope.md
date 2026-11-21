@@ -1,9 +1,45 @@
-# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0–P2 + P3a done
+# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0–P3a + P4a done
 
 User asks (after 074): "scope out the lowered IR", then "start on the plan with P0 …
 we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 first.
 
-## State after P3a (s82) — next: P3b/c only if they pay for the VM, else P4 (cgen)
+## State after P4a (s82, user: "go ahead with the rest of P3 and P4")
+- cgen/lirc.gm: bodies from LIR when `Options.lir` (driver: env GAMMA_CGEN_LIR=1|report)
+  and `lir_unsupported` is null; else TIR, per function (gen_body in func.gm picks; extends
+  in_frame with false for synthetic locals; spec clones, split_runs (long bodies), -g and
+  Clause defs stay TIR). CI ubuntu job runs conformance/ examples/ selfhost/ with the flag.
+- Coverage: conformance run + examples 8285/9598 bodies; compiler self-build 8218/9110.
+  Fallback reasons (count, self-build): nested functions 491 (has_nested: a fn that is a
+  parent — its loops/withs could be exit targets; needs Loop/With ladder rungs), test of
+  parts 203 (In/BitsGet/BitsSet), defer 77, 128-bit consts 58, builtins 28 (Sys, Get…,
+  atomics, Fiber, Asm), aggregate compare 21 (Bin < on blobs), effects/exits 14.
+- Gates passed: full tools/test.sh with the flag; LIR-built compiler emits byte-identical
+  C to the TIR-built one; default-path C unchanged vs main (refactors are pure).
+- Shared helpers now take values not ^Expr: int_binary(span,t,..), unary_value,
+  coerce_value, builtin_values (atomics stay in `builtin`), call_fn(rt, e?, f, vals),
+  perform(span,..), write_values/write_table_values + WriteTo sink, global_addr,
+  convert/from_tag/bit_count/pow(span,t,..), rotate/black_box(t,..).
+- lirc design: temps → C temps; labels → gm_lbN + goto; Loop = for(;;); lazies (Lazy.Load
+  of by_ref types, Lazy.Variant) computed on first value use, flushed before any
+  non-`reads_only` op (except the value a Store/Return reads) and before nested lists,
+  dropped at list end; Eq with a lazy variant = tag (+payload) compare in place; Store of
+  a lazy load = memmove; Return of large = memmove to gm_out + goto gm_fdone; Call(d) then
+  Return(d)/Store(local,d) = call writes the destination (fg.dest_call_lir → call_dest;
+  foreign calls don't take it: `dest_taken`). Store(p, Uninit) = memset in place (a 20 KB
+  `---` array copied through a temp overflowed a fiber stack).
+- Measured (callgrind `check compiler`, Debug builds of the compiler by the same
+  builder): LIR-built 2.002e9 vs TIR-built 1.988e9 Ir (+0.7%; was +11.8% before lazies,
+  +3.75% before result destinations); the rest is mostly gcc inlining shifts (`inline`
+  hint at ≤64 names; LIR bodies use more names). C text −0.5%. Fast/clang not measured.
+- Next for P4: Loop/With scopes + ladder for nested-function parents; Defer (segments);
+  With/Install/Exit/Resume/Cancel; In/Bits; 128-bit; outline/chain on LIR statement runs
+  (long bodies); spec clones (P3c); -g line directives; then default on, delete TIR body
+  code, refresh seed. P3b (borrow/purity) is still computed on TIR for the prologue — port
+  when the TIR path goes.
+- Lowering wart seen in C: `for i in` binds through a match block with a `no-arm` trap
+  after it (block{block{…;br}; no-arm}); harmless, could lower irrefutable bindings flat.
+
+## State after P3a (s82)
 - compiler/lir/checks.gm `elide_checks` (called at the end of `lower`, only when
   `Lw.bounds > 0`): one in-order walk; Sym = Const | Part(local, generation, offset, ty);
   store = new generation (+ copy propagation of whole-local stores); loops havoc what they

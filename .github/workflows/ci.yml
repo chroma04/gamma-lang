@@ -47,6 +47,11 @@ jobs:
         env:
           GAMMA_C_UNITS: "3"
         run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" tools/test.sh conformance/ examples/
+      - name: Conformance tests, examples and the compiler with function bodies from LIR
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GAMMA_CGEN_LIR: "1"
+        run: GAMMA_TEST_COMPILER="$PWD/target/bootstrap/gamma" tools/test.sh conformance/ examples/ selfhost/
 
   bootstrap:
     # gamma built from the checked-in C seed with nothing but a C compiler, on each kind of

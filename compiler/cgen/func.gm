@@ -129,6 +129,22 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     borrowed := g.borrowed_params(f)
     in_frame := g.frame_locals(f)
     split_runs := not g.opts.debug_info and long_body(g, f)
+    // The body from LIR, when `lirc.gm` translates all of it (see there).
+    lf: ?lir.Func = null
+    if g.opts.lir and spec is null and not split_runs and not g.opts.debug_info and def.kind is not .Clause {
+        func := g.lir_of(f)
+        if why := g.lir_unsupported(f, &func) {
+            g.lir_fallbacks.push(str.format("{}: {}", def.name, why)!)!
+        } else {
+            g.lir_count += 1
+            // The locals lowering adds are C locals.
+            all := list(bool)
+            all.extend(in_frame)!
+            while all.items.len < func.locals.len { all.push(false)! }
+            in_frame = all.items
+            lf = func
+        }
+    }
     cname := ""
     if sp := spec { cname = g.spec_name(f, sp) } else { cname = g.fn_name(f) }
     sig := str.format("static __attribute__((aligned(4))) {}{}{} {}({})", hint_attrs(def.hints), conv_attr(def.win64), ret, cname, str.join(params.items, ", ")!)!
@@ -202,7 +218,9 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         lv := fg.local_lv(p)
         fg.linef("{} = {};", lv, a)
     }
-    if out_ret and fg.builds_in_place(body) {
+    if x := lf {
+        try fg.lir_body(&x)
+    } else if out_ret and fg.builds_in_place(body) {
         // Built straight in the caller's destination: the body has no `defer`.
         ct := fg.g.ty.cty(def.ret)
         try fg.expr_into(body, str.format("(*({} *)gm_out)", ct)!, .Out)

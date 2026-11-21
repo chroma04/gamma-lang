@@ -81,6 +81,8 @@ pub FnGen :: struct {
     pub dest_call: ?DestCall = null
     /// The destination of the call being emitted, from `dest_call`.
     pub call_dest: ?string = null
+    /// From LIR: the destination of the large result of the call being emitted.
+    pub dest_call_lir: ?string = null
     pub def: ^const Func
     pub out: List(u8)
     pub indent: usize = 1

@@ -772,29 +772,56 @@ trap :: fn(fg: ^FnGen, e: ^Expr, message: ^Expr) -> Unsup!string needs sema.Load
 
 /// Formatted output (a template) to its sink.
 write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs sema.Load {
-    sink_v: ?ValTy = null
-    if .Fn(sx) := w.sink { sink_v = ValTy(v: try fg.expr(sx), ty: sx.ty) }
+    sink := try fg.write_to(w.sink)
     vals := list(string)
+    tys := list(Ty)
     for i in 0..w.args.len {
         v := try fg.expr(&w.args[i])
         vals.push(fg.addr_of(w.args[i].ty, v))!
+        tys.push(w.args[i].ty)!
     }
+    return fg.write_values(e.span, sink, w.pieces, w.specs, tys.items, vals.items)
+}
+
+/// Where formatted output goes.
+WriteTo :: union {
+    /// An operation taking `[]const u8` (`Out.write`).
+    Perform: (effect_: EffectRef, op: u32)
+    /// A second-class function value; `direct` names the function literal it is, which is
+    /// called directly.
+    Fn: (v: ValTy, direct: ?string)
+}
+
+/// The sink of a TIR write, its function value computed.
+write_to :: fn(fg: ^FnGen, sink: tir.WriteSink) -> Unsup!WriteTo needs sema.Load {
+    match sink {
+        .Perform(effect_, op) => return .Perform(effect_, op)
+        .Fn(sx) => {
+            direct: ?string = null
+            if .Closure(f) := sx.kind { direct = fg.g.fn_name(f) }
+            return .Fn(ValTy(v: try fg.expr(sx), ty: sx.ty), direct)
+        }
+    }
+}
+
+/// Formatted output of the template `pieces`/`specs` with the values at the addresses
+/// `vals` (of types `tys`) to `sink`; traps report `span`.
+write_values :: fn(fg: ^FnGen, span: source.Span, sink: WriteTo, pieces: []const []const u8, specs: []const tir.FmtSpec, tys: []const Ty, vals: []const string) -> Unsup!string needs sema.Load {
     str_ty := fg.g.ty.string_ty()
     unit_ty := fg.g.ty.unit_ty()
     // A write to the ambient output or error is one call per piece.
     stub: ?string = null
-    match w.sink {
+    match sink {
         .Perform(effect_, op) => {
             id := fg.g.effect_id(&effect_)
-            tys := [1]Ty(str_ty)
-            stub = fg.out_stub(&effect_, id, op, tys[..], unit_ty)
+            stub_tys := [1]Ty(str_ty)
+            stub = fg.out_stub(&effect_, id, op, stub_tys[..], unit_ty)
         }
         .Fn(_) => {}
     }
-    if .Fn(_) := w.sink and not fg.g.ty.by_ref(str_ty) {
+    if .Fn(cv, ?direct) := sink and not fg.g.ty.by_ref(str_ty) {
         // A write to a function: the closure and its handler context once, then a call of
         // a shared helper per piece.
-        cv := sink_v?
         .Fn(sig) := fg.g.ty.kind(cv.ty) else @unreachable()
         c := fg.tmp(cv.ty, cv.v)
         ccx := str.format("ccx{}", fg.fresh())!
@@ -806,28 +833,23 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
         }
         fs := fg.fn_sink_stub(str_ty)
         ff := fg.fn_format_stub(fs)
-        // A function literal is called directly, where the C compiler can inline it.
-        direct: ?string = null
-        if .Fn(sx) := w.sink {
-            if .Closure(f) := sx.kind { direct = fg.g.fn_name(f) }
-        }
-        for i in 0..w.pieces.len {
-            if w.pieces[i].len > 0 {
+        for i in 0..pieces.len {
+            if pieces[i].len > 0 {
                 if d := direct {
-                    sl := fg.make_slice(str_ty, fg.g.static_bytes(w.pieces[i]), str.format("{}", w.pieces[i].len)!)
+                    sl := fg.make_slice(str_ty, fg.g.static_bytes(pieces[i]), str.format("{}", pieces[i].len)!)
                     fg.linef("{}({}.env, {}, NULL, {});", d, c, ccx, sl)
                     fg.check_unwind()
                 } else {
-                    fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(w.pieces[i]), w.pieces[i].len)!)
+                    fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {})", fs, c, c, ccx, fg.g.static_bytes(pieces[i]), pieces[i].len)!)
                 }
             }
-            if i < w.args.len {
+            if i < tys.len {
                 spec := "NULL"
-                if sp := w.specs.get(i) {
+                if sp := specs.get(i) {
                     if not tir.is_default_spec(&sp) { spec = str.format("&{}", spec_literal(sp))! }
                 }
-                a := vals.items[i]
-                if spec is "NULL" and w.args[i].ty is str_ty and direct is not null {
+                a := vals[i]
+                if spec is "NULL" and tys[i] is str_ty and direct is not null {
                     // A string is written as it is, unless it is empty.
                     p := fg.ptr_bytes()
                     fg.linef("if (GM_LD(uintptr_t, {} + {}) != 0) {{", a, p)
@@ -836,12 +858,12 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
                     fg.check_unwind()
                     fg.indent -= 1
                     fg.line("}")
-                } else if spec is "NULL" and w.args[i].ty is str_ty {
+                } else if spec is "NULL" and tys[i] is str_ty {
                     // A string is written as it is, unless it is empty.
                     p := fg.ptr_bytes()
                     fg.unwind_call(str.format("(GM_LD(uintptr_t, {} + {}) != 0 && {}({}.code, {}.env, {}, GM_LD(void *, {}), GM_LD(uintptr_t, {} + {})))", a, p, fs, c, c, ccx, a, a, p)!)
                 } else {
-                    fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {}, {})", ff, c, c, ccx, fg.g.ty.desc(w.args[i].ty), a, spec)!)
+                    fg.unwind_call(str.format("{}({}.code, {}.env, {}, {}, {}, {})", ff, c, c, ccx, fg.g.ty.desc(tys[i]), a, spec)!)
                 }
             }
         }
@@ -850,57 +872,57 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
     if core := stub {
         ps := fg.piece_stub(core, 's', str_ty)
         pf := fg.piece_stub(core, 'f', str_ty)
-        at := fg.loc(e)
-        for i in 0..w.pieces.len {
-            if w.pieces[i].len > 0 {
-                s := fg.g.static_bytes(w.pieces[i])
-                fg.unwind_call(str.format("{}({}, {}, {}, {})", ps, fg.cx, s, w.pieces[i].len, at)!)
+        at := fg.g.src_loc(span)
+        for i in 0..pieces.len {
+            if pieces[i].len > 0 {
+                s := fg.g.static_bytes(pieces[i])
+                fg.unwind_call(str.format("{}({}, {}, {}, {})", ps, fg.cx, s, pieces[i].len, at)!)
             }
-            if i < w.args.len {
-                d := fg.g.ty.desc(w.args[i].ty)
+            if i < tys.len {
+                d := fg.g.ty.desc(tys[i])
                 custom: ?tir.FmtSpec = null
-                if sp := w.specs.get(i) {
+                if sp := specs.get(i) {
                     if not tir.is_default_spec(&sp) { custom = sp }
                 }
                 if sp := custom {
                     b := str.format("b{}", fg.fresh())!
                     c := spec_literal(sp)
                     fg.linef("gm_buf {} = {{0}};", b)
-                    fg.linef("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)
-                    try fg.emit_buf(w.sink, sink_v, b, e)
-                } else if w.args[i].ty is str_ty {
+                    fg.linef("gm_format_spec(&{}, {}, {}, &{});", b, d, vals[i], c)
+                    try fg.emit_buf(sink, b, span)
+                } else if tys[i] is str_ty {
                     // A string is written as it is, unless it is empty.
-                    a := vals.items[i]
+                    a := vals[i]
                     p := fg.ptr_bytes()
                     fg.unwind_call(str.format("(GM_LD(uintptr_t, {} + {}) != 0 && {}({}, GM_LD(void *, {}), GM_LD(uintptr_t, {} + {}), {}))", a, p, ps, fg.cx, a, a, p, at)!)
                 } else {
-                    fg.unwind_call(str.format("{}({}, {}, {}, {})", pf, fg.cx, d, vals.items[i], at)!)
+                    fg.unwind_call(str.format("{}({}, {}, {}, {})", pf, fg.cx, d, vals[i], at)!)
                 }
             }
         }
         return fg.unit()
     }
-    for i in 0..w.pieces.len {
-        if w.pieces[i].len > 0 {
-            s := fg.g.static_bytes(w.pieces[i])
-            sl := fg.make_slice(str_ty, s, str.format("{}", w.pieces[i].len)!)
-            try fg.emit_to(w.sink, sink_v, sl, e)
+    for i in 0..pieces.len {
+        if pieces[i].len > 0 {
+            s := fg.g.static_bytes(pieces[i])
+            sl := fg.make_slice(str_ty, s, str.format("{}", pieces[i].len)!)
+            try fg.emit_to(sink, sl, span)
         }
-        if i < w.args.len {
-            d := fg.g.ty.desc(w.args[i].ty)
+        if i < tys.len {
+            d := fg.g.ty.desc(tys[i])
             b := str.format("b{}", fg.fresh())!
             fg.linef("gm_buf {} = {{0}};", b)
             custom: ?tir.FmtSpec = null
-            if sp := w.specs.get(i) {
+            if sp := specs.get(i) {
                 if not tir.is_default_spec(&sp) { custom = sp }
             }
             if sp := custom {
                 c := spec_literal(sp)
-                fg.linef("gm_format_spec(&{}, {}, {}, &{});", b, d, vals.items[i], c)
+                fg.linef("gm_format_spec(&{}, {}, {}, &{});", b, d, vals[i], c)
             } else {
-                fg.linef("gm_format(&{}, {}, {}, true);", b, d, vals.items[i])
+                fg.linef("gm_format(&{}, {}, {}, true);", b, d, vals[i])
             }
-            try fg.emit_buf(w.sink, sink_v, b, e)
+            try fg.emit_buf(sink, b, span)
         }
     }
     return fg.unit()
@@ -910,23 +932,33 @@ write :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs
 /// over its pieces and placeholders, each formatting the value it names, through the same
 /// helpers as a write of a known template.
 write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string needs sema.Load {
-    sink_v: ?ValTy = null
-    if .Fn(sx) := w.sink { sink_v = ValTy(v: try fg.expr(sx), ty: sx.ty) }
+    sink := try fg.write_to(w.sink)
     tv := try fg.expr(w.table?)
+    vals := list(string)
+    tys := list(Ty)
+    for i in 0..w.args.len {
+        v := try fg.expr(&w.args[i])
+        vals.push(fg.addr_of(w.args[i].ty, v))!
+        tys.push(w.args[i].ty)!
+    }
+    return fg.write_table_values(e.span, sink, tv, tys.items, vals.items)
+}
+
+/// `write_values` with the template `tv`, a `gm_tmpl` known only when the write runs.
+write_table_values :: fn(fg: ^FnGen, span: source.Span, sink: WriteTo, tv: string, tys: []const Ty, vals: []const string) -> Unsup!string needs sema.Load {
     str_ty := fg.g.ty.string_ty()
     ptrs := list(string)
     descs := list(string)
     strs := list(string)
-    for i in 0..w.args.len {
-        v := try fg.expr(&w.args[i])
-        ptrs.push(str.format("(const void *)({})", fg.addr_of(w.args[i].ty, v))!)!
-        descs.push(fg.g.ty.desc(w.args[i].ty))!
-        strs.push(if w.args[i].ty is str_ty { "1" } else { "0" })!
+    for i in 0..tys.len {
+        ptrs.push(str.format("(const void *)({})", vals[i])!)!
+        descs.push(fg.g.ty.desc(tys[i]))!
+        strs.push(if tys[i] is str_ty { "1" } else { "0" })!
     }
     k := fg.fresh()
     t := str.format("tp{}", k)!
     fg.linef("const gm_tmpl *{} = (const gm_tmpl *)({});", t, tv)
-    if w.args.len > 0 {
+    if tys.len > 0 {
         fg.linef("const void *vp{}[] = {{{}}};", k, str.join(ptrs.items, ", ")!)
         fg.linef("const gm_type *vd{}[] = {{{}}};", k, str.join(descs.items, ", ")!)
         fg.linef("static const uint8_t vs{}[] = {{{}}};", k, str.join(strs.items, ", ")!)
@@ -939,13 +971,12 @@ write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string
     plain := str.format("(!{} && vs{}[j{}])", sp, k, k)!
     p := fg.ptr_bytes()
     stub: ?string = null
-    if .Perform(effect_, op) := w.sink {
+    if .Perform(effect_, op) := sink {
         id := fg.g.effect_id(&effect_)
-        tys := [1]Ty(str_ty)
-        stub = fg.out_stub(&effect_, id, op, tys[..], fg.g.ty.unit_ty())
+        stub_tys := [1]Ty(str_ty)
+        stub = fg.out_stub(&effect_, id, op, stub_tys[..], fg.g.ty.unit_ty())
     }
-    if .Fn(_) := w.sink and not fg.g.ty.by_ref(str_ty) {
-        cv := sink_v?
+    if .Fn(cv, ?direct) := sink and not fg.g.ty.by_ref(str_ty) {
         .Fn(sig) := fg.g.ty.kind(cv.ty) else @unreachable()
         c := fg.tmp(cv.ty, cv.v)
         ccx := str.format("ccx{}", fg.fresh())!
@@ -957,11 +988,6 @@ write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string
         }
         fs := fg.fn_sink_stub(str_ty)
         ff := fg.fn_format_stub(fs)
-        // A function literal is called directly, where the C compiler can inline it.
-        direct: ?string = null
-        if .Fn(sx) := w.sink {
-            if .Closure(f) := sx.kind { direct = fg.g.fn_name(f) }
-        }
         fg.linef("for (uint32_t k{} = 0;; k{}++) {{", k, k)
         fg.indent += 1
         if dn := direct {
@@ -976,7 +1002,7 @@ write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string
             fg.unwind_call(str.format("({}.len != 0 && {}({}.code, {}.env, {}, {}.ptr, {}.len))", piece, fs, c, c, ccx, piece, piece)!)
         }
         fg.linef("if (k{} == {}->n) break;", k, t)
-        if w.args.len > 0 {
+        if tys.len > 0 {
             fg.linef("uint32_t j{} = {}->arg[k{}];", k, t, k)
             if dn := direct {
                 fg.linef("if ({}) {{", plain)
@@ -1006,17 +1032,17 @@ write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string
     if core := stub {
         ps := fg.piece_stub(core, 's', str_ty)
         pf := fg.piece_stub(core, 'f', str_ty)
-        at := fg.loc(e)
+        at := fg.g.src_loc(span)
         fg.unwind_call(str.format("({}.len != 0 && {}({}, {}.ptr, {}.len, {}))", piece, ps, fg.cx, piece, piece, at)!)
         fg.linef("if (k{} == {}->n) break;", k, t)
-        if w.args.len > 0 {
+        if tys.len > 0 {
             fg.linef("uint32_t j{} = {}->arg[k{}];", k, t, k)
             fg.linef("if ({}) {{", sp)
             fg.indent += 1
             b := str.format("b{}", fg.fresh())!
             fg.linef("gm_buf {} = {{0}};", b)
             fg.linef("gm_format_spec(&{}, {}, {}, {});", b, d, v, sp)
-            try fg.emit_buf(w.sink, sink_v, b, e)
+            try fg.emit_buf(sink, b, span)
             fg.indent -= 1
             fg.line("} else {")
             fg.indent += 1
@@ -1031,16 +1057,16 @@ write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string
     fg.linef("if ({}.len != 0) {{", piece)
     fg.indent += 1
     sl := fg.make_slice(str_ty, str.format("{}.ptr", piece)!, str.format("{}.len", piece)!)
-    try fg.emit_to(w.sink, sink_v, sl, e)
+    try fg.emit_to(sink, sl, span)
     fg.indent -= 1
     fg.line("}")
     fg.linef("if (k{} == {}->n) break;", k, t)
-    if w.args.len > 0 {
+    if tys.len > 0 {
         b := str.format("b{}", fg.fresh())!
         fg.linef("gm_buf {} = {{0}};", b)
         fg.linef("uint32_t j{} = {}->arg[k{}];", k, t, k)
         fg.linef("if ({}) gm_format_spec(&{}, {}, {}, {}); else gm_format(&{}, {}, {}, true);", sp, b, d, v, sp, b, d, v)
-        try fg.emit_buf(w.sink, sink_v, b, e)
+        try fg.emit_buf(sink, b, span)
     }
     fg.indent -= 1
     fg.line("}")
@@ -1049,28 +1075,27 @@ write_table :: fn(fg: ^FnGen, e: ^Expr, w: ^const tir.WriteExpr) -> Unsup!string
 
 /// Sends the formatted argument in `gm_buf` variable `b` to an `@write` sink unless it
 /// is empty (the interpreter writes no empty chunks either), then frees it.
-emit_buf :: fn(fg: ^FnGen, sink: tir.WriteSink, sv: ?ValTy, b: string, e: ^Expr) -> Unsup!() needs sema.Load {
+emit_buf :: fn(fg: ^FnGen, sink: WriteTo, b: string, span: source.Span) -> Unsup!() needs sema.Load {
     fg.linef("if ({}.len != 0) {{", b)
     fg.indent += 1
     sl := fg.make_slice(fg.g.ty.string_ty(), str.format("{}.data", b)!, str.format("{}.len", b)!)
-    try fg.emit_to(sink, sv, sl, e)
+    try fg.emit_to(sink, sl, span)
     fg.indent -= 1
     fg.line("}")
     fg.linef("gm_buf_free(&{});", b)
 }
 
 /// Sends a `[]const u8` value to an `@write` sink.
-emit_to :: fn(fg: ^FnGen, sink: tir.WriteSink, sv: ?ValTy, slice: string, e: ^Expr) -> Unsup!() needs sema.Load {
+emit_to :: fn(fg: ^FnGen, sink: WriteTo, slice: string, span: source.Span) -> Unsup!() needs sema.Load {
     unit_ty := fg.g.ty.unit_ty()
     vals := [1]string(slice)
     tys := [1]Ty(fg.g.ty.string_ty())
     match sink {
-        .Fn(_) => {
-            cv := sv?
+        .Fn(cv, _) => {
             _ = try fg.call_closure(cv.v, cv.ty, vals[..], tys[..], unit_ty)
         }
         .Perform(effect_, op) => {
-            _ = try fg.perform(e, &effect_, op, vals[..], tys[..], unit_ty)
+            _ = try fg.perform(span, &effect_, op, vals[..], tys[..], unit_ty)
         }
     }
 }
@@ -1092,13 +1117,7 @@ target_ret :: fn(fg: ^FnGen, levels: u32) -> Ty needs sema.Load {
 place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
     match e.kind {
         .Local(l) => return fg.local_addr(l)
-        .Global(_, decl) => {
-            i := fg.g.prog.global_index(decl) else return !unsupported(e.span, "this variable")
-            gl := fg.g.prog.s.globals.items[i]
-            t := fg.g.global_tag(i)
-            if gl.thread_local and gl.link_name is null { return str.format("gm_ga{}()", t)! }
-            return str.format("((uint8_t *)gm_g{})", t)!
-        }
+        .Global(_, decl) => return try fg.g.global_addr(decl, e.span)
         // Constants live in static storage, so their address is stable.
         .Const(_, span) => {
             name := try fg.g.const_storage(span, e.ty, e.span)
@@ -1197,6 +1216,15 @@ place_addr :: fn(fg: ^FnGen, e: ^Expr) -> Unsup!string needs sema.Load {
     }
 }
 
+/// The address (`uint8_t *`) of the global variable declared by `decl`.
+global_addr :: fn(g: ^Gen, decl: usize, span: source.Span) -> Unsup!string needs Alloc {
+    i := g.prog.global_index(decl) else return !unsupported(span, "this variable")
+    gl := g.prog.s.globals.items[i]
+    t := g.global_tag(i)
+    if gl.thread_local and gl.link_name is null { return str.format("gm_ga{}()", t)! }
+    return str.format("((uint8_t *)gm_g{})", t)!
+}
+
 /// The bounds check of an index `i` against length `len`.
 index_check :: fn(fg: ^FnGen, checked: bool, i: string, len: string, at: string) needs sema.Load {
     if checked {
@@ -1283,21 +1311,25 @@ slice_expr :: fn(fg: ^FnGen, e: ^Expr, base: ^Expr, lo: ?^Expr, hi: ?^Expr, incl
 
 coerce :: fn(fg: ^FnGen, e: ^Expr, kind: tir.Coercion, x: ^Expr) -> Unsup!string needs sema.Load {
     v := try fg.expr(x)
-    t := e.ty
+    return fg.coerce_value(e.span, e.ty, kind, x.ty, v)
+}
+
+/// The coercion `kind` of `v`, of type `xt`, to type `t`.
+coerce_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, kind: tir.Coercion, xt: Ty, v: string) -> Unsup!string needs sema.Load {
     match kind {
         .IntWiden, .FloatWiden => {
             c := fg.g.ty.cty(t)
             return fg.tmp(t, str.format("({}){}", c, v)!)
         }
         .WrapOptional => return fg.make_some(t, v)
-        .WrapOk => return fg.make_res(t, false, x.ty, v)
+        .WrapOk => return fg.make_res(t, false, xt, v)
         .LiftErr(variant) => {
-            a := fg.addr_of(x.ty, v)
-            .Result(e1, ok) := fg.g.ty.kind(x.ty) else return !unsupported(e.span, "this error lifting")
-            .Result(e2, _) := fg.g.ty.kind(t) else return !unsupported(e.span, "this error lifting")
+            a := fg.addr_of(xt, v)
+            .Result(e1, ok) := fg.g.ty.kind(xt) else return !unsupported(span, "this error lifting")
+            .Result(e2, _) := fg.g.ty.kind(t) else return !unsupported(span, "this error lifting")
             res := fg.tmp_uninit(t)
-            bad := fg.res_is_err(x.ty, a)
-            off := fg.g.ty.offsets(x.ty)[1]
+            bad := fg.res_is_err(xt, a)
+            off := fg.g.ty.offsets(xt)[1]
             fg.linef("if ({}) {{", bad)
             fg.indent += 1
             ev := fg.load(e1, str.format("({} + {})", a, off)!)
@@ -1316,25 +1348,25 @@ coerce :: fn(fg: ^FnGen, e: ^Expr, kind: tir.Coercion, x: ^Expr) -> Unsup!string
         }
         .FromNever => return fg.zero(t)
         // Widening a plain function pointer to an effectful type marks it (see `call_indirect`).
-        .FnPtrWiden if fg.ptr_type_plain(x.ty) and not fg.ptr_type_plain(t) => return fg.tmp(t, str.format("GM_PTR_TAG({})", v)!)
+        .FnPtrWiden if fg.ptr_type_plain(xt) and not fg.ptr_type_plain(t) => return fg.tmp(t, str.format("GM_PTR_TAG({})", v)!)
         .PtrToPtr, .FnPtrWiden, .TupleRename, .InOptional => {
-            if fg.g.ty.repr(t) is fg.g.ty.repr(x.ty) and fg.g.ty.repr(t) is not .Blob { return v }
-            a := fg.addr_of(x.ty, v)
+            if fg.g.ty.repr(t) is fg.g.ty.repr(xt) and fg.g.ty.repr(t) is not .Blob { return v }
+            a := fg.addr_of(xt, v)
             return fg.load(t, a)
         }
         .ArrayPtrToSlice => {
-            .Ptr(_, pointee) := fg.g.ty.kind(x.ty) else return !unsupported(e.span, "this array-to-slice coercion")
-            .Array(len, _, _) := fg.g.ty.kind(pointee) else return !unsupported(e.span, "this array-to-slice coercion")
+            .Ptr(_, pointee) := fg.g.ty.kind(xt) else return !unsupported(span, "this array-to-slice coercion")
+            .Array(len, _, _) := fg.g.ty.kind(pointee) else return !unsupported(span, "this array-to-slice coercion")
             return fg.make_slice(t, v, str.format("{}", len)!)
         }
         .FnToPtr => {
-            if fg.g.ty.repr(x.ty) is .Ptr and fg.g.ty.repr(t) is .Closure {
-                code: string = if fg.ptr_type_plain(x.ty) { str.format("GM_PTR_TAG({})", v)! } else { v }
+            if fg.g.ty.repr(xt) is .Ptr and fg.g.ty.repr(t) is .Closure {
+                code: string = if fg.ptr_type_plain(xt) { str.format("GM_PTR_TAG({})", v)! } else { v }
                 return fg.tmp(t, str.format("((gm_closure){{{}, NULL, {}}})", code, fg.cx)!)
             }
             return v
         }
-        .Unresolved => return !unsupported(e.span, "an unresolved coercion")
+        .Unresolved => return !unsupported(span, "an unresolved coercion")
     }
 }
 

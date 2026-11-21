@@ -10,6 +10,7 @@
 ast :: import "../ast"
 bigint :: import "../bigint"
 hash_map :: import "std/collections/hash_map"
+lir :: import "../lir"
 sema :: import "../sema"
 source :: import "../source"
 str :: import "std/str"
@@ -47,6 +48,8 @@ pub Options :: struct {
     /// With `debug_info` on an ELF target: the text of the gdb pretty printers
     /// (`runtime/gdb_printers.py`) to embed in the executable. Empty for none.
     pub gdb_printers: string = ""
+    /// Generate function bodies from LIR where `lirc.gm` translates every instruction.
+    pub lir: bool = false
 }
 
 pub Gen :: struct {
@@ -139,6 +142,12 @@ pub Gen :: struct {
     pub cell_ids: hash_map.HashMap(usize, u32)
     /// The storage whose value is being written, which names the cells its pointers reach.
     pub cell_referrer: string = ""
+    /// The LIR lowering context (`Options.lir`), whether each function has nested ones, and
+    /// the functions generated from TIR instead, each with the reason.
+    pub lir_cx: ?^lir.Ctx = null
+    pub lir_parents: List(bool)
+    pub lir_fallbacks: List(string)
+    pub lir_count: u32 = 0
 }
 
 /// What the back end produces.
@@ -154,6 +163,10 @@ pub Generated :: struct {
     pub freestanding: bool = false
     /// A freestanding program with a `#trap_hook`.
     pub trap_hook: bool = false
+    /// With `Options.lir`: how many bodies were generated from LIR, and each that was not,
+    /// with the reason.
+    pub lir_count: u32 = 0
+    pub lir_fallbacks: []const string = empty_slice(string)
 }
 
 /// Translates the program to C source whose `main` runs `entry`.
@@ -225,6 +238,8 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         line_paths: hash_map.hash_map(u32, ?string),
         statics_cells: list(StaticCell),
         cell_ids: hash_map.hash_map(usize, u32),
+        lir_parents: list(bool),
+        lir_fallbacks: list(string),
     )
     g.ty.debug_names = opts.debug_info
     for entry in entries { g.queue(entry) }
@@ -313,7 +328,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         // function (see `split`), so the tail starts with one of its own.
         tail: str.format("{}{}{}{}", reset, consts.init, exports, main_text)!,
     )
-    return Generated(code: out.items, parts: parts, libs: g.libs.items, freestanding: freestanding, trap_hook: freestanding and p.s.trap_hook is not null)
+    return Generated(code: out.items, parts: parts, libs: g.libs.items, freestanding: freestanding, trap_hook: freestanding and p.s.trap_hook is not null, lir_count: g.lir_count, lir_fallbacks: g.lir_fallbacks.items)
 }
 
 // ---------------------------------------------------------------------------------

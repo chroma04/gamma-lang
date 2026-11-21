@@ -45,4 +45,5 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
 - s81: LIR P1+P2: lowering total (with/exit/assert/bits/…); interp selector covers every
   body (slots, generic Gen ins, sub-codes); tree evaluator, code.gm, vm_compile deleted.
 - s82: dead Machine.temps removed; LIR P3a: lir/checks.gm bounds-check elimination +
-  VM StepLd/StepSt (benches −0.2..−3%).
+  VM StepLd/StepSt (benches −0.2..−3%); P4a: cgen/lirc.gm, C bodies from LIR behind
+  GAMMA_CGEN_LIR (90% of bodies, self-build identical, +0.7% Ir).

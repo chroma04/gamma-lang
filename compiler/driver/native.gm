@@ -119,6 +119,10 @@ generate_program :: fn(s: ^sema.Sema, roots_in: []const u32, entries: []const u3
         .Checked, .Safe => cgen.Options(checks: true, debug: false, debug_info: opts.debug_info)
         .Fast => cgen.Options(checks: false, debug: false, debug_info: opts.debug_info)
     }
+    // `GAMMA_CGEN_LIR` (`1`, or `report` to list the bodies still generated from TIR):
+    // function bodies are generated from LIR where the back end translates it (cgen/lirc.gm).
+    lir_mode := Env.var("GAMMA_CGEN_LIR") else ""
+    copts.lir = lir_mode.len > 0 and lir_mode is not "0"
     // With debug information on an ELF target, the executable carries the gdb printers (Fil-C
     // compiles no top-level assembly).
     if opts.debug_info and p.target.os in ("Linux", "FreeBSD") and not p.target.filc {
@@ -137,6 +141,10 @@ generate_program :: fn(s: ^sema.Sema, roots_in: []const u32, entries: []const u3
     generated := result else u => {
         report_unsupported(s, u)
         return null
+    }
+    if lir_mode is "report" {
+        eprint("gamma: {} bodies from LIR, {} from TIR\n", generated.lir_count, generated.lir_fallbacks.len)
+        for x in generated.lir_fallbacks { eprint("  {}\n", x) }
     }
     cgen.check_export_names(&p, str.format("{}\n{}", rt_h, rt_c)!, generated.code) else u => {
         report_unsupported(s, u)
