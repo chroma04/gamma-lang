@@ -74,6 +74,9 @@ pub Gen :: struct {
     /// Static byte arrays by content, with their names.
     statics: hash_map.HashMap([]const u8, string)
     static_defs: List(u8)
+    /// The static `gm_tmpl` of each template a shared body is given (`template_table`), by
+    /// its text in C.
+    tables: hash_map.HashMap([]const u8, string)
     pub frames: List(u8)
     pub protos: List(u8)
     pub bodies: List(u8)
@@ -191,6 +194,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         owner_marks: list(OwnerMark),
         statics: hash_map.hash_map([]const u8, string),
         static_defs: list(u8),
+        tables: hash_map.hash_map([]const u8, string),
         frames: list(u8),
         protos: list(u8),
         bodies: list(u8),
@@ -497,6 +501,33 @@ static_bytes :: fn(g: ^Gen, bytes: []const u8) -> string needs Alloc {
     g.statics.put(bytes, n)!
     g.static_defs.write("static const uint8_t {}[{}] = {};\n", n, bytes.len + 1, c_string(bytes))!
     return n
+}
+
+/// The name of a static `gm_tmpl` holding the template `t` (`tir.Template`): its pieces,
+/// and for each placeholder the value it writes and its spec (NULL for the default).
+template_table :: fn(g: ^Gen, t: ^const tir.TemplateTable) -> string needs Alloc {
+    pieces := list(string)
+    for p in t.pieces { pieces.push(str.format("{{{}, {}}}", g.static_bytes(p), p.len)!)! }
+    index := list(string)
+    specs := list(string)
+    for i in 0..t.specs.len {
+        index.push(str.format("{}u", t.index[i])!)!
+        specs.push(if tir.is_default_spec(&t.specs[i]) { "NULL" } else { str.format("&{}", spec_literal(t.specs[i]))! })!
+    }
+    n := t.specs.len
+    text := str.format("{}|{}|{}", str.join(pieces.items, ", ")!, str.join(index.items, ", ")!, str.join(specs.items, ", ")!)!
+    if name := g.tables.get(text) { return name }
+    name := content_name("gm_tpl", text)
+    g.tables.put(text, name)!
+    g.static_defs.write("static const gm_tmpl_piece {}_p[] = {{{}}};\n", name, str.join(pieces.items, ", ")!)!
+    if n > 0 {
+        g.static_defs.write("static const uint32_t {}_i[] = {{{}}};\n", name, str.join(index.items, ", ")!)!
+        g.static_defs.write("static const gm_spec *const {}_s[] = {{{}}};\n", name, str.join(specs.items, ", ")!)!
+        g.static_defs.write("static const gm_tmpl {} = {{{}u, {}_p, {}_i, {}_s}};\n", name, n, name, name, name)!
+    } else {
+        g.static_defs.write("static const gm_tmpl {} = {{0u, {}_p, NULL, NULL}};\n", name, name)!
+    }
+    return name
 }
 
 /// `"file", line, col` for a trap at `span` (NULL location for none).

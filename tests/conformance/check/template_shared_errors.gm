@@ -1,0 +1,20 @@
+//! stage: check
+// Calls with the same value types share one body whatever their templates (§16.1), but
+// each template is still checked at its own call (§21.6.1), also where the template is
+// otherwise used as a run-time `string`.
+str :: import "std/str"
+
+log :: fn(A: type, template :: string, args: ..A) needs Out {
+    print(template, ..args)
+    print("({} bytes)\n", template.len)
+}
+
+main :: fn() needs Out + Alloc {
+    log("{}\n", 1)
+    log("{} {}\n", 2)             //~ ERROR the template has 2 placeholders, but 1 value is given (in an instantiation used here)
+    log("{1}\n", 3)               //~ ERROR the template writes value 1, but 1 value is given (in an instantiation used here)
+    log("{:x}\n", "text")         //~ ERROR this placeholder needs an integer, for a base, not `string` (in an instantiation used here)
+    log("{:x}\n", 4)
+    s := str.format("{} and {}", 5)! //~ ERROR the template has 2 placeholders, but 1 value is given (in an instantiation used here)
+    free(s)
+}

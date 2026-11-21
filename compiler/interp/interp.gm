@@ -256,6 +256,9 @@ pub Machine :: struct {
     fiber_stack: u64
     /// Debug builds: the allocator `(owner, vt)` and site of each block from `new`/`make`.
     alloc_tags: hash_map.HashMap(u64, AllocTag)
+    /// The templates given to bodies that write them (`Op.Write` with a table), numbered
+    /// from 1.
+    templates: List(^const tir.TemplateTable)
     /// The state of the system services (`sys.gm`).
     sys: SysState
     /// The program's threads (`threads.gm`).
@@ -350,6 +353,7 @@ machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc
         fib: fibers(),
         fiber_stack: ~u64(0),
         alloc_tags: hash_map.hash_map(u64, AllocTag),
+        templates: list(^const tir.TemplateTable),
         sys: sys_state(),
         filter: null,
         threads: threads(),
@@ -511,6 +515,7 @@ deinit :: fn(m: ^Machine) needs Alloc {
     m.cstrings.deinit()
     m.cells.deinit()
     m.alloc_tags.deinit()
+    m.templates.deinit()
     for s in m.fib.free_stacks.items { libc.free(s.ptr) }
     m.fib.free_stacks.deinit()
     m.fib.coros.deinit()

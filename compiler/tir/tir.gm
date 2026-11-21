@@ -114,6 +114,8 @@ pub ExprKind :: union {
     /// A `Write` whose template is a compile-time `string` parameter of a generic
     /// function: each instance splits the template and its arguments (§16.1).
     WriteDeferred: ^WriteDeferredExpr
+    /// A template given to a body that writes it (`WriteExpr.table`): a `rawptr`.
+    Template: ^TemplateTable
     /// An operation on a `#soa` value of a type parameter's elements, expanded in each
     /// instance, where the element's fields are known (§5.6.4). The operands are variables,
     /// places through a variable, or constants, so they may be used repeatedly.
@@ -171,6 +173,18 @@ pub WriteExpr :: struct {
     pub pieces: []const []const u8
     pub specs: []const FmtSpec
     pub args: []Expr
+    /// A template known only when the write runs (`Template`, passed to the one body that
+    /// the instances of a generic function share, whatever their template): `pieces` and
+    /// `specs` are then empty and `args` are the values, each once, in order.
+    pub table: ?^Expr = null
+}
+
+/// A template split into its literal pieces, a spec per placeholder and the value each
+/// placeholder writes (§21.6.1): `pieces.len == specs.len + 1 == index.len + 1`.
+pub TemplateTable :: struct {
+    pub pieces: []const []const u8
+    pub specs: []const FmtSpec
+    pub index: []const u32
 }
 
 /// The operations of `SoaDeferred`, with their operands.
@@ -640,6 +654,7 @@ pub for_each_child :: fn(e: ^Expr, f: fn(c: ^Expr)) {
         .Break(x) => if v := x.value { f(v) }
         .Write(w) => {
             if .Fn(x) := w.sink { f(x) }
+            if t := w.table { f(t) }
             for i in 0..w.args.len { f(&w.args[i]) }
         }
         .WriteDeferred(w) => {

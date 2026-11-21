@@ -344,6 +344,39 @@ write_ :: fn(m: ^Machine, a: Act, w_sink: Sink, pieces: []const []const u8, spec
     m.release(mk)
 }
 
+/// A write whose template is the one the word `table` names (`Machine.templates`), with
+/// the values `args`, each once.
+write_table :: fn(m: ^Machine, a: Act, w_sink: Sink, table: ^Node, args: []^Node, e: ^Node) -> Flow!() needs Run {
+    k := try m.ew(a, table)
+    if k is 0 or k > u64(m.templates.items.len) { return !m.trap(e.span, "internal error: a write of an unknown template") }
+    t := m.templates.items[us(k) - 1]
+    mk := m.mark()
+    sink := empty_slice(u8)
+    sink_ty := e.ty
+    if .Fn(x) := w_sink {
+        sink = m.tmp(x.size)
+        sink_ty = x.ty
+        try m.ev(a, x, sink)
+    }
+    vals := list([]u8)
+    defer vals.deinit()
+    try m.ev_args(a, args, &vals)
+    for i in 0..t.pieces.len {
+        if t.pieces[i].len > 0 { try m.emit(a.cx, e.span, w_sink, sink, sink_ty, t.pieces[i]) }
+        if i < t.specs.len {
+            out := list(u8)
+            defer out.deinit()
+            j := usize(t.index[i])
+            arg := args[j]
+            spec := &t.specs[i]
+            r := if tir.is_default_spec(spec) { m.format_value(&out, arg.ty, vals.items[j], true) } else { m.format_spec(&out, arg.ty, vals.items[j], spec) }
+            r else msg => return !m.trap(arg.span, msg)
+            if out.items.len > 0 { try m.emit(a.cx, e.span, w_sink, sink, sink_ty, out.items) }
+        }
+    }
+    m.release(mk)
+}
+
 /// Passes `data` to the sink of a write.
 emit :: fn(m: ^Machine, cx: u32, span: source.Span, sink: Sink, sv: []const u8, sty: Ty, data: []const u8) -> Flow!() needs Run {
     addr := try m.alloc_mem(span, u64(data.len), 1, .Temp, true)

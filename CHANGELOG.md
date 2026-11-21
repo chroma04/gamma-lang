@@ -8,6 +8,13 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
+- **Formatting functions no longer get a copy per template.** A generic function whose
+  `template :: string` parameter is the template of its `@write`s (and is otherwise used
+  only as a run-time string), such as `str.format`, `List(u8).write` or a logging wrapper,
+  now has one body for each set of value types, which reads the template from a static
+  table when it runs; each call is still checked against its own template, with the same
+  errors as before. The compiler's own C is 13% smaller and it builds 8% faster from
+  scratch; formatting in a program is as fast as before or slightly faster.
 - **The interpreter is faster on hash maps, allocation and 128-bit integers**: `@hash` of
   an integer, comparisons and shifts of 128-bit integers, signed 128-bit division,
   widening to and truncating from 128 bits, and string literals no longer leave the
@@ -20,6 +27,17 @@ Versions and what each kind of change means are described in
 - **Smaller generated C**: every hash map type shares one growth function (the compiler's
   own C is 0.9% smaller), and Debug builds name the file of each call site through the
   static string trap reports already use instead of repeating its path.
+
+### Fixed
+
+- **A local constant that called the core library could fail to evaluate**, depending on
+  the order in which the compiler checked function bodies: `b: bool : s.starts_with("ab")`
+  in `main`, or a call of a standard library function that uses such a method, reported
+  that core library calls cannot be evaluated at compile time. The core library's bodies
+  now stay available while the program's own bodies are checked.
+- **`< <= > >=` on booleans, enums, tuples, arrays and strings in a constant** (§7.5) were
+  rejected as operators the compiler cannot evaluate; they now give the value the same
+  comparison has at run time.
 
 ## 0.3.0 - 2026-11-21
 

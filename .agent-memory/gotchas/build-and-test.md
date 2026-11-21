@@ -42,3 +42,10 @@
   `tail_lines` (the download-URL form is 403 here).
 - Force-push is refused by the permission classifier.
 - Check CI after each push; read PR notifications before assuming green.
+
+## Difftest rotating seeds
+- CI's "Differential tests / Rotating seeds" uses seeds 1000 + (run_number % 500) * 200 ..
+  +200, so a failure on main can be a latent bug a new window exposes. Reproduce:
+  `gamma build tools/difftest -o X; GAMMA_TEST_C=1 X --gamma <gamma> --start S --count 1
+  --cc gcc` (program kept in /tmp/difftest/seed-S/main.gm). s78: seed 10550 = local
+  constant calling core code (check_bodies parked core bodies) + const string `>`.

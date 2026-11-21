@@ -504,12 +504,20 @@ fn_name_at :: fn(cx: ^FnCx, span: source.Span) -> ?string needs Load {
 
 /// Splits the template of the `WriteDeferred` `e`, now a string, and its arguments
 /// (§21.6.1) for the instance, reporting a mismatch at the instantiating call (§16.1).
-/// `e` becomes the write.
+/// `e` becomes the write. In a body shared whatever the template (`check/share.gm`), the
+/// template is a hidden parameter: the write looks it up when it runs, and each template
+/// is checked against it by `share_instance`.
 resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
     .WriteDeferred(w) := e.kind else return
     span := mc.span
-    tys := &s.tys
     e.kind = .Aggregate(empty_slice(Expr))
+    if .Local(l) := w.template.kind and sites := mc.sites {
+        for x in mc.erased {
+            if x.table is l { sites.push((param: x.param, args: if a := w.args { a.ty } else { null }))! }
+        }
+        write_table(s, e, w)
+        return
+    }
     .Str(text) := w.template.kind else {
         s.error(span, "internal error: a template parameter without a string value")
         return
@@ -521,35 +529,9 @@ resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
             return
         }
     }
+    es := check_template(s, span, parsed, if a := w.args { a.ty } else { null }) else return
     n := parsed.specs.len
-    // The values are a tuple of one per placeholder (§21.6.1).
-    elems: ?[]const Ty = empty_slice(Ty)
-    if a := w.args {
-        elems = null
-        if .Tuple(es, _) := tys.kind(a.ty) { elems = es }
-    }
-    es := elems else {
-        a := w.args else return
-        s.error(span, str.format("the template has {}, but a `{}` is given (in an instantiation used here)", placeholders_text(n), s.show(a.ty))!)
-        return
-    }
     numbered := parsed.indices.len > 0
-    if numbered {
-        if msg := numbered_error(parsed, es.len) {
-            s.error(span, str.format("{} (in an instantiation used here)", msg)!)
-            return
-        }
-    } else if es.len is not n {
-        given := if es.len is 1 { "1 value is" } else { str.format("{} values are", es.len)! }
-        s.error(span, str.format("the template has {}, but {} given (in an instantiation used here)", placeholders_text(n), given)!)
-        return
-    }
-    for k in 0..n {
-        at := if numbered { parsed.indices[k] } else { k }
-        if msg := check_spec(s, &parsed.specs[k], es[at]) {
-            s.error(span, str.format("{} (in an instantiation used here)", msg)!)
-        }
-    }
     a := w.args else {
         e.kind = .Write(new(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: empty_slice(Expr)))!)
         return
@@ -563,6 +545,65 @@ resolve_write :: fn(s: ^Sema, mc: ^MonoCx, e: ^Expr) needs Load {
         fields.push(tir.mk(es[at], .Field(base, at.trunc(u32)), e.span)^)!
     }
     write := tir.mk(s.tys.unit(), .Write(new(tir.WriteExpr(sink: w.sink, pieces: parsed.pieces, specs: parsed.specs, args: fields.items))!), e.span)
+    stmts.push(.Expr(write))!
+    e.kind = .Block(new(tir.Block(stmts: stmts.items, tail: null, span: e.span))!)
+}
+
+/// The types of the values of a write of the template `parsed` given values of type
+/// `args` (a tuple of them; `null` for none), or `null` after reporting at `span` how
+/// they do not match it.
+check_template :: fn(s: ^Sema, span: source.Span, parsed: Template, args: ?Ty) -> ?[]const Ty needs Load {
+    tys := &s.tys
+    n := parsed.specs.len
+    // The values are a tuple of one per placeholder (§21.6.1).
+    elems: ?[]const Ty = empty_slice(Ty)
+    if a := args {
+        elems = null
+        if .Tuple(es, _) := tys.kind(a) { elems = es }
+    }
+    es := elems else {
+        a := args else return null
+        s.error(span, str.format("the template has {}, but a `{}` is given (in an instantiation used here)", placeholders_text(n), s.show(a))!)
+        return null
+    }
+    if parsed.indices.len > 0 {
+        if msg := numbered_error(parsed, es.len) {
+            s.error(span, str.format("{} (in an instantiation used here)", msg)!)
+            return null
+        }
+    } else if es.len is not n {
+        given := if es.len is 1 { "1 value is" } else { str.format("{} values are", es.len)! }
+        s.error(span, str.format("the template has {}, but {} given (in an instantiation used here)", placeholders_text(n), given)!)
+        return null
+    }
+    ok := true
+    for k in 0..n {
+        at := if parsed.indices.len > 0 { parsed.indices[k] } else { k }
+        if msg := check_spec(s, &parsed.specs[k], es[at]) {
+            s.error(span, str.format("{} (in an instantiation used here)", msg)!)
+            ok = false
+        }
+    }
+    return if ok { es } else { null }
+}
+
+/// The write `e` of `w`, whose template is the run-time table `w.template`: its values
+/// are each element of the tuple `w.args`, once.
+write_table :: fn(s: ^Sema, e: ^Expr, w: ^tir.WriteDeferredExpr) needs Load {
+    a := w.args else {
+        e.kind = .Write(new(tir.WriteExpr(sink: w.sink, pieces: empty_slice([]const u8), specs: empty_slice(tir.FmtSpec), args: empty_slice(Expr), table: w.template))!)
+        return
+    }
+    // Values that are not a tuple are an error of every template.
+    .Tuple(es, _) := s.tys.kind(a.ty) else return
+    stmts := list(tir.Stmt)
+    stmts.push(.Let(w.tmp, a))!
+    fields := list(Expr)
+    for i in 0..es.len {
+        base := tir.mk(a.ty, .Local(w.tmp), e.span)
+        fields.push(tir.mk(es[i], .Field(base, i.trunc(u32)), e.span)^)!
+    }
+    write := tir.mk(s.tys.unit(), .Write(new(tir.WriteExpr(sink: w.sink, pieces: empty_slice([]const u8), specs: empty_slice(tir.FmtSpec), args: fields.items, table: w.template))!), e.span)
     stmts.push(.Expr(write))!
     e.kind = .Block(new(tir.Block(stmts: stmts.items, tail: null, span: e.span))!)
 }

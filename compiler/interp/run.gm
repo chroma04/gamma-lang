@@ -367,7 +367,7 @@ ev_slow :: fn(m: ^Machine, a: Act, n: ^Node, dst: []u8) -> Flow!() needs Run {
         }
         .Resume(k, v) => try m.resume_(a, k, v, n)
         .Cancel(k) => try m.cancel_(a, k, n)
-        .Write(x) => try m.write_(a, x.sink, x.pieces, x.specs, x.args, n)
+        .Write(x) => if t := x.table { try m.write_table(a, x.sink, t, x.args, n) } else { try m.write_(a, x.sink, x.pieces, x.specs, x.args, n) }
         .With(w) => try m.with_(a, w, n, dst)
         .Leftover => return !m.trap(n.span, "internal error: an expression left over from generic checking")
     }

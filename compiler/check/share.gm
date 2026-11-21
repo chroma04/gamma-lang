@@ -1,0 +1,226 @@
+// Instances that share one body whatever their `@write` templates (§16.1, §21.6.1).
+//
+// A template is a compile-time `string` parameter, so a function such as `str.format`
+// would get an instance per template it is called with, and most of those differ only
+// in the text they write. When a generic function uses such a parameter only as the
+// template of `@write`s in its own body, its instances for the same other arguments share
+// one body: the template is a hidden run-time argument of it, a table of the template's
+// pieces (`Template`), and each of its writes looks the template up when it runs
+// (`WriteExpr.table`). Every instance is still checked for its template, at the call
+// that asks for it, and is kept as a function of its own whose body calls the shared one.
+
+/// The compile-time `string` parameters of generic function `f` that it uses as `@write`
+/// templates in its own body, and otherwise only as run-time values there (not in the
+/// functions written in it, not in a type, not passed on to another generic function, and
+/// not in a static assertion).
+template_params :: fn(s: ^Sema, f: u32) -> []const u32 needs Load {
+    if r := s.template_params.get(f) { return r }
+    out := list(u32)
+    def := s.defs.items[usize(f)]
+    if def.kind is .Named and b := def.body {
+        for g in s.fns.items[usize(f)].generics {
+            if only_templates(s, f, b, g) { out.push(g)! }
+        }
+    }
+    s.template_params.put(f, out.items)!
+    return out.items
+}
+
+/// Whether value parameter `g` of `f`, whose body is `body`, is written as a template at
+/// least once and used in no way that needs its value at compile time.
+only_templates :: fn(s: ^Sema, f: u32, body: ^Expr, g: u32) -> bool needs Load {
+    sub := [1]sema.Subst(sema.Subst(param: g, ty: sema.template_marker(s)))
+    u := TemplateUses(s: s, f: f, g: g, sub: sub[..], writes: 0, other: false, seen: list(u32))
+    defer u.seen.deinit()
+    scan_uses(&u, body, true)
+    return u.writes > 0 and not u.other
+}
+
+/// Whether `e` uses value parameter `g`.
+mentions_value :: fn(e: ^Expr, g: u32) -> bool {
+    if .ValueParam(p) := e.kind and p is g { return true }
+    return tir.any_child(e, fn(c: ^Expr) => mentions_value(c, g))
+}
+
+/// How `only_templates` finds the uses of `g` in `f`: `sub` replaces it.
+TemplateUses :: struct {
+    s: ^Sema
+    f: u32
+    g: u32
+    sub: []const sema.Subst
+    writes: usize
+    other: bool
+    /// The functions written in the body that were scanned.
+    seen: List(u32)
+}
+
+/// Counts the uses of `u.g` in `e`, in the body of `u.f` itself if `top`.
+scan_uses :: fn(u: ^TemplateUses, e: ^Expr, top: bool) needs Load {
+    if u.other { return }
+    s := u.s
+    match e.kind {
+        .WriteDeferred(w) => if .ValueParam(p) := w.template.kind and p is u.g {
+            if not top {
+                u.other = true
+                return
+            }
+            u.writes += 1
+            if .Fn(x) := w.sink { scan_uses(u, x, top) }
+            if a := w.args { scan_uses(u, a, top) }
+            return
+        }
+        .ValueParam(p) => if p is u.g and not top { u.other = true }
+        .Builtin(.StaticAssert(_), args) => for i in 0..args.len {
+            if mentions_value(&args[i], u.g) { u.other = true }
+        }
+        .Call(.Fn(c), _), .FnRef(c), .Closure(c) => {
+            // A call of `f` itself, or of an instance given `g`.
+            if c is u.f { u.other = true }
+            if inst := s.fns.items[usize(c)].instance {
+                for a in inst.args {
+                    if s.subst(a, u.sub) is not a { u.other = true }
+                }
+            }
+            // The functions written in the body: `g` must not be used there.
+            d := s.defs.items[usize(c)]
+            if d.nested and c not in u.seen.items {
+                u.seen.push(c)!
+                if nb := d.body { scan_uses(u, nb, false) }
+            }
+        }
+        _ => {}
+    }
+    tir.for_each_child(e, fn(x: ^Expr) { scan_uses(u, x, top) })
+}
+
+/// Produces the instance `req` of a function with template parameters `tps` as a call of
+/// the body its instances share, made the first time, after checking its templates.
+/// False if an argument for a template is not a string (an error reported elsewhere).
+share_instance :: fn(s: ^Sema, req: sema.MonoRequest, tps: []const u32) -> bool needs Load {
+    f := req.generic
+    generics := s.fns.items[usize(f)].generics
+    erased := list(Ty)
+    texts := list((param: u32, text: []const u8))
+    for i, g in enumerate(generics) {
+        if g in tps {
+            .Value(.Str(text)) := s.tys.kind(req.args[i]) else return false
+            texts.push((param: g, text: text))!
+            erased.push(sema.template_marker(s))!
+        } else {
+            erased.push(req.args[i])!
+        }
+    }
+    shared := s.shared_writes.get((f, erased.items)) else make_shared(s, req, tps, erased.items)
+    map := list(sema.Subst)
+    for i, g in enumerate(generics) { map.push(sema.Subst(param: g, ty: req.args[i]))! }
+    s.check_len_exprs(map.items, req.span)
+    // Each template is checked against every write of it, as an instance of its own is.
+    tables := list(Expr)
+    for t in texts.items {
+        parsed := match parse_template(t.text) {
+            .Ok(p) => p
+            .Bad(err) => {
+                s.error(req.span, str.format("invalid template (in an instantiation used here): {}", err.message)!)
+                continue
+            }
+        }
+        for site in shared.sites {
+            if site.param is t.param { _ = check_template(s, req.span, parsed, site.args) }
+        }
+        index := list(u32)
+        for k in 0..parsed.specs.len { index.push(if parsed.indices.len > 0 { parsed.indices[k].trunc(u32) } else { k.trunc(u32) })! }
+        table := new(tir.TemplateTable(pieces: parsed.pieces, specs: parsed.specs, index: index.items))!
+        tables.push(tir.mk(s.tys.intern(.Rawptr), .Template(table), req.span)^)!
+        tables.push(tir.mk(s.tys.string_ty(), .Str(t.text), req.span)^)!
+    }
+    // The instance's body passes its parameters on, then the templates.
+    def := s.defs.items[usize(f)]
+    sig := s.fns.items[usize(req.instance)]
+    locals := list(tir.LocalDecl)
+    for l in def.locals {
+        x := l
+        x.ty = s.subst(l.ty, map.items)
+        locals.push(x)!
+    }
+    span := if b := def.body { b.span } else { req.span }
+    args := list(Expr)
+    for p in def.params { args.push(tir.mk(locals.items[usize(p)].ty, .Local(p), span)^)! }
+    if tables.items.len is not 2 * texts.items.len { return true }
+    args.extend(tables.items)!
+    body := tir.mk(sig.ret, .Call(.Fn(shared.id), args.items), span)
+    s.set_inst_def(req.instance, tir.FnDef(kind: def.kind, params: def.params, locals: locals.items, body: body, parent: def.parent, nested: def.nested))
+    return true
+}
+
+/// The body shared by the instances of `req.generic` for the arguments `erased`: the
+/// generic body for them, with two parameters after the others for each template
+/// parameter of `tps`: its table (`rawptr`) and its text.
+make_shared :: fn(s: ^Sema, req: sema.MonoRequest, tps: []const u32, erased: []const Ty) -> sema.SharedWrite needs Load {
+    f := req.generic
+    gsig := s.fns.items[usize(f)]
+    def := s.defs.items[usize(f)]
+    map := list(sema.Subst)
+    for i, g in enumerate(gsig.generics) { map.push(sema.Subst(param: g, ty: erased[i]))! }
+    raw := s.tys.intern(.Rawptr)
+    params := list(sema.ParamInfo)
+    for p in gsig.params {
+        if p.generic is not null { continue }
+        q := p
+        q.ty = s.subst(p.ty, map.items)
+        params.push(q)!
+    }
+    for _ in tps {
+        params.push(sema.ParamInfo(name: "template", ty: raw, span: gsig.span, default: null, generic: null, rest: false))!
+        params.push(sema.ParamInfo(name: "template_text", ty: s.tys.string_ty(), span: gsig.span, default: null, generic: null, rest: false))!
+    }
+    sig := sema.FnSig(
+        name: gsig.name,
+        span: gsig.span,
+        module: gsig.module,
+        params: params.items,
+        ret: s.subst(gsig.ret, map.items),
+        effects: s.subst_effects(&gsig.effects, map.items),
+        generics: empty_slice(u32),
+        instance: sema.FnInstance(template: f, args: erased),
+    )
+    id := sema.add_shared_fn(s, sig, def.kind)
+    locals := list(tir.LocalDecl)
+    outer := s.mono_depth
+    s.mono_depth = req.depth
+    hidden := list((param: u32, table: u32, text: u32))
+    sites := list((param: u32, args: ?Ty))
+    mc := MonoCx(map: map.items, fn_map: list(FnPair), handler_map: list(FnPair), span: req.span, copying: false, locals: &locals, erased: empty_slice((param: u32, table: u32, text: u32)), sites: &sites)
+    // The functions written in the body belong to the shared one.
+    mc.fn_map.push(FnPair(from: f, to: id))!
+    for l in def.locals {
+        x := l
+        x.ty = mono_ty(s, &mc, l.ty)
+        locals.push(x)!
+    }
+    ps := list(u32)
+    ps.extend(def.params)!
+    for g in tps {
+        l := locals.items.len.trunc(u32)
+        locals.push(tir.LocalDecl(name: "template", ty: raw, mutable: false, span: gsig.span))!
+        locals.push(tir.LocalDecl(name: "template_text", ty: s.tys.string_ty(), mutable: false, span: gsig.span))!
+        hidden.push((param: g, table: l, text: l + 1))!
+        ps.push(l)!
+        ps.push(l + 1)!
+    }
+    mc.erased = hidden.items
+    body: ?^Expr = null
+    if b := def.body {
+        copy := tir.clone_expr(b)
+        mono_expr(s, &mc, copy)
+        body = copy
+    }
+    s.report_soa_errors(req.span)
+    s.mono_depth = outer
+    s.set_inst_def(id, tir.FnDef(kind: def.kind, params: ps.items, locals: locals.items, body: body, parent: def.parent, nested: def.nested))
+    for l in def.locals {
+        if not s.type_size_ok(s.subst(l.ty, map.items), req.span) { break }
+    }
+    shared := sema.SharedWrite(id: id, sites: sites.items)
+    s.shared_writes.put((f, erased), shared)!
+    return shared
+}

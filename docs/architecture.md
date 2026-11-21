@@ -304,7 +304,7 @@ stable text form, which tests of the compiler use.
 | function literals, captures and second-class rules | `check/fnlit.gm` |
 | `with`, handler literals and declarations, `resume`, `cancel`; effect operations | `check/handlers.gm`, `check/handler_decls.gm`, `check/perform.gm` |
 | iterators (a `for` over the core `enumerate` becomes the index loop over the slice, without a handler) | `check/iterators.gm` |
-| generic function calls and instances | `check/generic.gm` |
+| generic function calls and instances; instances that share one body whatever their `@write` templates | `check/generic.gm`, `check/share.gm` |
 | compile-time evaluation requests (`@static_assert`, constants, array lengths) | `check/consts.gm`, `check/eval_prepare.gm` |
 | continuations used exactly once (§14.2) | `check/cont_check.gm` |
 | pointers to stack memory that outlive it | `check/escape.gm`, `check/dangling.gm` |
@@ -863,8 +863,25 @@ one that calls the sink with a pointer and a length and one that formats a value
 passes it on. The second asks the runtime for a view of the value (`gm_format_view`): a
 string's own bytes, an integer's digits in a buffer on the stack, and only for other
 values text formatted into a heap buffer, so the common pieces of a template are written
-without allocating. Such functions have an instance per template (the template is a
-compile-time parameter), so in the compiler they were about a tenth of its C before.
+without allocating.
+
+**Shared template bodies.** A template is a compile-time parameter, so such functions
+would have an instance per template; in the compiler those instances were 18% of its C.
+Instead, a generic function that uses a `template :: string` parameter as the template of
+`@write`s in its own body, and otherwise only as a run-time `string` (not in the functions
+written in it, in a type, in a static assertion, or passed on to another generic function),
+has one body per set of other arguments (`check/share.gm`). That body takes two hidden
+parameters per template: a table of the template's pieces, specs and the value each
+placeholder writes (`tir.Template`; a static `gm_tmpl` in C, a numbered entry of the
+machine in the interpreter), and the template's text, which stands for its other uses
+(`template.len`). Its writes (`tir.WriteExpr.table`) loop over the table at run time
+through the same helpers as a write of a known template. Each instance remains a function
+of its own whose body calls the shared one, and each template is checked against every
+write of the shared body at the call that instantiates it, so diagnostics are what they
+would be with an instance per template. The compiler's C is 13% smaller, it builds 8%
+faster from scratch, and formatting in a program is no slower (a loop over a table costs
+about what the unrolled pieces did).
+
 For the same reason a generic function whose work depends on its type parameter only
 through the size of the type is a thin wrapper around one function on bytes (`List`'s
 growth, `regrow_raw` in `lib/core/list.gm`), and failed checks (an index or slice out of
