@@ -19,7 +19,7 @@ main :: fn() needs Out {
     back: isize = -3
     print("{} {}\n", (last + back)[0], last - p)
     print("{}\n", (p - p))
-    e := p.cast([^]u64)
+    e := p.cast([^]u16)
     print("{}\n", ((e + 1) - e))
     stepped()
 }

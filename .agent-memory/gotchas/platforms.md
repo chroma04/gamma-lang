@@ -60,3 +60,5 @@ relative TMPDIR). gamma links WASI unoptimized (clang would run wasm-opt itself)
   capability; at -O2 SROA turns a word read both as int and pointer into inttoptr (why
   blobs are typed per word, decisions/032). Test Safe traps at -O2: filcc drops accesses
   it can prove fail. filcc is superlinear in function size.
+- wasm32: frames and locals are only 4-aligned; a test casting a local `[N]i32` to
+  `[^]u64` traps there by stack-layout luck (pointer_arith.gm, s83).
