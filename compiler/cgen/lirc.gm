@@ -34,7 +34,7 @@ lir_unsupported :: fn(g: ^Gen, f: u32, func: ^const lir.Func) -> ?string needs s
     // A nested function may leave a loop of this one with a value (into `result`).
     if has_nested(g, f) {
         for l in func.loops {
-            if l.result is not null { return "a loop with a value, in a function with nested functions" }
+            if l.result is not null and l.brk is not l.cont { return "a loop with a value, in a function with nested functions" }
         }
     }
     for l in func.locals {
@@ -62,10 +62,7 @@ lir_inst_unsupported :: fn(g: ^Gen, func: ^const lir.Func, i: ^const lir.Inst) -
     match i.op {
         .Move(_), .Load(_), .AddrOf(_), .Store(_), .Str(_), .Return(_), .Br(_), .BrIf(_), .NoArm, .Unreachable, .Trap(_), .Assert(_) => return null
         .Un(_), .Eq(_) => return null
-        .Bin(_, _, a, _) => return match g.ty.repr(lir.value_type(func, a)) {
-            .Int(_, _, _), .Float(_), .Bool, .Ptr => null
-            _ => "a comparison of aggregates"
-        }
+        .Bin(_) => return null
         .Call(_) => return null
         .Check(_), .Coerce(_), .Variant(_), .Wrap(_), .MakeSlice(_), .IsPresent(_) => return null
         .Block(_, body), .Loop(_, body), .DebugOnly(body), .Defer(_, body) => return lir_list_unsupported(g, func, body)
@@ -78,10 +75,14 @@ lir_inst_unsupported :: fn(g: ^Gen, func: ^const lir.Func, i: ^const lir.Inst) -
         }
         .TagIs(_) => return null
         .In(_), .BitsGet(_), .BitsSet(_) => return "a test of a value's parts"
-        .Builtin(_, op, _) => return if lir_builtin(op) { null } else { "a builtin" }
+        .Builtin(_, op, _) => return if lir_builtin(op) { null } else { str.format("the builtin {}", op)! }
         .Write(_), .FnRef(_), .Template(_), .Closure(_) => return null
-        .HandlerRef(_) => return "a handler value"
-        .With(_), .Install(_), .Exit(_), .Resume(_), .Cancel(_), .Tir(_) => return "effects or exits"
+        .HandlerRef(_), .Install(_), .Exit(_), .Resume(_), .Cancel(_) => return null
+        .With(_, _, install, ?on, body) => {
+            if on is not null { return "`with … on`" }
+            return lir_list_unsupported(g, func, install) else lir_list_unsupported(g, func, body)
+        }
+        .Tir(_) => return "an escape to TIR"
     }
 }
 
@@ -90,14 +91,14 @@ lir_builtin :: fn(op: tir.Builtin) -> bool => match op {
     .Convert, .Trunc, .Round, .Floor, .Ceil, .Checked, .Sat, .Bits, .Cast, .Addr, .ToPtr, .PtrAdd, .PtrSub, .PtrDiff => true
     .Tag, .FromTag, .Min, .Max, .Clamp, .Abs, .AbsDiff, .IsNan, .IsInf, .IsFinite, .SignBit, .Sqrt, .Fma => true
     .Rotl, .Rotr, .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse, .Pow(_), .CstrLen, .Fence, .BlackBox, .Hash => true
-    .Unreachable, .Cover(_), .HeapAlloc, .HeapFree, .CopyElems => true
+    .Unreachable, .Cover(_), .HeapAlloc, .HeapFree, .CopyElems, .Sys(_), .AllocTag, .AllocCheck => true
     _ => false
 }
 
 lir_value_unsupported :: fn(g: ^Gen, v: lir.Value) -> ?string needs sema.Load {
-    .Word(t, bits) := v else return if v is .Big(_) { "a 128-bit constant" } else { null }
+    .Word(t, bits) := v else return null
     return match g.ty.repr(t) {
-        .Int(_, _, storage) => if storage > 8 { "a 128-bit constant" } else { null }
+        .Int(_, _, _) => null
         .Float(w) => if w is 16 { "an f16 constant" } else { null }
         .Bool, .Ptr => null
         _ => if bits is 0 { null } else { "a constant of this type" }
@@ -124,6 +125,17 @@ pub LirC :: struct {
     nested_fns: bool = false
     /// The blocks being translated, innermost last.
     open: List(OpenBlock)
+    /// The `with`s whose handlers are being installed, innermost last: the handler context
+    /// so far.
+    installing: List(Installing)
+}
+
+/// A `with` whose `install` list is being translated.
+Installing :: struct {
+    /// TIR's label of the `with`, and the handler context outside it and so far.
+    label: u32
+    outer: string
+    cur: string
 }
 
 /// A temporary not computed yet.
@@ -147,7 +159,7 @@ lir_body :: fn(fg: ^FnGen, func: ^const lir.Func) -> Unsup!() needs sema.Load {
     temps := make_fill(func.temps.len, "")!
     labels := list(string)
     for _ in 0..func.labels { labels.push(str.format("gm_lb{}", fg.fresh())!)! }
-    c := LirC(fg: fg, f: func, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock))
+    c := LirC(fg: fg, f: func, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock), installing: list(Installing))
     fg.lirc = &c
     // The function's body is a block: its defers run when it returns.
     fg.scopes.push(fg.block_scope())!
@@ -186,6 +198,10 @@ scan_defer_br :: fn(xs: []const lir.Inst, l: u32, found: ^(defer_: bool, br: boo
                 scan_defer_br(a, l, found)
                 scan_defer_br(b, l, found)
             }
+            .With(_, _, a, _, b) => {
+                scan_defer_br(a, l, found)
+                scan_defer_br(b, l, found)
+            }
             _ => {}
         }
     }
@@ -210,7 +226,62 @@ lc_relabel :: fn(c: ^LirC, xs: []const lir.Inst) needs Alloc {
                 c.lc_relabel(a)
                 c.lc_relabel(b)
             }
+            .With(l, _, a, _, b) => {
+                c.labels[usize(l)] = str.format("gm_lb{}", c.fg.fresh())!
+                c.lc_relabel(a)
+                c.lc_relabel(b)
+            }
             _ => {}
+        }
+    }
+}
+
+/// A jump to another frame (`lir.Exit`), as `break_expr`, `continue_expr` and
+/// `return_expr` make it.
+lc_exit :: fn(c: ^LirC, kind: lir.Exit, v: ?lir.Value) -> Unsup!() needs sema.Load {
+    fg := c.fg
+    match kind {
+        .Break(target) => match target {
+            .Label(levels, lbl) => {
+                if x := v and fg.is_with_label(levels, lbl) {
+                    vt := lir.value_type(c.f, x)
+                    if not fg.g.ty.is_never(vt) { fg.linef("{} = {};", fg.frame_field(levels, str.format("w{}", lbl)!), c.lc_val(x)) }
+                }
+                fr, _ := fg.frame_up(levels)
+                fg.start_exit(.Break, fr, str.format("{}", lbl)!, "0")
+            }
+            .InstallingWith => {
+                if x := v {
+                    vt := lir.value_type(c.f, x)
+                    if not fg.g.ty.is_void(vt) { fg.store(vt, "inst->result", c.lc_val(x)) }
+                }
+                fg.start_exit(.Break, "inst->with_frame", "inst->with_label", "0")
+            }
+        }
+        .Continue(target) => match target {
+            .Label(levels, lbl) => {
+                fr, _ := fg.frame_up(levels)
+                fg.start_exit(.Continue, fr, str.format("{}", lbl)!, "0")
+            }
+            // In a clause, `continue` ends the clause (the next iteration of a `for`).
+            .InstallingWith => {
+                fg.linef("F.ret = {};", fg.unit())
+                fg.start_exit(.Return, "(&F.h)", "0", "0")
+            }
+        }
+        .Return(levels) => {
+            ret := fg.target_ret(levels)
+            is_err := "0"
+            if x := v {
+                vt := lir.value_type(c.f, x)
+                xv := c.lc_val(x)
+                if fg.g.ty.kind(ret) is .Result(_) and not fg.g.ty.is_never(vt) { is_err = fg.res_is_err(ret, fg.addr_of(vt, xv)) }
+                flag := fg.tmp(fg.g.ty.bool_ty(), is_err)
+                if not fg.g.ty.is_never(vt) { fg.linef("{} = {};", fg.frame_field(levels, "ret"), xv) }
+                is_err = flag
+            }
+            fr, _ := fg.frame_up(levels)
+            fg.start_exit(.Return, fr, "0", is_err)
         }
     }
 }
@@ -322,7 +393,10 @@ lc_val :: fn(c: ^LirC, v: lir.Value) -> string needs sema.Load {
             if fg.g.opts.debug { fg.linef("memset(&{}, 0xAA, sizeof {});", n, n) }
             return n
         }
-        .Big(t, _) => return fg.zero(t)
+        .Big(t, bits) => {
+            .Int(signed, _, storage) := fg.g.ty.repr(t) else return fg.zero(t)
+            return str.format("(({})(((unsigned __int128){}ULL << 64) | {}ULL))", int_cty(signed, storage), (bits >> 64).trunc(u64), bits.trunc(u64))!
+        }
     }
 }
 
@@ -460,6 +534,8 @@ lc_builtin :: fn(c: ^LirC, span: source.Span, t: Ty, op: tir.Builtin, args: []co
             fg.linef("if ({} != 0) memmove({}, {}, {} * {});", n, slice_ptr(d), slice_ptr(s), n, fg.g.ty.size(elem))
             return fg.unit()
         }
+        .Sys(sop) => return fg.sys_values(t, sop, tys.items, vals.items)
+        .AllocTag, .AllocCheck => return fg.alloc_tag_values(span, op, tys.items, vals.items)
         _ => return try fg.builtin_values(span, t, op, tys.items, vals.items)
     }
 }
@@ -546,7 +622,20 @@ lc_inst :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
             lt := lir.value_type(c.f, a)
             x := c.lc_val(a)
             y := c.lc_val(b)
-            if op in (.Lt, .Le, .Gt, .Ge) {
+            if op in (.Lt, .Le, .Gt, .Ge) and not (fg.g.ty.repr(lt) in (.Int(_, _, _), .Float(_), .Bool, .Ptr)) {
+                // As `binary`: the ordering helper of the type.
+                less := fg.g.helpers.less_fn(&fg.g.ty, lt)
+                eq := fg.g.helpers.eq_fn(&fg.g.ty, lt)
+                pa := fg.addr_of(lt, x)
+                pb := fg.addr_of(lt, y)
+                cmp: string = match op {
+                    .Lt => str.format("{}({}, {})", less, pa, pb)!
+                    .Gt => str.format("{}({}, {})", less, pb, pa)!
+                    .Le => str.format("({}({}, {}) || {}({}, {}))", less, pa, pb, eq, pa, pb)!
+                    _ => str.format("({}({}, {}) || {}({}, {}))", less, pb, pa, eq, pb, pa)!
+                }
+                c.lc_set(d, str.format("(uint8_t){}", cmp)!)
+            } else if op in (.Lt, .Le, .Gt, .Ge) {
                 c.lc_set(d, str.format("({} {} {})", x, tir.binop_symbol(op), y)!)
             } else if .Float(_) := fg.g.ty.repr(lt) {
                 c.lc_set(d, str.format("({} {} {})", x, tir.binop_symbol(op), y)!)
@@ -827,6 +916,108 @@ lc_inst :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
                 fg.end_scope(popped, true)
             }
             fg.label(c.labels[usize(l)])
+        }
+        .With(l, tl, install, _, body) => {
+            // As `with_expr`: the handlers are nodes of the handler context, on the C stack
+            // while the body runs; a clause that leaves the `with` with a value writes it to
+            // `F.wN` and exits to the rung of the `with`'s scope.
+            result: ?u32 = null
+            for x in c.f.loops {
+                if x.brk is l { result = x.result }
+            }
+            fg.line("{")
+            fg.indent += 1
+            c.installing.push(Installing(label: tl, outer: fg.cx, cur: fg.cx))!
+            r0 := c.lc_list(install)
+            ins := c.installing.pop()?
+            try r0
+            saved := fg.cx
+            fg.cx = ins.cur
+            end := str.format("we{}", fg.fresh())!
+            c.open.push(OpenBlock(label: l, depth: fg.scopes.items.len))!
+            // A branch out of the body across a `defer` exits to a rung of its own: the
+            // `with`'s rung is for clauses, which leave the value in `F.wN`.
+            target := crosses_defer(body, l)
+            if target { fg.scopes.push(fg.with_scope(exit_label(l), c.labels[usize(l)]))! }
+            fg.scopes.push(fg.with_scope(tl, end))!
+            defers := has_defer(body)
+            if defers { fg.scopes.push(fg.block_scope())! }
+            r := c.lc_list(body)
+            if defers {
+                popped := fg.scopes.pop()?
+                k := popped.defers.items.len
+                while k > 0 {
+                    k -= 1
+                    d := popped.defers.items[k]
+                    if not d.is_err { fg.defer_body(null, d, false) }
+                }
+                fg.end_scope(popped, true)
+            }
+            scope := fg.scopes.pop()?
+            _ = c.open.pop()
+            fg.cx = saved
+            try r
+            fg.indent -= 1
+            fg.line("}")
+            // The rungs, inner first: the `with`'s (for clauses), then the one for branches.
+            fg.end_scope(scope, true)
+            if target {
+                popped := fg.scopes.pop()?
+                fg.end_scope(popped, true)
+            }
+            fg.label(c.labels[usize(l)])
+            if x := result { fg.linef("F.w{} = {};", tl, fg.local_lv(x)) }
+            fg.label(end)
+            if x := result { fg.linef("{} = F.w{};", fg.local_lv(x), tl) }
+        }
+        .Install(h) => {
+            w := &c.installing.items[c.installing.items.len - 1]
+            slot := str.format("(void *)&F.w{}", w.label)!
+            match h {
+                .Lit(hid) => {
+                    eref := fg.g.prog.handler_lit(hid).effect_
+                    n := str.format("wn{}", fg.fresh())!
+                    fg.linef("gm_node {} = {{.eff = {}, .kind = GM_LIT, .clauses = {}, .env = (void *)&F.h, .hctx = {}, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = NULL, .next = {}}};", n, fg.g.effect_id(&eref), fg.g.handler_table(hid), w.outer, w.label, slot, w.cur)
+                    w.cur = str.format("(&{})", n)!
+                }
+                .Value(hid, v) => {
+                    hv := fg.tmp(lir.value_type(c.f, v), c.lc_val(v))
+                    eref := fg.g.prog.handler_lit(hid).effect_
+                    n := str.format("wn{}", fg.fresh())!
+                    fg.linef("gm_node {} = {{.eff = {}, .kind = GM_LIT, .clauses = {}, .env = {}.env, .hctx = {}.cx, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = NULL, .next = {}}};", n, fg.g.effect_id(&eref), fg.g.handler_table(hid), hv, hv, w.label, slot, w.cur)
+                    w.cur = str.format("(&{})", n)!
+                }
+                .Decl(decls, v) => {
+                    hv := fg.tmp(lir.value_type(c.f, v), c.lc_val(v))
+                    outer := w.cur
+                    for d in decls {
+                        table := try fg.g.decl_table(d)
+                        eref := fg.g.prog.handler_decl(d).effect_
+                        n := str.format("wn{}", fg.fresh())!
+                        fg.linef("gm_node {} = {{.eff = {}, .kind = GM_DECL, .clauses = {}, .env = (void *)&{}, .hctx = {}, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = NULL, .next = {}}};", n, fg.g.effect_id(&eref), table, hv, outer, w.label, slot, w.cur)
+                        w.cur = str.format("(&{})", n)!
+                    }
+                }
+            }
+        }
+        .HandlerRef(d, _) => c.lc_set(d, str.format("((gm_hval){{(void *)&F.h, {}}})", fg.cx)!)
+        .Exit(kind, ?v) => try c.lc_exit(kind, v)
+        .Resume(k, v) => {
+            ka := c.lc_addr_of(k)
+            x := c.lc_val(v)
+            rp := str.format("rp{}", fg.fresh())!
+            fg.linef("void *{} = gm_resume(inst->fw, {}, {});", rp, ka, fg.g.src_loc(span))
+            vt := lir.value_type(c.f, v)
+            if fg.g.ty.is_void(vt) {
+                fg.linef("(void){};", rp)
+            } else {
+                fg.linef("GM_ST({}, {}, {});", fg.g.ty.cty(vt), rp, x)
+            }
+            fg.start_exit(.Resume, "(&F.h)", "0", "0")
+        }
+        .Cancel(k) => {
+            fg.linef("gm_cancel_cont(inst->fw, {}, {});", c.lc_addr_of(k), fg.g.src_loc(span))
+            fg.check_unwind()
         }
         .Defer(is_err, body) => {
             top := &fg.scopes.items[fg.scopes.items.len - 1]

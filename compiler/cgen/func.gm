@@ -131,7 +131,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     split_runs := not g.opts.debug_info and long_body(g, f)
     // The body from LIR, when `lirc.gm` translates all of it (see there).
     lf: ?lir.Func = null
-    if g.opts.lir and spec is null and not split_runs and not g.opts.debug_info and def.kind is not .Clause {
+    if g.opts.lir and spec is null and not split_runs and not g.opts.debug_info {
         func := g.lir_of(f)
         if why := g.lir_unsupported(f, &func) {
             g.lir_fallbacks.push(str.format("{}: {}", def.name, why)!)!

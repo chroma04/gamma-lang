@@ -8,10 +8,20 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   and `lir_unsupported` is null; else TIR, per function (gen_body in func.gm picks; extends
   in_frame with false for synthetic locals; spec clones, split_runs (long bodies), -g and
   Clause defs stay TIR). CI ubuntu job runs conformance/ examples/ selfhost/ with the flag.
-- Coverage: conformance run + examples 8567/9598 bodies; compiler self-build 8708/9135.
-  Left (conformance+examples): with/install/exit/resume/cancel 451, builtins 291 (Sys,
-  atomics, Fiber, Asm), 128-bit consts 104, loop-with-value in a nested-fn parent 57, Bin
-  `<` on blobs 42, vectors 34, In/Bits 32, HandlerRef 15.
+- Coverage (s82 end): conformance run + examples 11852/12108 bodies (clauses included now);
+  compiler self-build 9039/9284. Left (tests): with-on 68, vectors 34, atomics ~67 (atomic()
+  still takes TIR args), @fiber 24, In/Bits 34, f16 consts 5. Self-build left: In/Bits
+  233 (patterns.gm in_expr, bits.gm take TIR), builtins ~80.
+- with (no `on`): install list emits gm_node chain (Installing stack; Lit = env &F.h, hctx
+  outer cx; Value = hval env/cx; Decl as decl_table); body under with_scope(tir label, weN)
+  + block scope if defers; result: `F.wN = r` at the normal-end label, `r = F.wN` after weN
+  (clauses write F.wN). A Br out of the body across a defer gets its own with_scope rung
+  (exit_label) OUTSIDE the with scope; rungs emitted inner first (order bug fixed).
+  Exit/Resume/Cancel = lc_exit/fiber.gm logic with values. Clause defs now go through LIR.
+- Sys builtins: sys_values(t, sop, tys, vals); alloc_tag_values. 128-bit consts emitted;
+  Bin `<` on blobs via less_fn/eq_fn.
+- Measured again (s82 end): LIR-built compiler `check compiler` 2.0127e9 vs 1.9979e9 Ir
+  (+0.74%), C text −0.3%. Debug only; Fast/clang not measured yet (do before default-on).
 - Nested-fn parents: the brk Block of each TIR loop gets fg.loop_scope (rung tests the TIR
   label → goto brk/cont C labels); Closure op = gm_closure with &F.h.
 - defer: function body and each Block with a direct Defer get fg.block_scope; Defer pushes
@@ -38,9 +48,10 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   builder): LIR-built 2.002e9 vs TIR-built 1.988e9 Ir (+0.7%; was +11.8% before lazies,
   +3.75% before result destinations); the rest is mostly gcc inlining shifts (`inline`
   hint at ≤64 names; LIR bodies use more names). C text −0.5%. Fast/clang not measured.
-- Next for P4: With/Install/Exit/Resume/Cancel (with_expr in calls.gm, fiber.gm); In/Bits; 128-bit; outline/chain on LIR statement runs
-  (long bodies); spec clones (P3c); -g line directives; then default on, delete TIR body
-  code, refresh seed. P3b (borrow/purity) is still computed on TIR for the prologue — port
+- Next for P4: with-on (with_on outlines the body: needs an LIR sub-function), atomics,
+  @fiber, In/Bits, vectors; outline/chain on LIR statement runs (long bodies); spec clones
+  (P3c); -g line directives; measure Fast/clang; then default on, delete TIR body code,
+  refresh seed. P3b (borrow/purity) is still computed on TIR for the prologue — port
   when the TIR path goes.
 - Lowering wart seen in C: `for i in` binds through a match block with a `no-arm` trap
   after it (block{block{…;br}; no-arm}); harmless, could lower irrefutable bindings flat.

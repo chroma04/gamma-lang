@@ -443,8 +443,10 @@ needed, so `x is .V(p)` compares the tag and payload in place and a copy is a `m
 call whose large result is returned or stored in a local writes it there. `defer` and the
 loops of a function with nested functions use the same ladder as the TIR path: a block with a
 `defer` is a block scope whose deferred bodies are LIR lists, and a branch out of it to a
-block's end is an exit to a rung for that block. Bodies with `with` or exits between frames
-still take the TIR path.
+block's end is an exit to a rung for that block. A `with` installs its handler nodes and has
+the `with` scope of the TIR path, and exits between frames, `resume` and `cancel` are the
+same C. Bodies with `with … on`, vector values, atomics, `@fiber`, `in` or `#bits` fields
+still take the TIR path, as do specialized clones, very long bodies and `-g` builds.
 `gamma lir` prints it, and the `lir` suite checks that every conformance program and
 example lowers to well-formed LIR with nothing left to TIR.
 

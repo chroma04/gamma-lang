@@ -226,7 +226,17 @@ assert :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load
 
 /// `@name(args)`, a call of the runtime's `gm_name`, with slices passed as a pointer and a length.
 sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
+    vals := list(string)
+    tys := list(Ty)
+    for i in 0..args.len {
+        vals.push(try fg.expr(&args[i]))!
+        tys.push(args[i].ty)!
+    }
+    return fg.sys_values(e.ty, sop, tys.items, vals.items)
+}
+
+/// System operation `sop` of type `t` on the values `vals` of types `tys`.
+sys_values :: fn(fg: ^FnGen, t: Ty, sop: tir.SysOp, tys: []const Ty, vals: []const string) -> string needs sema.Load {
     // The arguments and variables come from the runtime as slices and strings.
     if sop is .EnvArgs {
         k := fg.fresh()
@@ -235,8 +245,7 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
     }
     if sop is .EnvVar {
         k := fg.fresh()
-        v := try fg.expr(&args[0])
-        addr := fg.addr_of(args[0].ty, v)
+        addr := fg.addr_of(tys[0], vals[0])
         fg.linef("const uint8_t *ev{}; size_t evn{};", k, k)
         fg.linef("bool evok{} = gm_env_var((const uint8_t *){}, {}, &ev{}, &evn{});", k, slice_ptr(addr), fg.slice_len(addr), k, k)
         s := fg.make_slice(fg.g.ty.string_ty(), str.format("ev{}", k)!, str.format("evn{}", k)!)
@@ -245,11 +254,10 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
         return fg.tmp(t, str.format("evok{} ? {} : {}", k, some, none)!)
     }
     cargs := list(string)
-    for i in 0..args.len {
-        a := &args[i]
-        v := try fg.expr(a)
-        if fg.g.ty.kind(a.ty) is .Slice(_, _) {
-            addr := fg.addr_of(a.ty, v)
+    for i in 0..vals.len {
+        v := vals[i]
+        if fg.g.ty.kind(tys[i]) is .Slice(_, _) {
+            addr := fg.addr_of(tys[i], v)
             cargs.push(str.format("(void *){}, {}", slice_ptr(addr), fg.slice_len(addr))!)!
         } else {
             cargs.push(v)!
@@ -265,21 +273,31 @@ sys_builtin :: fn(fg: ^FnGen, e: ^Expr, sop: tir.SysOp, args: []Expr) -> Unsup!s
 
 /// `@alloc_tag` and `@alloc_check`, which only debug builds keep.
 alloc_tag :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
-    loc := fg.loc(e)
     if not fg.g.opts.debug { return fg.unit() }
-    v := list(string)
-    for k in 0..3 { v.push(try fg.expr(&args[k]))! }
-    f := try fg.expr(&args[3])
-    fa := fg.addr_of(args[3].ty, f)
+    vals := list(string)
+    tys := list(Ty)
+    for i in 0..args.len {
+        vals.push(try fg.expr(&args[i]))!
+        tys.push(args[i].ty)!
+    }
+    return fg.alloc_tag_values(e.span, op, tys.items, vals.items)
+}
+
+/// `@alloc_tag` or `@alloc_check` (Debug builds) on the values `vals` of types `tys`.
+alloc_tag_values :: fn(fg: ^FnGen, span: source.Span, op: tir.Builtin, tys: []const Ty, vals: []const string) -> string needs sema.Load {
+    loc := fg.g.src_loc(span)
+    if not fg.g.opts.debug { return fg.unit() }
+    v := vals
+    fa := fg.addr_of(tys[3], vals[3])
     fp := slice_ptr(fa)
     fl := fg.slice_len(fa)
-    line := try fg.expr(&args[4])
-    col := try fg.expr(&args[5])
+    line := vals[4]
+    col := vals[5]
     if op is .AllocTag {
-        fg.linef("gm_alloc_tag({}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col)
+        fg.linef("gm_alloc_tag({}, {}, {}, {}, {}, {}, {});", v[0], v[1], v[2], fp, fl, line, col)
     } else {
         // The check traps at its own location, like the interpreter.
-        fg.linef("gm_alloc_check({}, {}, {}, {}, {}, {}, {}, {});", v.items[0], v.items[1], v.items[2], fp, fl, line, col, loc)
+        fg.linef("gm_alloc_check({}, {}, {}, {}, {}, {}, {}, {});", v[0], v[1], v[2], fp, fl, line, col, loc)
     }
     return fg.unit()
 }
