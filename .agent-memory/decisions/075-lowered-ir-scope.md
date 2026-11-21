@@ -21,7 +21,9 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
 - Sys builtins: sys_values(t, sop, tys, vals); alloc_tag_values. 128-bit consts emitted;
   Bin `<` on blobs via less_fn/eq_fn.
 - Measured again (s82 end): LIR-built compiler `check compiler` 2.0127e9 vs 1.9979e9 Ir
-  (+0.74%), C text −0.3%. Debug only; Fast/clang not measured yet (do before default-on).
+  (+0.74%), C text −0.3%. Fast (clang) executables, LIR vs TIR Ir: nbody +0.01%,
+  mandelbrot −0.07, life +1.07, julia −4.2, sha256sum −1.8, wordfreq −0.7 (short runs).
+- atomics now value-based inside builtin_values (atomic(span, t, op, tys, vals)).
 - Nested-fn parents: the brk Block of each TIR loop gets fg.loop_scope (rung tests the TIR
   label → goto brk/cont C labels); Closure op = gm_closure with &F.h.
 - defer: function body and each Block with a direct Defer get fg.block_scope; Defer pushes
@@ -48,8 +50,8 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   builder): LIR-built 2.002e9 vs TIR-built 1.988e9 Ir (+0.7%; was +11.8% before lazies,
   +3.75% before result destinations); the rest is mostly gcc inlining shifts (`inline`
   hint at ≤64 names; LIR bodies use more names). C text −0.5%. Fast/clang not measured.
-- Next for P4: with-on (with_on outlines the body: needs an LIR sub-function), atomics,
-  @fiber, In/Bits, vectors; outline/chain on LIR statement runs (long bodies); spec clones
+- Next for P4: with-on (with_on outlines the body: needs an LIR sub-function), @fiber,
+  In/Bits, vectors; outline/chain on LIR statement runs (long bodies); spec clones
   (P3c); -g line directives; measure Fast/clang; then default on, delete TIR body code,
   refresh seed. P3b (borrow/purity) is still computed on TIR for the prologue — port
   when the TIR path goes.

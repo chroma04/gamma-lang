@@ -83,12 +83,11 @@ builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!stri
         vals.push(try fg.expr(&args[i]))!
         arg_tys.push(args[i].ty)!
     }
-    if op in (.AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore) { return fg.atomic(e, op, args, vals.items) }
     return try fg.builtin_values(e.span, t, op, arg_tys.items, vals.items)
 }
 
 /// Builtin `op`, of type `t`, of the values `vals` of types `tys`: the builtins whose
-/// arguments are plain values (not the atomics, which `builtin` generates).
+/// arguments are plain values.
 builtin_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys: []const Ty, vals: []const string) -> Unsup!string needs sema.Load {
     loc := fg.g.src_loc(span)
     v0 := vals[0]
@@ -186,6 +185,7 @@ builtin_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys:
             r := fg.float_from(t, str.format("{}({}, {}, {})", f, v0, vals[1], vals[2])!)
             return fg.tmp(t, r)
         }
+        .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => return try fg.atomic(span, t, op, tys, vals)
         .Rotl, .Rotr => return fg.rotate(t, op, at, vals)
         .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse => return fg.bit_count(span, t, op, at, v0)
         .Pow(fl) => return fg.pow(span, t, fl, at, vals)
@@ -387,18 +387,16 @@ pow :: fn(fg: ^FnGen, span: source.Span, t: Ty, fl: ast.Flavor, at: Ty, vals: []
 }
 
 /// An atomic or volatile access.
-atomic :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr, vals: []string) -> Unsup!string needs sema.Load {
-    t := e.ty
+atomic :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys: []const Ty, vals: []const string) -> Unsup!string needs sema.Load {
     v0 := vals[0]
-    at := args[0].ty
-    .Ptr(_, elem) := fg.g.ty.kind(at) else return !unsupported(e.span, "this atomic")
+    at := tys[0]
+    .Ptr(_, elem) := fg.g.ty.kind(at) else return !unsupported(span, "this atomic")
     c := fg.g.ty.cty(elem)
     p := str.format("(({} *){})", c, v0)!
     ords := list(string)
-    for i in 1..args.len {
-        x := &args[i]
-        if fg.g.ty.kind(x.ty) is not .Adt(_, _) { continue }
-        a := fg.addr_of(x.ty, vals[i])
+    for i in 1..tys.len {
+        if fg.g.ty.kind(tys[i]) is not .Adt(_, _) { continue }
+        a := fg.addr_of(tys[i], vals[i])
         ords.push(str.format("gm_ord[GM_LD(uint8_t, {})]", a)!)!
     }
     match op {

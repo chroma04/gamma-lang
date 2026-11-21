@@ -92,6 +92,7 @@ lir_builtin :: fn(op: tir.Builtin) -> bool => match op {
     .Tag, .FromTag, .Min, .Max, .Clamp, .Abs, .AbsDiff, .IsNan, .IsInf, .IsFinite, .SignBit, .Sqrt, .Fma => true
     .Rotl, .Rotr, .Clz, .Ctz, .Popcount, .Bswap, .Bitreverse, .Pow(_), .CstrLen, .Fence, .BlackBox, .Hash => true
     .Unreachable, .Cover(_), .HeapAlloc, .HeapFree, .CopyElems, .Sys(_), .AllocTag, .AllocCheck => true
+    .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => true
     _ => false
 }
 
