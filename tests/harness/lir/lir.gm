@@ -1,0 +1,73 @@
+//! Tests of LIR, the lowered form of function bodies (`gamma lir`).
+//!
+//! - `tests/lir/<name>.gm` is lowered with `gamma lir` (run in `tests/lir/`, so the dump
+//!   names files without a directory) and the output must equal `tests/lir/<name>.lir`.
+//!   `BLESS=1` rewrites those files from the output.
+//! - Every program of `tests/conformance/run/` and `examples/` is lowered too: the compiler
+//!   must not fail, and the LIR verifier must find nothing wrong (no line starting `!`).
+//!   A program the checker rejects (a test of a compile error) is skipped. Each program is a
+//!   test, named `lowers/<path>`.
+
+fs :: import "std/fs"
+kit :: import "../kit"
+path :: import "std/path"
+str :: import "std/str"
+
+GOLDEN_DIR :: "tests/lir"
+
+pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
+    golden := list(string)
+    for r in fs.entries(kit.join(cfg.root, GOLDEN_DIR)) {
+        e := r else break
+        if path.extension(e.name) is "gm" { golden.push(str.format("{}", e.name)!)! }
+    }
+    golden.items.sort()
+    for name in golden.items { out.push(kit.Test(name: str.format("golden/{}", name)!, run: golden_one, param: name))! }
+    programs := list(string)
+    programs_in(kit.join(cfg.root, "tests/conformance/run"), &programs)
+    programs_in(kit.join(cfg.root, "examples"), &programs)
+    programs.items.sort()
+    for p in programs.items {
+        rel := path.relative_to(p, cfg.root) else p
+        out.push(kit.Test(name: str.format("lowers/{}", rel)!, run: lowers_one, param: rel))!
+    }
+}
+
+/// The programs below `dir`: its `.gm` files, and the `main.gm` of each directory in it.
+programs_in :: fn(dir: string, out: ^List(string)) needs Alloc + Fs {
+    for r in fs.entries(dir) {
+        e := r else return
+        p := kit.join(dir, e.name)
+        if e.kind is .Dir {
+            m := kit.join(p, "main.gm")
+            if fs.exists(m) { out.push(m)! }
+        } else if path.extension(e.name) is "gm" {
+            out.push(p)!
+        }
+    }
+}
+
+golden_one :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := t.repo(GOLDEN_DIR)
+    c := t.gamma_in(dir, [_]string("lir", t.param))
+    out := try t.run(c)
+    try t.check(out.success(), "gamma lir {} failed:\n{}", t.param, out.err)
+    stem := t.param[0..t.param.len - 3]
+    if d := try t.golden("the LIR", kit.join(dir, str.format("{}.lir", stem)!), out.out) { return !t.fail("{}", d) }
+    return ()
+}
+
+lowers_one :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    c := t.gamma_in(t.cfg.root, [_]string("lir", t.param))
+    out := try t.run(c)
+    if not out.success() {
+        try t.check(not str.contains(out.err, "internal error") and str.contains(out.err, "error"), "gamma lir {} failed:\n{}", t.param, out.err)
+        return !t.skip("the checker rejects it")
+    }
+    faults := list(string)
+    for l in kit.split_lines(out.out) {
+        if l.starts_with("!") { faults.push(l)! }
+    }
+    try t.check(faults.items.len is 0, "the verifier found:\n{}", str.join(faults.items, "\n")!)
+    return ()
+}

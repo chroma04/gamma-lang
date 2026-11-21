@@ -1,0 +1,30 @@
+// `match` and `if :=`: pattern tests leave the arm's block, bindings are stores.
+Shape :: union {
+    Circle: f64
+    Rect: (w: f64, h: f64)
+    Empty
+}
+
+area :: fn(s: Shape) -> f64 => match s {
+    .Circle(r) => 3.0 * r * r
+    .Rect(w, h) if w > 0 => w * h
+    .Empty, .Rect(_) => 0
+}
+
+classify :: fn(n: i32) -> u8 => match n {
+    0 => 0
+    1..=9 => 1
+    _ => 2
+}
+
+first :: fn(x: ?i32, y: u8!i32) -> i32 {
+    if v := x { return v }
+    if r := y { return r }
+    return -1
+}
+
+main :: fn() {
+    _ = area(.Circle(1))
+    _ = classify(5)
+    _ = first(null, 3)
+}

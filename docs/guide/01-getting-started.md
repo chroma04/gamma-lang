@@ -108,6 +108,7 @@ gamma parse --dump file.gm check the syntax and print the syntax tree
 gamma modules file.gm      list the modules a program loads and what each imports
 gamma decls file.gm        print what each top-level declaration of a program denotes
 gamma tir file.gm          check a program and print the typed form of its functions
+gamma lir file.gm          check a program and print its functions lowered for the back ends
 gamma help                 print usage
 gamma version              print the compiler version
 ```

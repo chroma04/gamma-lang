@@ -1,0 +1,87 @@
+fn count@control.gm:2:1 escapes 0
+  local 0 n: u32 param
+  local 1 total: u32
+  local 2 i: u32
+  local 3 j: u32
+  temp 0: u32
+  temp 1: u32
+  temp 2: bool
+  temp 3: u32
+  temp 4: u32
+  temp 5: u32
+  temp 6: u32
+  temp 7: bool
+  temp 8: u32
+  temp 9: u32
+  temp 10: u32
+  temp 11: u32
+  temp 12: bool
+  temp 13: u32
+  temp 14: bool
+  temp 15: u32
+  temp 16: u32
+  temp 17: u32
+  temp 18: u32
+  ret u32
+  store l1, 0:u32
+  store l2, 0:u32
+  block @0
+    loop @1
+      %0 = load l2
+      %1 = load l0
+      %2 = Lt %0, %1
+      br-unless %2 @0
+      block @2
+        %3 = load l2
+        %4 = Add(Checked) %3, 1:u32
+        store l2, %4
+        %5 = load l2
+        %6 = Rem %5, 2:u32
+        %7 = is %6, 0:u32
+        if %7
+          br @2
+        store l3, 0:u32
+        block @3
+          loop @4
+            br-unless 1:bool @3
+            block @5
+              %8 = load l3
+              %9 = Add(Checked) %8, 1:u32
+              store l3, %9
+              %10 = load l3
+              %11 = load l2
+              %12 = Gt %10, %11
+              if %12
+                br @3
+              %13 = load l1
+              %14 = Gt %13, 100:u32
+              if %14
+                br @0
+              %15 = load l1
+              %16 = load l3
+              %17 = Add(Checked) %15, %16
+              store l1, %17
+  %18 = load l1
+  return %18
+fn cleanup@control.gm:19:1 escapes 0
+  local 0 flag: bool param
+  local 1 x: u8
+  temp 0: bool
+  temp 1: u8
+  ret u8
+  block @0
+    store l1, 1:u8
+    defer
+      store l1, 2:u8
+    %0 = load l0
+    if %0
+      %1 = load l1
+      return %1
+    return 3:u8
+fn main@control.gm:26:1 escapes 0
+  temp 0: u32
+  temp 1: u8
+  ret ()
+  %0 = call fn count (10:u32)
+  %1 = call fn cleanup (1:bool)
+  return zero:()

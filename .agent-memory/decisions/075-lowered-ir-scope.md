@@ -1,6 +1,34 @@
-# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); PROPOSED, not started
+# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0 done in s79
 
-User ask (after 074): "scope out the lowered IR". Nothing implemented. Read 074 first.
+User asks (after 074): "scope out the lowered IR", then "start on the plan with P0 …
+we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 first.
+
+## State after P0 (s79) — start P1 here
+- compiler/lir/: lir.gm (types, place_type, value_type, dst_of), lower.gm (Ctx/context,
+  lower), verify.gm (verify = structure + load/store/bounds types; verify_structure;
+  unit tests), dump.gm (program_dump for `gamma lir`, same fn set as `gamma tir` +
+  instances; `!` lines = verifier faults). main.gm Command.Lir. Suite `lir`
+  (tests/harness/lir: golden tests/lir/*.gm → .lir with BLESS=1; `lowers/<path>` for
+  every tests/conformance/run program and example, ~5 s total).
+- Decisions taken in P0 (beyond the design below): places = base + projection list;
+  `Elem` only on arrays, `Step` = pointer arithmetic (a many-pointer's element may be an
+  array: found by the type checks); `Payload(off)` for optional/result(ok AND err)/union
+  payloads (place_type gives up below result/union payloads); index Values may be any
+  integer type (u8..u128), length is usize; `Tir` escape for everything not lowered
+  (escape() marks locals addressed by AddrOf/array Slice inside the escaped subtree);
+  a TIR Block becomes a `Block` op only when it has defers; loops are
+  `brk: { loop { conds; cont: { body }; step } }` so `continue` = `br cont`;
+  `match` = `end: { a0: { tests→br a0; body; br end } … no-arm }`; if-let/cond chains =
+  `end: { els: { conds→br els; then; br end } else }`; single bool `if` = `If` op.
+  `try` levels>0, `break`/`continue`/`return` with levels>0 and InstallingWith escape.
+- Coverage (sweep of conformance run + examples incl. the std functions they use):
+  542,355 instructions, 2,331 escapes (1 in 230): with 621, builtin (not by_value:
+  Assert/Sys/Get…/Asm/Fiber/Cover/Unreachable/StaticAssert) 660, constants 514 (u128,
+  f16, untyped), non-local break/return/continuation ~310, the rest small. 0 verifier
+  faults. Scratch sweep: run `gamma lir` per file, grep `^!` and `tir <kind>$`.
+- P1 next: the VM selector LIR → Ins (per function; escapes → lower the TIR subtree
+  with code.gm and EvalW it, as today). Lower `with` first (needed for `for` over
+  iterators), then non-local exits, then builtins. Keep `Tir` until P2 deletes the tree.
 
 ## Problem, in lines of code (compiler/, s79)
 Function bodies are lowered three times, by hand, from TIR (a typed tree):
@@ -102,6 +130,5 @@ interp's second executor and add check elimination.
   keep that a selector decision, not a LIR one.
 - Seed churn: P4 changes all generated C; do it in one PR with the seed refresh.
 
-## Open questions for the user (not blocking P0)
-- Is P5 (LLVM) wanted at all, or only P0–P4?
-- OK to spend ~10–15 sessions with roadmap §1/§3 work paused?
+## Questions for the user
+- Answered s79: P5 not wanted; the detour (roadmap paused) is fine.

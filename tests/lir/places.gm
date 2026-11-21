@@ -1,0 +1,23 @@
+// Places: fields, array and slice elements (with their bounds checks), dereferences, a
+// local whose address is taken and one a function literal captures.
+P :: struct { x: i32, y: i32 }
+
+sum :: fn(xs: []const i32) -> i32 {
+    s: i32 = 0
+    for i in 0..xs.len { s += xs[i] }
+    return s
+}
+
+poke :: fn(p: ^P, a: ^[4]i32) {
+    p.y = a[2]
+    a[0] = p.x
+}
+
+main :: fn() {
+    p := P(x: 1, y: 2)
+    arr := [4]i32(1, 2, 3, 4)
+    poke(&p, &arr)
+    n: i32 = 0
+    add :: fn(k: i32) { n += k }
+    add(sum(arr[..]))
+}

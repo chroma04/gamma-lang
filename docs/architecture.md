@@ -21,6 +21,7 @@ AST
   │                          exhaustiveness
   ▼
 TIR                          typed intermediate representation (tir/)
+  ├─▶ lir/                   lowered function bodies for the back ends (not yet consumed)
   ├─▶ eval/                  compile-time evaluation (spec §17)
   ├─▶ interp/                interpreter: --backend=interp (run, test, bench), gamma repl
   └─▶ cgen/                  C code generation → system C compiler → executable
@@ -96,6 +97,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/check/` | checking function bodies and lowering them to TIR: expressions, calls, methods, patterns, `match`, exhaustiveness, literal inference, effects, handlers, iterators, generics, escape and dangling-pointer checks, continuations, `@stack_size`, format templates, vectors; the `gamma tir` dump |
 | `compiler/tir/` | the typed intermediate representation, compile-time values, deep copies for generic instances |
 | `compiler/eval/` | compile-time evaluation (spec §17) over TIR |
+| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends: its instructions (`lir.gm`), the lowering (`lower.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
 | `compiler/interp/` | the interpreter |
 | `compiler/cgen/` | the C back end |
 | `compiler/driver/` | the C toolchain and target selection, native builds, the cache of runtimes and programs, library paths, the interpreter entry, the options and the table of command-line options (`flags.gm`), from which the usage text is generated |
@@ -426,6 +428,48 @@ budget, `#fuel`, the trap messages and the compile-time call stack. Its values
 (`tir/value.gm`) keep their structure, with pointers as places in cells; the C back end turns
 them into static storage and the interpreter lays them out in its memory.
 
+## The lowered form (LIR)
+
+The interpreter and the C back end each lower function bodies from TIR themselves, with
+analyses of their own. `compiler/lir/` is the lowering they are being moved onto: one form
+of a checked, monomorphic body that both can run or translate directly, and on which
+analyses such as the removal of checks a loop's range proves can be done once. No back end
+consumes it yet; `gamma lir` prints it, and the `lir` suite checks that every conformance
+program and example lowers to well-formed LIR.
+
+- **Structure** (`lir.gm`). A body is a list of instructions, structured as in
+  WebAssembly: `Block`, `Loop` and `If` hold lists of their own, and control leaves a
+  block only by falling off its end or by `Br`/`BrIf` to its label (a loop runs again when
+  its body falls off the end). Structure is kept, rather than a graph of basic blocks,
+  because the C back end splits long functions by runs of statements and needs to see them,
+  and because the interpreter's compiler already turns structure into jumps. A `Defer`
+  belongs to the block it is in and runs whenever that block is left.
+- **Values.** The locals are TIR's (same indices), then those lowering adds for the value
+  of a block, `if`, `match` or `and`/`or` and for an operand it must address; locals are
+  written by `Store` to a place, any number of times. Every other value is a temporary,
+  written by exactly one instruction and read only after it, in the same list or a list
+  nested in a later instruction. So the order of evaluation (§4.7, §7) is explicit, and a
+  back end never needs to know which operands may change which.
+- **Places** are a base (a local, a local of an enclosing function, a global, a constant,
+  what a temporary points to) and projections: a field at its offset, an element of an
+  array (`Elem`), a step through the sequence a pointer starts (`Step`, for slices and
+  many-pointers), a dereference, the payload of an optional, result or union value.
+- **Implicit operations are instructions**: bounds and slice range checks (`Check`), the
+  unwrap check, the tests and bindings of patterns (a `match` is a block per arm, left
+  when the arm's pattern fails), and integer arithmetic, which traps as its TIR operator
+  does.
+- **Escapes.** Lowering is total: a construct it does not handle yet (`with`, `break` and
+  `return` out of a function literal, continuations, the builtins that do not take the
+  values of their arguments, a few constants) is kept as a `Tir` instruction holding the
+  TIR expression, for a tree evaluator to run whole; `Func.escapes` counts them. Over the
+  conformance programs and examples (with the library functions they use), about one
+  instruction in 230 is an escape, `with` and builtins most of them.
+- **Verification** (`verify.gm`). The verifier checks the rules above (temporaries
+  written once and read where their write is visible, branches to enclosing blocks only and
+  never out of a `defer`'s body, a `Defer` directly in a block) and the types of loads and
+  stores against the type of their place (`place_type`). `gamma lir` prints its findings
+  after each function, on lines starting with `!`.
+
 ## The interpreter
 
 `--backend=interp` (`gamma run`, `test`, `bench`) and `gamma repl` run the program in the interpreter
@@ -573,7 +617,11 @@ builds use `clang` when it is on `PATH` (not on Windows; `OPTIMIZING_CC`): at `-
 compiled the compiler's C in 32 s instead of gcc's 46 s, and that compiler checked
 programs 15% faster, wrote C 4% faster and was 19% smaller. On small programs the two were within 15% of each
 other either way. Debug builds keep `cc`, because Clang's `-Og` is close to `-O1` and
-compiled small programs 13–50% slower than gcc's. `bootstrap/build.sh` makes the same choice.
+compiled small programs 13–50% slower than gcc's. (`bootstrap/build.sh` compiles the seed
+with `cc`; the compiler it builds then makes this choice for its own builds.) On targets
+other than x86-64, Clang compiles a checked multiplication of `i128`s to a call of
+`__muloti4`, which only its own support library has, and Linux links libgcc: the runtime
+defines a weak `__muloti4` there (`gm_muloti4`), which gives way to compiler-rt's.
 The
 compilation target is decided before semantic analysis, because layouts and the `target`
 module depend on it: the default compiler (`cc`, or the `clang` chosen this way) means the host, and any other toolchain is asked

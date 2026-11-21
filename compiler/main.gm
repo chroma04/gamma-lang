@@ -40,6 +40,7 @@ fix :: import "./fix"
 fs :: import "std/fs"
 lint :: import "./lint"
 linting :: import "./linting"
+lir :: import "./lir"
 load :: import "./load"
 lsp :: import "./lsp"
 parse :: import "./parse"
@@ -64,6 +65,7 @@ commands:
   modules load a program's modules without checking them and print the module graph
   decls   resolve a program's declarations without checking bodies and print them
   tir     check a program and print the typed program the checker produces
+  lir     check a program and print its functions lowered for the back ends (LIR)
   check   type-check a program (a .gm file or a module directory)
   doc     write the API documentation of a module as Markdown or HTML (gamma doc --help)
   lint    check a package with its tests and report the findings of the lint rules
@@ -221,6 +223,7 @@ command_named :: fn(name: string) -> driver.Command needs Alloc + Env + Err {
         "modules" => .Modules
         "decls" => .Decls
         "tir" => .Tir
+        "lir" => .Lir
         "check" => .Check
         "lint" => .Lint
         "fix" => .Fix
@@ -539,7 +542,7 @@ load_program :: fn(input: string, in_opts: driver.Options) -> u8 needs Alloc + C
                 } else {
                     // `tir` checks a root without `main` as a library, with its tests, as
                     // `gamma tir` does; `test` and `bench` check the tests.
-                    tests := opts.command in (driver.Command.Test, driver.Command.Bench) or (opts.command is .Tir and l.lookup(m, "main") is null)
+                    tests := opts.command in (driver.Command.Test, driver.Command.Bench) or (opts.command in (driver.Command.Tir, driver.Command.Lir) and l.lookup(m, "main") is null)
                     check.check_program(&s, m, tests)
                     errors := diags.has_errors()
                     // The diagnostics of checking come first, then what the back end says.
@@ -548,6 +551,7 @@ load_program :: fn(input: string, in_opts: driver.Options) -> u8 needs Alloc + C
                     match opts.command {
                         .Test, .Bench => { status = testing.run(&s, root, opts) }
                         .Tir => Out.write(check.tir_dump(&s))
+                        .Lir => Out.write(lir.program_dump(&s))
                         .Build => {
                             if not driver.build(&s, m, root, opts) { status = 1 }
                         }

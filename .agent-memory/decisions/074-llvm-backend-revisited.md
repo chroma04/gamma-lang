@@ -95,7 +95,11 @@ exit/{none,tls,swift}.c micro-benchmarks; seed compiled with `-flto=thin` + `-fu
 Interleaved best-of-12 wall (gcc → clang → clang+ThinLTO): `check compiler` 702 → 597 →
 610 ms; `--emit-c compiler` 1582 → 1517 → 1457 ms. The earlier "−23%" was one noisy run.
 - KEPT clang for Checked/Fast without CC (toolchain.gm OPTIMIZING_CC, load.optimizing_cc,
-  Toolchain.host = chosen for host so no `-dM -E` probe; build.sh same). Debug keeps cc:
+  Toolchain.host = chosen for host so no `-dM -E` probe). build.sh keeps `cc` for the
+  seed: the seed's runtime predates the weak __muloti4 (below), so clang-compiling the
+  seed failed to link on aarch64 CI (refresh the seed before switching build.sh).
+  Runtime gm_muloti4 + weak __muloti4 (clang, not x86-64/Apple/Windows): clang lowers
+  i128 mul-overflow to compiler-rt's __muloti4; Linux links libgcc. rt_test checks it. Debug keeps cc:
   clang -Og built json_query/sha256sum/life 13–50% slower (783→1061, 475→524, 259→387 ms).
 - KEPT ThinLTO for split optimized builds (native.gm thin_lto/lto_link_flags; clang +
   ld.lld + host + cache; lld cache in <cache>/thinlto, 1 GiB, 1 week; `cache clean --all`

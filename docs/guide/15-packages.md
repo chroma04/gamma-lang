@@ -301,6 +301,30 @@ fn main@square.gm:5:1 named
 
 The format is meant for comparing compilers (the self-hosted compiler is tested against it) and for looking at what the checker made of a program; it is not stable across versions.
 
+`gamma lir` checks the program the same way and prints its functions lowered one step further, into the form the back ends are being moved onto (LIR): a list of instructions per function, with every operand computed into a numbered temporary first, bounds checks and the tests of patterns written out, and blocks and loops that are left by branching to their labels. Instances of generic functions are printed (the generic functions themselves are not), and a line starting with `!` after a function reports a fault in the lowering, which is a compiler bug:
+
+```text
+$ gamma lir square.gm
+fn square@square.gm:1:1 escapes 0
+  local 0 x: i32 param
+  temp 0: i32
+  temp 1: i32
+  temp 2: i32
+  ret i32
+  %0 = load l0
+  %1 = load l0
+  %2 = Mul(Checked) %0, %1
+  return %2
+fn main@square.gm:5:1 escapes 0
+  temp 0: i32
+  ret ()
+  %0 = call fn square (7:i32)
+  write perform Out.0 2 pieces (%0)
+  return zero:()
+```
+
+`escapes` counts the expressions the lowering does not handle yet, which it keeps whole as `tir` instructions. Like `gamma tir`, the format is not stable across versions.
+
 ## Common mistakes
 
 > - **Forgetting to commit `gamma.lock`.** Without it, a fresh checkout resolves again and can pick newer revisions.
