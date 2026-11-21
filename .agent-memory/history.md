@@ -41,3 +41,6 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
   erased HashMap growth, GM_BT_AT; dropped gm_copy, consts block copy, single-unit release.
 - s78: template sharing (073): one body per value types for template-parameter functions
   (str.format, List.write, print wrappers); compiler C −13%, cold build −8%.
+- s79–s80: LIR (075) P0 (compiler/lir, `gamma lir`) and P1a (word-only bodies from LIR).
+- s81: LIR P1+P2: lowering total (with/exit/assert/bits/…); interp selector covers every
+  body (slots, generic Gen ins, sub-codes); tree evaluator, code.gm, vm_compile deleted.

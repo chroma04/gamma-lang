@@ -1,69 +1,5 @@
-// Calls, performing operations, `with`, the default handlers of the
-// ambient effects and formatted output.
-
-/// A call of function `f` with the arguments `args`: their values go straight to the
-/// callee's frame storage.
-call_node :: fn(m: ^Machine, a: Act, f: u32, args: []^Node, n: ^Node, dst: []u8) -> Flow!() needs Run {
-    info := m.fn_info(f)
-    body := info.body else return m.call_missing(n.span, f)
-    if args.len is not info.params.len { return !m.trap(n.span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len, info.params.len)!) }
-    if info.cost > sema.MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
-    mk := m.mark()
-    store := m.tmp(info.frame_size)
-    // Not `enumerate`: an iterator costs a call per element.
-    i: usize = 0
-    while i < args.len {
-        x := args[i]
-        off := us(info.offsets[us(info.params[i])])
-        i += 1
-        m.ev(a, x, store[off..off + us(x.size)]) else fl => {
-            m.release(mk)
-            return !fl
-        }
-    }
-    r := m.enter(n.span, f, info, body, store, null, a.cx, null, false, dst)
-    m.release(mk)
-    return r
-}
-
-ev_perform :: fn(m: ^Machine, a: Act, effect_: types.EffectRef, op: u32, args: []^Node, n: ^Node, dst: []u8) -> Flow!() needs Run {
-    mk := m.mark()
-    // The argument values go on a stack shared by all calls: the callee copies them
-    // before anything else can push.
-    base := m.argv.items.len
-    for x in args {
-        b := m.tmp(x.size)
-        m.ev(a, x, b) else f => {
-            m.argv.truncate(base)
-            return !f
-        }
-        m.argv.push(b)!
-    }
-    r := m.perform(a.cx, n.span, &effect_, op, m.argv.items[base..m.argv.items.len], dst)
-    m.argv.truncate(base)
-    try r
-    m.release(mk)
-}
-
-ev_call_value :: fn(m: ^Machine, a: Act, callee: ^Node, args: []^Node, n: ^Node, dst: []u8) -> Flow!() needs Run {
-    mk := m.mark()
-    // The callee first, then the arguments in order.
-    cv := m.tmp(callee.size)
-    try m.ev(a, callee, cv)
-    base := m.argv.items.len
-    for x in args {
-        b := m.tmp(x.size)
-        m.ev(a, x, b) else f => {
-            m.argv.truncate(base)
-            return !f
-        }
-        m.argv.push(b)!
-    }
-    r := m.call_value(a.cx, n.span, cv, callee.ty, m.argv.items[base..m.argv.items.len], dst)
-    m.argv.truncate(base)
-    try r
-    m.release(mk)
-}
+// Calls of functions and function values, performing operations, and the default handlers
+// of the ambient effects.
 
 /// The trap of a call of `f`, which has no body.
 call_missing :: fn(m: ^Machine, span: source.Span, f: u32) -> Flow!() needs Alloc {
@@ -100,7 +36,7 @@ call_value :: fn(m: ^Machine, cx: u32, span: source.Span, cv: []const u8, cty: T
 /// Calls function `f` with the argument values `args`; its result goes to `dst`.
 call_function :: fn(m: ^Machine, span: source.Span, f: u32, args: []const []u8, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, dst: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
-    body := info.body else return m.call_missing(span, f)
+    if info.vm is null { return m.call_missing(span, f) }
     if args.len is not info.params.len { return !m.trap(span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len, info.params.len)!) }
     if info.cost > sema.MAX_FRAME { return !m.trap(span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
     mk := m.mark()
@@ -112,13 +48,13 @@ call_function :: fn(m: ^Machine, span: source.Span, f: u32, args: []const []u8, 
         store[off..off + x.len].copy_from(x)
         i += 1
     }
-    r := m.enter(span, f, info, body, store, env, cx, installing, is_clause_lit, dst)
+    r := m.enter(span, f, info, store, env, cx, installing, is_clause_lit, dst)
     m.release(mk)
     return r
 }
 
 /// Runs the body of function `f` in a new frame whose storage `store` holds the arguments.
-enter :: fn(m: ^Machine, span: source.Span, f: u32, info: ^FnInfo, body: ^Node, store: []u8, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, dst: []u8) -> Flow!() needs Run {
+enter :: fn(m: ^Machine, span: source.Span, f: u32, info: ^FnInfo, store: []u8, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, dst: []u8) -> Flow!() needs Run {
     marker: u8 = 0
     if m.depth >= MAX_DEPTH or (&marker).addr() < m.stack_floor { return !m.trap(span, "stack overflow") }
     if m.threads.list.items.len > 1 { try m.tick(span) }
@@ -143,7 +79,8 @@ enter :: fn(m: ^Machine, span: source.Span, f: u32, info: ^FnInfo, body: ^Node, 
     }
     if on_fiber { m.fiber_stack -= info.cost }
     m.depth += 1
-    r := if c := info.vm { m.vm_run(Act(fr: fr, cx: cx), c, dst) } else { m.ev(Act(fr: fr, cx: cx), body, dst) }
+    code := info.vm else @unreachable()
+    r := m.vm_run(Act(fr: fr, cx: cx), code, dst)
     m.depth -= 1
     if on_fiber { m.fiber_stack += info.cost }
     if m.temps.items.len > tm { m.kill_temps(tm) }
@@ -242,154 +179,4 @@ perform_native :: fn(m: ^Machine, span: source.Span, kind: NativeKind, op: u32, 
             _ => return !m.trap(span, str.format("internal error: native operation {} of `Env`", op)!)
         }
     }
-}
-
-// ---------------------------------------------------------------------------------
-// `with`
-// ---------------------------------------------------------------------------------
-
-with_ :: fn(m: ^Machine, a: Act, w: With, e: ^Node, dst: []u8) -> Flow!() needs Run {
-    fr := a.fr
-    mk := m.mark()
-    // The stack of a `with … on` is evaluated before the handlers, outside them.
-    stack := empty_slice(u8)
-    if s := w.on {
-        stack = m.tmp(s.size)
-        try m.ev(a, s, stack)
-    }
-    cx := a.cx
-    for h in w.handlers {
-        match h {
-            .Literal(x) => {
-                hb := m.tmp(x.size)
-                try m.ev(Act(fr: fr, cx: cx), x, hb)
-                id: u32 = 0
-                if .HandlerRef(i) := x.op { id = i } else if .Handler(i) := m.kind(x.ty) { id = i }
-                eff := m.p.handler_lit(id).effect_
-                inst := Installed.Lit(id, m.frame_of(m.word(hb, 0)), m.word(hb, 1).trunc(u32))
-                cx = m.push_ctx(cx, eff, inst, fr.id, w.label, fr)
-            }
-            .Decl(decls, value) => {
-                vb := m.tmp(value.size)
-                try m.ev(Act(fr: fr, cx: cx), value, vb)
-                // The value outlives this scratch memory while clauses run.
-                kept := make(u8, vb.len)!
-                kept.copy_from(vb)
-                outer := cx
-                for d in decls {
-                    eff := m.p.handler_decl(d).effect_
-                    cx = m.push_ctx(cx, eff, .Decl(decls, kept, outer), fr.id, w.label, fr)
-                }
-            }
-        }
-    }
-    fr.labels.push(LabelDst(label: w.label, dst: dst))!
-    depth := fr.labels.items.len
-    r := if w.on is not null { m.with_on(Act(fr: fr, cx: cx), w, stack, e, dst) } else { m.ev(Act(fr: fr, cx: cx), w.body, dst) }
-    fr.labels.truncate(depth - 1)
-    m.free_decl_values(cx, a.cx)
-    m.pop_ctx(cx, a.cx)
-    m.release(mk)
-    r else f => {
-        if .Break(frame, label) := f and frame is fr.id and label is w.label { return () }
-        return !f
-    }
-}
-
-/// Frees the values of the handler declarations installed in contexts `from` up to
-/// `until`.
-free_decl_values :: fn(m: ^Machine, from: u32, until: u32) needs Alloc {
-    c := from
-    last: ?[]u8 = null
-    while c is not until and c is not 0 {
-        n := &m.ctxs.items[us(c)]
-        if .Decl(_, value, _) := n.installed {
-            // Declarations installed together share their value.
-            if l := last and l.ptr is value.ptr {} else { free(value) }
-            last = value
-        }
-        c = n.parent
-    }
-}
-
-// ---------------------------------------------------------------------------------
-// Formatted output
-// ---------------------------------------------------------------------------------
-
-write_ :: fn(m: ^Machine, a: Act, w_sink: Sink, pieces: []const []const u8, specs: []const tir.FmtSpec, args: []^Node, e: ^Node) -> Flow!() needs Run {
-    mk := m.mark()
-    sink := empty_slice(u8)
-    sink_ty := e.ty
-    if .Fn(x) := w_sink {
-        sink = m.tmp(x.size)
-        sink_ty = x.ty
-        try m.ev(a, x, sink)
-    }
-    vals := list([]u8)
-    defer vals.deinit()
-    try m.ev_args(a, args, &vals)
-    for i in 0..pieces.len {
-        if pieces[i].len > 0 { try m.emit(a.cx, e.span, w_sink, sink, sink_ty, pieces[i]) }
-        if i < args.len {
-            out := list(u8)
-            defer out.deinit()
-            arg := args[i]
-            custom := false
-            if i < specs.len and not tir.is_default_spec(&specs[i]) { custom = true }
-            r := if custom { m.format_spec(&out, arg.ty, vals.items[i], &specs[i]) } else { m.format_value(&out, arg.ty, vals.items[i], true) }
-            r else msg => return !m.trap(arg.span, msg)
-            if out.items.len > 0 { try m.emit(a.cx, e.span, w_sink, sink, sink_ty, out.items) }
-        }
-    }
-    m.release(mk)
-}
-
-/// A write whose template is the one the word `table` names (`Machine.templates`), with
-/// the values `args`, each once.
-write_table :: fn(m: ^Machine, a: Act, w_sink: Sink, table: ^Node, args: []^Node, e: ^Node) -> Flow!() needs Run {
-    k := try m.ew(a, table)
-    if k is 0 or k > u64(m.templates.items.len) { return !m.trap(e.span, "internal error: a write of an unknown template") }
-    t := m.templates.items[us(k) - 1]
-    mk := m.mark()
-    sink := empty_slice(u8)
-    sink_ty := e.ty
-    if .Fn(x) := w_sink {
-        sink = m.tmp(x.size)
-        sink_ty = x.ty
-        try m.ev(a, x, sink)
-    }
-    vals := list([]u8)
-    defer vals.deinit()
-    try m.ev_args(a, args, &vals)
-    for i in 0..t.pieces.len {
-        if t.pieces[i].len > 0 { try m.emit(a.cx, e.span, w_sink, sink, sink_ty, t.pieces[i]) }
-        if i < t.specs.len {
-            out := list(u8)
-            defer out.deinit()
-            j := usize(t.index[i])
-            arg := args[j]
-            spec := &t.specs[i]
-            r := if tir.is_default_spec(spec) { m.format_value(&out, arg.ty, vals.items[j], true) } else { m.format_spec(&out, arg.ty, vals.items[j], spec) }
-            r else msg => return !m.trap(arg.span, msg)
-            if out.items.len > 0 { try m.emit(a.cx, e.span, w_sink, sink, sink_ty, out.items) }
-        }
-    }
-    m.release(mk)
-}
-
-/// Passes `data` to the sink of a write.
-emit :: fn(m: ^Machine, cx: u32, span: source.Span, sink: Sink, sv: []const u8, sty: Ty, data: []const u8) -> Flow!() needs Run {
-    addr := try m.alloc_mem(span, u64(data.len), 1, .Temp, true)
-    _ = m.mem.init(addr, data)
-    mk := m.mark()
-    sl := m.tmp(2 * m.ptr_bytes)
-    m.put_slice(sl, addr, u64(data.len))
-    args := [1][]u8(sl)
-    r := match sink {
-        .Fn(_) => m.call_value(cx, span, sv, sty, args[..], empty_slice(u8))
-        .Perform(effect_, op) => m.perform(cx, span, &effect_, op, args[..], empty_slice(u8))
-    }
-    m.release(mk)
-    _ = m.mem.kill(addr)
-    return r
 }

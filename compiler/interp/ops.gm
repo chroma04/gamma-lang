@@ -80,27 +80,6 @@ binop :: fn(m: ^Machine, span: source.Span, op: tir.BinOp, lt, rt, res_ty: Ty, x
     }
 }
 
-/// Evaluates the operands of `l op r` and applies the operator.
-binary :: fn(m: ^Machine, a: Act, op: tir.BinOp, l, r: ^Node, e: ^Node, dst: []u8) -> Flow!() needs Run {
-    ln := us(l.size)
-    rn := us(r.size)
-    if ln <= 16 and rn <= 16 {
-        // Small operands live on the stack.
-        xb: [16]u8 = ---
-        yb: [16]u8 = ---
-        try m.ev(a, l, xb[0..ln])
-        try m.ev(a, r, yb[0..rn])
-        return m.binop(e.span, op, l.ty, r.ty, e.ty, xb[0..ln], yb[0..rn], dst)
-    }
-    mk := m.mark()
-    x := m.tmp(l.size)
-    try m.ev(a, l, x)
-    y := m.tmp(r.size)
-    try m.ev(a, r, y)
-    try m.binop(e.span, op, l.ty, r.ty, e.ty, x, y, dst)
-    m.release(mk)
-}
-
 /// The unary operator `op` on the bytes `b` of type `t`.
 unop :: fn(m: ^Machine, span: source.Span, op: tir.UnOp, t: Ty, b: []const u8, dst: []u8) -> Flow!() needs Alloc {
     match op {
@@ -152,21 +131,6 @@ unop :: fn(m: ^Machine, span: source.Span, op: tir.UnOp, t: Ty, b: []const u8, d
             m.put_uint(dst, num_ext(info.signed, info.bits, ~m.get_int(u, b)))
         }
     }
-}
-
-/// Evaluates the operand of a unary operator and applies it.
-unary :: fn(m: ^Machine, a: Act, op: tir.UnOp, x: ^Node, e: ^Node, dst: []u8) -> Flow!() needs Run {
-    n := us(x.size)
-    if n <= 16 {
-        xb: [16]u8 = ---
-        try m.ev(a, x, xb[0..n])
-        return m.unop(e.span, op, x.ty, xb[0..n], dst)
-    }
-    mk := m.mark()
-    v := m.tmp(x.size)
-    try m.ev(a, x, v)
-    try m.unop(e.span, op, x.ty, v, dst)
-    m.release(mk)
 }
 
 // ---------------------------------------------------------------------------------

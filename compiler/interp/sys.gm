@@ -149,18 +149,6 @@ sys_strings :: fn(m: ^Machine, span: source.Span, b: []const u8) -> Flow!List(st
     return out
 }
 
-/// Runs the system service `op`, whose arguments `args` are evaluated here, and stores its
-/// result in `dst`.
-sys_call :: fn(m: ^Machine, a: Act, op: tir.SysOp, args: []^Node, e: ^Node, dst: []u8) -> Flow!() needs Run {
-    mk := m.mark()
-    vals := list([]u8)
-    try m.ev_args(a, args, &vals)
-    r := if op in (tir.SysOp.ThreadSpawn, tir.SysOp.ThreadJoin, tir.SysOp.ThreadDetach, tir.SysOp.ThreadYield, tir.SysOp.FutexWait, tir.SysOp.FutexWake) { m.thread_op(e.span, op, vals.items, dst) } else { m.sys_run(e.span, op, args, vals.items, dst) }
-    vals.deinit()
-    m.release(mk)
-    return r
-}
-
 /// Performs `op` on the evaluated arguments `vals`.
 sys_run :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []^Node, vals: []const []u8, dst: []u8) -> Flow!() needs Run {
     n: i64 = 0

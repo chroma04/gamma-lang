@@ -1,26 +1,25 @@
 //! The interpreter: runs a checked program.
 //!
-//! - **Code**: a function's body is lowered on its first call (`code.gm`) into nodes with
-//!   sizes, offsets and word operations resolved, and compiled for a register machine
-//!   (`vm.gm`) that runs its statement structure, word arithmetic, simple places and calls
-//!   in one loop; the rest is evaluated by walking the nodes (`run.gm`, `stmt.gm`,
-//!   `calls.gm`). Words are computed by `word.gm`, whose overflow and shift rules come from
-//!   the byte arithmetic of `intarith.gm`.
+//! - **Code**: a function's body is lowered to LIR (`compiler/lir`) on its first call and
+//!   compiled from it (`vm_lir.gm`) for a register machine (`vm.gm`) that runs it in one
+//!   loop; operations on values that are not words run generically on their bytes
+//!   (`vm_gen.gm`). Words are computed by `word.gm`, whose overflow and shift rules come
+//!   from the byte arithmetic of `intarith.gm`.
 //! - **Memory** (`memory.gm`): a flat virtual address space where every allocation gets
 //!   a fresh, never reused address, so out-of-bounds, use-after-free, null, misaligned
 //!   and read-only accesses are found exactly (§18.4). Values are bytes in the target's
 //!   layout; pointers are addresses.
-//! - **Values**: every expression is evaluated into a destination, a byte buffer of the
-//!   size of its type. Temporary buffers come from a stack of scratch memory that each
-//!   statement and call releases (`Scratch`). A local whose address is never taken lives
-//!   in its frame's storage, in that scratch memory; the others get an allocation of
-//!   their own. Second-class values are bytes too: a function value is its code address,
+//! - **Values**: a word is a register; any other value is bytes of the size of its type,
+//!   in a slot of its frame's storage. Temporary buffers come from a stack of scratch
+//!   memory that each instruction and call releases (`Scratch`). A local whose address
+//!   is never taken lives in its frame's storage, in that scratch memory; the others get
+//!   an allocation of their own. Second-class values are bytes too: a function value is its code address,
 //!   the handle of the frame it captures and the handle of its handler context; a
 //!   handler value is a frame handle and a context handle.
 //! - **Control flow**: what leaves an expression other than with its value is a `Flow`
-//!   error. A `break` writes its value into the destination of the loop or `with` it
-//!   leaves, and a `return` into its function's, before the flow unwinds to them; blocks
-//!   run their `defer` and `errdefer` statements on the way.
+//!   error. A `break` from another frame writes its value into the local of the loop or
+//!   `with` it leaves, and a `return` into its function's result, before the flow unwinds
+//!   to them; blocks run their `defer` and `errdefer` statements on the way.
 //! - **Effects**: the handler context is a persistent list of installed handlers, by
 //!   handle, captured by closures and handler literals (§11.6, §12.7).
 //!
@@ -90,12 +89,6 @@ Act :: struct {
     cx: u32
 }
 
-/// Where a `break` to a label leaves its value.
-LabelDst :: struct {
-    label: u32
-    dst: []u8
-}
-
 /// One activation of a function body, or the root of the evaluation of a constant.
 Frame :: struct {
     id: u64
@@ -115,9 +108,7 @@ Frame :: struct {
     mem_buf: []u64
     /// Allocations that die with the frame.
     allocs: List(u64)
-    /// The loops and `with`s that the tree evaluator runs in it, innermost last.
-    labels: List(LabelDst)
-    /// The deferred statements of the blocks the register machine runs, innermost last.
+    /// The deferred statements of its running blocks, innermost last.
     defers: List(Deferred)
     /// For a handler clause: the frame and label of the `with` that installed it.
     installing: ?(frame: ^Frame, label: u32)
@@ -235,10 +226,8 @@ pub Machine :: struct {
     /// The `CtxNode.gen` of the last context made.
     ctx_gen: u64 = 0
     infos: List(?^FnInfo)
-    /// Whether bodies are compiled from their LIR where `vm_lir.gm` covers them (unless
-    /// `GAMMA_INTERP_LIR=0`), and the context of lowering them to LIR, made for a program
-    /// of `lir_defs` functions.
-    use_lir: bool = false
+    /// The context of lowering bodies to LIR (`vm_lir.gm`), made for a program of
+    /// `lir_defs` functions.
     lir_cx: ?^lir.Ctx = null
     lir_defs: usize = 0
     next_frame: u64
@@ -472,7 +461,6 @@ pub run_entry :: fn(p: ^Prog, entry: u32, mode: Mode, args: []const string, filt
     return with heap_allocator() {
         m := machine(p, mode, args)
         m.filter = filter
-        m.use_lir = (Env.var("GAMMA_INTERP_LIR") else "1") is not "0"
         mp := &m
         run :: fn() -> Outcome needs Run {
             cx: u32 = 0
@@ -505,7 +493,6 @@ deinit :: fn(m: ^Machine) needs Alloc {
     while fr := m.frame_pool {
         m.frame_pool = fr.next_free
         fr.allocs.deinit()
-        fr.labels.deinit()
         fr.defers.deinit()
         if fr.mem_buf.len > 0 { free(fr.mem_buf) }
         destroy(fr)

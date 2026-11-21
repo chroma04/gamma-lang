@@ -1,0 +1,436 @@
+// The instructions of the register machine that only bodies compiled from LIR use
+// (`vm_lir.gm`): generic operations on values of any size, read as bytes of the frame's
+// storage (`Gen`, `GenF`), jumps to other frames (`Exit`), the fiber of a `with … on`
+// (`WithOn`), the code of deferred statements (`DeferCode`), and the sub-codes those run.
+
+/// A generic instruction: operation `op` on the bytes of `args` (slots, a word's register
+/// seen as one), its value of type `ty` (if it has one) to `dst`.
+GenIns :: struct {
+    op: GenOp
+    args: []Arg
+    dst: Dest
+    ty: Ty
+    span: source.Span
+}
+
+GenOp :: union {
+    /// The operators of TIR on operands of types `lt` and `rt`, and `in`.
+    Bin: (op: tir.BinOp, lt: Ty, rt: Ty)
+    Un: (op: tir.UnOp, t: Ty)
+    Eq: (negated: bool, t: Ty)
+    In: (negated: bool, elem: Ty, container: Ty)
+    /// An implicit coercion from type `from`.
+    Coerce: (kind: tir.Coercion, from: Ty)
+    /// A struct, tuple or array of the values, each at its offset (a `#bits` struct packs
+    /// them).
+    Aggregate: []u64
+    /// Field `index` of the `#bits` value of type `t`, and the value with that field set to
+    /// the second operand, of type `t`.
+    BitsGet: (index: u32, t: Ty)
+    BitsSet: (index: u32, t: Ty)
+    /// An array of `n` elements, each the operand.
+    Fill: u64
+    /// A value whose bytes are all this one (`---`).
+    Bytes: u8
+    Str: (bytes: []const u8, c: bool)
+    Wrap: lir.Wrap
+    Variant: u32
+    /// The slice of the elements of `esz` bytes from the second operand to the third of the
+    /// sequence at the address in the first (bounds already checked).
+    MakeSlice: (inclusive: bool, esz: u64)
+    /// The checks of a slicing (`lir.Check.Range`) and of an index (`Bounds`).
+    Range: (inclusive: bool, has_len: bool)
+    Bounds
+    /// Whether the union value of type `t` is of variant `variant`.
+    TagIs: (variant: u32, t: Ty)
+    /// Traps with the message in the operand, with `msg`, or as not supported.
+    Trap
+    Fail: string
+    Unsupported: string
+    /// A formatted write (`lir.Op.Write`): the sink's value first if it is one, then the
+    /// values (of types `tys`), then the template's number if `table`.
+    Write: (sink: GenSink, pieces: []const []const u8, specs: []const tir.FmtSpec, tys: []Ty, table: bool)
+    /// A named function as a second-class value.
+    FnRef: u32
+    // These need the frame (`GenF`).
+    HandlerRef
+    /// `@fiber(f, arg, stack)`, `f` of this type.
+    Fiber: Ty
+    Resume
+    Cancel
+}
+
+/// Where a generic write goes: a function value of type `Value` (the first operand), or
+/// an operation.
+GenSink :: union {
+    Value: Ty
+    Perform: (effect_: types.EffectRef, op: u32)
+}
+
+/// A jump to another frame, with the value of a `break` or `return` (of type `ty`) in `v`.
+ExitIns :: struct {
+    kind: lir.Exit
+    v: ?Arg
+    ty: Ty
+    span: source.Span
+}
+
+/// `with … on stack`: the body, sub-code `code`, runs on a fiber; `label` is TIR's label of
+/// the `with`.
+WithOnIns :: struct {
+    stack: Arg
+    code: ^Code
+    label: u32
+    span: source.Span
+}
+
+/// The bytes of argument `a` in the storage whose registers are `regs`.
+gen_bytes :: fn(regs: [^]u64, a: Arg) -> []u8 => match a {
+    .Slot(at, size) => fat(regs, usize(at))[0..usize(size)]
+    .Reg(r) => fat(regs, usize(r) * 8)[0..8]
+}
+
+/// An unsigned integer of at most 16 bytes as a `u64`, saturating (an index).
+gen_index :: fn(m: ^Machine, b: []const u8) -> u64 {
+    if b.len <= 8 { return m.rd_word(b) }
+    v := m.get_uint(b)
+    return if v > u128(~u64(0)) { ~u64(0) } else { v.trunc(u64) }
+}
+
+/// Runs the generic instruction `g`, in handler context `cx` and (for `GenF`) frame `fr`.
+vm_gen :: fn(m: ^Machine, cx: u32, fr: ?^Frame, regs: [^]u64, g: ^const GenIns) -> Flow!() needs Run {
+    mk := m.mark()
+    // The operands' bytes: most instructions have a few.
+    fixed := [4][]u8(fill: empty_slice(u8))
+    many := empty_slice([]u8)
+    if g.args.len > 4 { many = make_fill(g.args.len, empty_slice(u8))! }
+    defer if many.len > 0 { free(many) }
+    v: [][]u8 = if g.args.len > 4 { many } else { fixed[0..g.args.len] }
+    for k in 0..g.args.len { v[k] = gen_bytes(regs, g.args[k]) }
+    n := m.size(g.ty)
+    b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
+    d: []u8 = match g.dst {
+        .Reg(_) => b[0..us(n.min(8))]
+        .Slot(at) => fat(regs, usize(at))[0..us(n)]
+        _ => if n <= 8 { b[0..us(n)] } else { m.tmp(n) }
+    }
+    span := g.span
+    match g.op {
+        .Bin(op, lt, rt) => try m.binop(span, op, lt, rt, g.ty, v[0], v[1], d)
+        .Un(op, t) => try m.unop(span, op, t, v[0], d)
+        .Eq(negated, t) => {
+            x := try m.equal(span, t, v[0], v[1])
+            d[0] = if x is not negated { 1 } else { 0 }
+        }
+        .In(negated, et, ct) => {
+            x := try m.contains(span, et, v[0], ct, v[1])
+            d[0] = if x is not negated { 1 } else { 0 }
+        }
+        .Coerce(kind, from) => match kind {
+            .FromNever => return !m.trap(span, "internal error: a `never` expression produced a value")
+            .FnToPtr => {
+                to_fn := m.kind(g.ty) is .Fn(_)
+                from_fn := m.kind(from) is .Fn(_)
+                if to_fn and not from_fn {
+                    addr := m.ptr_of(v[0])
+                    if m.fn_from_addr(addr) is null { return !m.trap(span, "call through an invalid function pointer") }
+                    m.put_word(d, 0, addr)
+                    m.put_word(d, 1, 0)
+                    m.put_word(d, 2, u64(cx))
+                } else if not to_fn and from_fn {
+                    m.put_ptr(d, m.word(v[0], 0))
+                } else {
+                    d.copy_from(v[0][0..d.len])
+                }
+            }
+            .PtrToPtr, .TupleRename, .FnPtrWiden => d.copy_from(v[0][0..d.len])
+            _ => try m.coerce_bytes(span, kind, from, g.ty, v[0], d)
+        }
+        .Aggregate(offs) => {
+            if u := m.bits_struct_ty(g.ty) {
+                acc: u128 = 0
+                for i in 0..v.len {
+                    bf := m.bits_field(g.ty, i.trunc(u32))
+                    acc |= m.bits_raw(bf.ty, v[i]) << u128(bf.off)
+                }
+                m.put_uint(d[0..us(m.size(u))], acc)
+            } else {
+                for i in 0..v.len {
+                    o := us(offs[i])
+                    d[o..o + v[i].len].copy_from(v[i])
+                }
+            }
+        }
+        .BitsGet(index, t) => m.read_field(t, v[0], index, d)
+        .BitsSet(index, _) => {
+            d.copy_from(v[0][0..d.len])
+            bf := m.bits_field(g.ty, index)
+            u := m.bits_struct_ty(g.ty) else g.ty
+            k := us(m.size(u))
+            whole := m.get_uint(d[0..k])
+            w := m.bit_width(bf.ty)
+            mask := (if w >= 128 { ~u128(0) } else { (u128(1) << u128(w)) - 1 }) << u128(bf.off)
+            raw := m.bits_raw(bf.ty, v[1])
+            m.put_uint(d[0..k], (whole & ~mask) | ((raw << u128(bf.off)) & mask))
+        }
+        .Fill(count) => if count > 0 {
+            k := d.len / us(count)
+            if k > 0 {
+                j: usize = 0
+                while j + k <= d.len {
+                    d[j..j + k].copy_from(v[0][0..k])
+                    j += k
+                }
+            }
+        }
+        .Bytes(x) => d.fill(x)
+        .Str(bytes, c) => {
+            addr := try m.string_literal(span, bytes, c)
+            if c { m.put_ptr(d, addr) } else { m.put_slice(d, addr, u64(bytes.len)) }
+        }
+        .Wrap(kind) => match kind {
+            .None => d.fill(0)
+            .Some => m.make_some(g.ty, d, v[0])
+            .Ok => m.make_res(g.ty, d, false, if v.len > 0 { v[0] } else { empty_slice(u8) })
+            .Err => m.make_res(g.ty, d, true, v[0])
+        }
+        .Variant(variant) => m.make_variant(g.ty, d, variant, if v.len > 0 { v[0] } else { empty_slice(u8) })
+        .MakeSlice(inclusive, esz) => {
+            lo := gen_index(m, v[1])
+            hi := gen_index(m, v[2])
+            if inclusive { hi = hi +| 1 }
+            m.put_slice(d, m.ptr_of(v[0]) +% lo *% esz, hi -% lo)
+        }
+        .Range(inclusive, has_len) => {
+            lo := gen_index(m, v[0])
+            hi := gen_index(m, v[1])
+            if inclusive { hi = hi +| 1 }
+            len: ?u64 = if has_len { gen_index(m, v[2]) } else { null }
+            bad := lo > hi
+            if l := len and hi > l { bad = true }
+            if bad {
+                text := if l := len { str.format("{}", l)! } else { "?" }
+                return !m.trap(span, str.format("slice bounds {}..{} invalid for length {}", lo, hi, text)!)
+            }
+        }
+        .Bounds => {
+            i := gen_index(m, v[0])
+            len := gen_index(m, v[1])
+            if i >= len { return !m.trap(span, str.format("index {} out of bounds for length {}", i, len)!) }
+        }
+        .TagIs(variant, t) => {
+            x := m.variant_index(t, v[0])
+            d[0] = if x is variant { 1 } else { 0 }
+        }
+        .Trap => {
+            s := try m.read_string(span, v[0])
+            return !m.trap(span, s)
+        }
+        .Fail(msg) => return !m.trap(span, msg)
+        .Unsupported(what) => return !m.unsupported(span, what)
+        .Write(sink, pieces, specs, tys, table) => try m.gen_write(cx, span, sink, pieces, specs, tys, table, v)
+        .FnRef(f) => {
+            m.put_word(d, 0, m.fn_addr(f))
+            m.put_word(d, 1, 0)
+            m.put_word(d, 2, u64(cx))
+        }
+        .HandlerRef => {
+            f := fr else return !m.trap(span, "internal error: a handler value without a frame")
+            m.put_word(d, 0, u64(m.frame_handle(f)))
+            m.put_word(d, 1, u64(cx))
+        }
+        .Fiber(fty) => {
+            f := fr else return !m.trap(span, "internal error: `@fiber` without a frame")
+            try m.gen_fiber(f, span, v[0], fty, v[1], v[2], d)
+        }
+        .Resume => {
+            f := fr else return !m.trap(span, "internal error: `resume` without a frame")
+            c := try m.consume(span, f, v[0])
+            saved := empty_slice(u8)
+            if v[1].len > 0 {
+                saved = make(u8, v[1].len)!
+                saved.copy_from(v[1])
+            }
+            m.fib.resume_value = saved
+            m.release(mk)
+            return !.Resume(c.fiber)
+        }
+        .Cancel => {
+            f := fr else return !m.trap(span, "internal error: `cancel` without a frame")
+            c := try m.consume(span, f, v[0])
+            m.release(mk)
+            try m.cancel_fiber(span, c.key, c.fiber)
+            return ()
+        }
+    }
+    m.release(mk)
+    if .Reg(r) := g.dst { regs[usize(r)] = m.rd_word(d) }
+}
+
+/// A formatted write (`GenOp.Write`) of the values `v`.
+gen_write :: fn(m: ^Machine, cx: u32, span: source.Span, sink: GenSink, pieces: []const []const u8, specs: []const tir.FmtSpec, tys: []Ty, table: bool, v: [][]u8) -> Flow!() needs Run {
+    first: usize = if sink is .Value(_) { 1 } else { 0 }
+    sv: []u8 = if first is 1 { v[0] } else { empty_slice(u8) }
+    vals := v[first..first + tys.len]
+    ps := pieces
+    ss := specs
+    index: ?[]const u32 = null
+    if table {
+        k := m.rd_word(v[first + tys.len])
+        if k is 0 or k > u64(m.templates.items.len) { return !m.trap(span, "internal error: a write of an unknown template") }
+        t := m.templates.items[us(k) - 1]
+        ps = t.pieces
+        ss = t.specs
+        index = t.index
+    }
+    for i in 0..ps.len {
+        if ps[i].len > 0 { try m.gen_emit(cx, span, sink, sv, ps[i]) }
+        j := i
+        if ix := index {
+            if i >= ss.len { continue }
+            j = usize(ix[i])
+        } else if i >= vals.len {
+            continue
+        }
+        out := list(u8)
+        defer out.deinit()
+        custom := i < ss.len and not tir.is_default_spec(&ss[i])
+        r := if custom { m.format_spec(&out, tys[j], vals[j], &ss[i]) } else { m.format_value(&out, tys[j], vals[j], true) }
+        r else msg => return !m.trap(span, msg)
+        if out.items.len > 0 { try m.gen_emit(cx, span, sink, sv, out.items) }
+    }
+}
+
+/// Passes `data` to the sink of a write (`emit`).
+gen_emit :: fn(m: ^Machine, cx: u32, span: source.Span, sink: GenSink, sv: []const u8, data: []const u8) -> Flow!() needs Run {
+    addr := try m.alloc_mem(span, u64(data.len), 1, .Temp, true)
+    _ = m.mem.init(addr, data)
+    mk := m.mark()
+    sl := m.tmp(2 * m.ptr_bytes)
+    m.put_slice(sl, addr, u64(data.len))
+    args := [1][]u8(sl)
+    r := match sink {
+        .Value(sty) => m.call_value(cx, span, sv, sty, args[..], empty_slice(u8))
+        .Perform(effect_, op) => m.perform(cx, span, &effect_, op, args[..], empty_slice(u8))
+    }
+    m.release(mk)
+    _ = m.mem.kill(addr)
+    return r
+}
+
+/// `@fiber(f, arg, stack)` (§14.6) in a clause running in `fr` (`fiber_builtin`).
+gen_fiber :: fn(m: ^Machine, fr: ^Frame, span: source.Span, fb: []u8, fty: Ty, ab: []u8, sb: []u8, dst: []u8) -> Flow!() needs Run {
+    try m.check_stack(span, sb)
+    inst := fr.installing else return !m.trap(span, "internal error: `@fiber` outside a clause")
+    key := WithKey(frame: inst.frame.id, label: inst.label)
+    w := m.with_rec(key) else return !m.trap(span, "internal error: `@fiber` in a clause of a `with` without `on`")
+    f := make(u8, fb.len)!
+    f.copy_from(fb)
+    arg := make(u8, ab.len.max(1))!
+    arg[0..ab.len].copy_from(ab)
+    start := Start.Call(f, fty, arg[0..ab.len], w.body_cx, w.span)
+    id := m.new_fiber(key, start, .Suspended(key), sb)
+    (m.with_rec(key) else return ()).suspended.push(id)!
+    m.put_cont(dst, id, 1)
+}
+
+/// A jump to another frame (`ExitIns`), raised as a flow (`break`, `continue` and `return` of
+/// another frame).
+vm_exit :: fn(m: ^Machine, a: Act, regs: [^]u64, x: ^const ExitIns) -> Flow!() needs Run {
+    match x.kind {
+        .Break(target) => {
+            t := try m.resolve_target(a, target, x.span)
+            if v := x.v {
+                d := t.frame.label_dst(t.label) else return !m.trap(x.span, "internal error: break to a label that is not running")
+                b := gen_bytes(regs, v)
+                k := b.len.min(d.len)
+                d[0..k].copy_from(b[0..k])
+            }
+            return !.Break(t.frame.id, t.label)
+        }
+        .Continue(target) => {
+            if target is .InstallingWith {
+                // A clause's `continue` resumes the code that performed the operation: the
+                // clause returns `()`.
+                return !.Return(a.fr.id, false)
+            }
+            t := try m.resolve_target(a, target, x.span)
+            return !.Continue(t.frame.id, t.label)
+        }
+        .Return(levels) => {
+            target := frame_up(a.fr, levels) else return !m.trap(x.span, "internal error: return from a missing frame")
+            if v := x.v {
+                b := gen_bytes(regs, v)
+                k := b.len.min(target.ret.len)
+                target.ret[0..k].copy_from(b[0..k])
+            }
+            is_err := if o := target.info.err_flag { target.ret[us(o)] is not 0 } else { false }
+            return !.Return(target.id, is_err)
+        }
+    }
+}
+
+/// `with … on stack` (`WithOnIns`) in frame `a.fr`, once its handlers are installed in
+/// `a.cx` (`with_on`).
+vm_with_on :: fn(m: ^Machine, a: Act, regs: [^]u64, x: ^const WithOnIns) -> Flow!() needs Run {
+    fr := a.fr
+    stack := gen_bytes(regs, x.stack)
+    try m.check_stack(x.span, stack)
+    key := WithKey(frame: fr.id, label: x.label)
+    if m.with_rec(key) is not null { return !m.trap(x.span, "internal error: a `with … on` is active twice") }
+    m.fib.withs.push(WithRec(key: key, driver: m.fib.cur, suspended: list(u32), body_cx: a.cx, owned: list(u32), span: x.span))!
+    first := m.new_fiber(key, .Code(fr, a.cx, x.code), .Running, stack)
+    r := m.drive(x.span, key, first)
+    // Whatever way the driver ended, no fiber may outlive the records it uses.
+    m.abort_all(x.span, key)
+    for i in 0..m.fib.withs.items.len {
+        if same_key(m.fib.withs.items[i].key, key) {
+            w := m.fib.withs.swap_remove(i)
+            w.suspended.deinit()
+            w.owned.deinit()
+            break
+        }
+    }
+    r else f => {
+        // A `break` to the `with` ends it.
+        if .Break(frame, label) := f and frame is fr.id and label is x.label { return () }
+        return !f
+    }
+}
+
+/// Runs the sub-code `code` (`Code.sub`) in the frame and context of `a`.
+vm_sub :: fn(m: ^Machine, a: Act, code: ^Code) -> Flow!() needs Run => m.vm_run(a, code, a.fr.ret)
+
+/// The bytes of a word copied between slots of the storage at a dynamic offset: `SlotGetD`
+/// and `SlotPutD`.
+slot_d :: fn(regs: [^]u64, at: u32, d: u32, size: u32) -> []u8 => fat(regs, usize(at) + us(regs[usize(d)]))[0..usize(size)]
+
+/// The frame `levels` out of the one the code captures (`code.env_reg`).
+gen_up :: fn(m: ^Machine, code: ^const Code, regs: [^]u64, levels: u32, n: ^Node) -> Flow!^Frame needs Alloc {
+    e := us(regs[usize(code.env_reg)]).to_ptr(^Frame) else return !m.trap(n.span, "internal error: upvar without an enclosing frame")
+    return frame_up(e, levels - 1) else !m.trap(n.span, "internal error: upvar without an enclosing frame")
+}
+
+/// Copies the `size` bytes at offset `rel` of local `l` of frame `up` to `dst`.
+up_get :: fn(m: ^Machine, up: ^Frame, l: u32, rel: u32, dst: []u8, n: ^Node) -> Flow!() needs Alloc {
+    i := usize(l)
+    if up.mem[i] is 0 and not up.info.addressed[i] {
+        o := us(up.info.offsets[i]) + usize(rel)
+        dst.copy_from(up.store[o..o + dst.len])
+        return ()
+    }
+    addr := try m.local_addr(n.span, up, l)
+    try m.load_at(n.span, addr + u64(rel), 1, dst)
+}
+
+/// Copies `data` to offset `rel` of local `l` of frame `up`.
+up_put :: fn(m: ^Machine, up: ^Frame, l: u32, rel: u32, data: []const u8, n: ^Node) -> Flow!() needs Alloc {
+    i := usize(l)
+    if up.mem[i] is 0 and not up.info.addressed[i] {
+        o := us(up.info.offsets[i]) + usize(rel)
+        up.store[o..o + data.len].copy_from(data)
+        return ()
+    }
+    addr := try m.local_addr(n.span, up, l)
+    try m.store_at(n.span, addr + u64(rel), 1, data)
+}

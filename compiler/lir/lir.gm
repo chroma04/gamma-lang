@@ -58,9 +58,12 @@ pub LoopLabels :: struct {
     /// TIR's label.
     pub label: u32
     /// The block whose end a `break` goes to, and the block whose end a `continue` goes
-    /// to (the loop's step and condition follow it).
+    /// to (the loop's step and condition follow it). For a `with`, both are the `With`'s
+    /// own label.
     pub brk: u32
     pub cont: u32
+    /// The local a `break` with a value leaves it in, if the loop or `with` has a value.
+    pub result: ?u32 = null
 }
 
 pub Local :: struct {
@@ -88,6 +91,8 @@ pub Value :: union {
     /// pointer) of type `ty`: its bits, as an integer of that size holds them (a float's
     /// bits, `bool` 0 or 1, a signed integer sign-extended to 64 bits).
     Word: (ty: Ty, bits: u64)
+    /// An integer of more than 8 bytes (`u128`, `i128`) of type `ty`: its bits.
+    Big: (ty: Ty, bits: u128)
     /// The value of a zero-size type such as `()`.
     Zero: Ty
     /// Unspecified bytes of type `ty` (`---`, §4.4), which Debug builds fill with `0xAA`.
@@ -106,8 +111,8 @@ pub Base :: union {
     Upvar: (levels: u32, local: u32)
     /// A `#global` or foreign variable, by its declaration.
     Global: usize
-    /// A typed constant in static storage, by its name and declaration.
-    Const: (name: string, span: source.Span)
+    /// A typed constant in static storage of type `ty`, by its name and declaration.
+    Const: (name: string, span: source.Span, ty: Ty)
     /// What the pointer in a temporary points to.
     Deref: u32
 }
@@ -124,8 +129,8 @@ pub Proj :: union {
     /// What the pointer held here points to.
     Deref
     /// The value of a present optional, or the payload of a result or of a union value,
-    /// `off` bytes in.
-    Payload: u64
+    /// `off` bytes in, of type `ty` (a result's error or value, as the place is used).
+    Payload: (off: u64, ty: Ty)
 }
 
 /// A function or operation an instruction calls.
@@ -156,6 +161,25 @@ pub Check :: union {
     /// `present` (from `IsPresent` on the place): the unwrapping `x?` (or, with `result`,
     /// `x!`) of the value at the place traps otherwise, reporting the error a result holds.
     Unwrap: (present: Value, place: Place, result: bool)
+}
+
+/// The handlers an `Install` instruction installs (§12.7).
+pub Handler :: union {
+    /// The handler literal `id` written in the `with`: it captures this frame and context.
+    Lit: u32
+    /// The handler literal `id` whose value (a `HandlerRef`) is `v`.
+    Value: (id: u32, v: Value)
+    /// The handler declarations `decls` for the value `v`, which the `With` keeps alive.
+    Decl: (decls: []u32, v: Value)
+}
+
+/// How an `Exit` instruction leaves: as a `break` or `continue` to a loop or `with` of
+/// another frame (or of the `with` whose clause runs), or as a `return` from the function
+/// `levels` frames out.
+pub Exit :: union {
+    Break: tir.Target
+    Continue: tir.Target
+    Return: u32
 }
 
 /// What a `Wrap` instruction makes.
@@ -213,6 +237,15 @@ pub Op :: union {
     Closure: (dst: u32, f: u32)
     /// The value of a handler literal.
     HandlerRef: (dst: u32, h: u32)
+    /// A template given to a body that writes it (`tir.WriteExpr.table`): a `rawptr` that
+    /// names it.
+    Template: (dst: u32, t: ^tir.TemplateTable)
+    /// `elem in container` (§7.7), or with `negated`, `not in`.
+    In: (dst: u32, negated: bool, elem: Value, container: Value)
+    /// Field `index` of the `#bits` struct value `v`, and (`BitsSet`) the value `whole` with
+    /// field `index` set to `v`.
+    BitsGet: (dst: u32, v: Value, index: u32)
+    BitsSet: (dst: u32, whole: Value, index: u32, v: Value)
     /// Whether the optional at the place is present, or (`result`) the result there a
     /// success.
     IsPresent: (dst: u32, place: Place, result: bool)
@@ -241,6 +274,23 @@ pub Op :: union {
     Defer: (is_err: bool, body: []Inst)
     /// Traps with the message (a string).
     Trap: Value
+    /// A failed assertion: traps, with the message (a string) if there is one (§18.2).
+    Assert: ?Value
+    /// Instructions that Debug builds run and Fast builds leave out (an assertion).
+    DebugOnly: []Inst
+    /// `[label:] with …` (§12.7): `install` runs its `Install`s (and computes their
+    /// values), then `body` runs with the handlers installed, on a fiber whose stack is the
+    /// slice `on` if there is one (§14.1); the handlers are uninstalled when the `With` is
+    /// left, whichever way. `Br(label)` in it leaves it; `tir_label` is TIR's label of the
+    /// `with` (`Func.loops`).
+    With: (label: u32, tir_label: u32, install: []Inst, on: ?Value, body: []Inst)
+    /// Installs a handler for the body of the enclosing `With`.
+    Install: Handler
+    /// A jump to another frame (§12.7.1, §11.6), with the value of a `break` or `return`.
+    Exit: (kind: Exit, v: ?Value)
+    /// `resume k(v)` (§14.3) and `cancel k` (§14.5).
+    Resume: (k: Value, v: Value)
+    Cancel: Value
     /// No arm of a `match` matched.
     NoArm
     /// Not reached: what follows an instruction that does not complete (a call of a
@@ -257,12 +307,12 @@ pub dst_of :: fn(op: ^const Op) -> ?u32 => match op^ {
     .Coerce(d, _, _), .Aggregate(d, _), .Variant(d, _, _), .Wrap(d, _, _) => d
     .Str(d, _, _), .Fill(d, _), .MakeSlice(d, _, _, _, _, _) => d
     .FnRef(d, _, _), .Closure(d, _), .HandlerRef(d, _), .IsPresent(d, _, _), .TagIs(d, _, _) => d
+    .Template(d, _), .In(d, _, _, _), .BitsGet(d, _, _), .BitsSet(d, _, _, _) => d
     .Builtin(?d, _, _), .Call(?d, _, _), .Tir(?d, _) => d
     _ => null
 }
 
-/// The type of the value at place `p` of `f`, if it is known here: not for a constant in
-/// static storage, nor below the payload of a result or union value.
+/// The type of the value at place `p` of `f`, if it is known here.
 #allow("needless-pub")
 pub place_type :: fn(s: ^Sema, f: ^const Func, p: ^const Place) -> ?Ty needs Alloc {
     t: Ty = match p.base {
@@ -283,7 +333,7 @@ pub place_type :: fn(s: ^Sema, f: ^const Func, p: ^const Place) -> ?Ty needs All
             }
             found else return null
         }
-        .Const(_) => return null
+        .Const(_, _, ct) => ct
         .Deref(tmp) => {
             if usize(tmp) >= f.temps.len { return null }
             pointee(s, f.temps[usize(tmp)]) else return null
@@ -295,7 +345,7 @@ pub place_type :: fn(s: ^Sema, f: ^const Func, p: ^const Place) -> ?Ty needs All
             .Elem(_) => if .Array(_, elem, _) := s.tys.kind(t) { elem } else { return null }
             .Step(_) => t
             .Deref => pointee(s, t) else return null
-            .Payload(_) => if .Optional(inner) := s.tys.kind(t) { inner } else { return null }
+            .Payload(_, pt) => pt
         }
     }
     return t
@@ -305,7 +355,7 @@ pub place_type :: fn(s: ^Sema, f: ^const Func, p: ^const Place) -> ?Ty needs All
 #allow("needless-pub")
 pub value_type :: fn(f: ^const Func, v: Value) -> Ty => match v {
     .Temp(t) => f.temps[usize(t)]
-    .Word(ty, _), .Zero(ty), .Uninit(ty) => ty
+    .Word(ty, _), .Big(ty, _), .Zero(ty), .Uninit(ty) => ty
 }
 
 /// The function `levels` frames out from `f` (whose locals an upvar of `f` reaches).

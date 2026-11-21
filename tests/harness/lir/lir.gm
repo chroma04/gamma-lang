@@ -4,14 +4,10 @@
 //!   names files without a directory) and the output must equal `tests/lir/<name>.lir`.
 //!   `BLESS=1` rewrites those files from the output.
 //! - Every program of `tests/conformance/run/` and `examples/` is lowered too: the compiler
-//!   must not fail, and the LIR verifier must find nothing wrong (no line starting `!`).
+//!   must not fail, the LIR verifier must find nothing wrong (no line starting `!`), and
+//!   nothing may be left to TIR (a `tir` instruction), which the interpreter cannot run.
 //!   A program the checker rejects (a test of a compile error) is skipped. Each program is a
 //!   test, named `lowers/<path>`.
-//! - Every single-file program of `tests/conformance/run/` (but the `native:` and Safe
-//!   ones, those for another architecture or system, and those with foreign code or
-//!   assembly, which the interpreter hands to the C back end) runs in the interpreter twice, compiled from LIR where that covers a function
-//!   (the default) and only from the lowered tree (`GAMMA_INTERP_LIR=0`), and the two runs
-//!   must print the same and exit alike (`interp/<name>`).
 
 fs :: import "std/fs"
 kit :: import "../kit"
@@ -28,13 +24,6 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc + Fs {
     }
     golden.items.sort()
     for name in golden.items { out.push(kit.Test(name: str.format("golden/{}", name)!, run: golden_one, param: name))! }
-    runs := list(string)
-    for r in fs.entries(kit.join(cfg.root, "tests/conformance/run")) {
-        e := r else break
-        if e.kind is not .Dir and path.extension(e.name) is "gm" { runs.push(str.format("{}", e.name)!)! }
-    }
-    runs.items.sort()
-    for name in runs.items { out.push(kit.Test(name: str.format("interp/{}", name)!, run: interp_one, param: name))! }
     programs := list(string)
     programs_in(kit.join(cfg.root, "tests/conformance/run"), &programs)
     programs_in(kit.join(cfg.root, "examples"), &programs)
@@ -79,43 +68,10 @@ lowers_one :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     faults := list(string)
     for l in kit.split_lines(out.out) {
         if l.starts_with("!") { faults.push(l)! }
+        // What lowering leaves to TIR: nothing in a monomorphic body.
+        x := str.trim_start(l)
+        if x.starts_with("tir ") or str.contains(x, "= tir ") { faults.push(str.format("not lowered: {}", x)!)! }
     }
     try t.check(faults.items.len is 0, "the verifier found:\n{}", str.join(faults.items, "\n")!)
-    return ()
-}
-
-/// The value of the expectation `//! key: value` in `text`, if it has one.
-marker :: fn(text: string, key: string) -> ?string needs Alloc {
-    head := str.format("//! {}:", key)!
-    for l in kit.split_lines(text) {
-        if l.starts_with(head) { return str.trim(l[head.len..l.len]) }
-    }
-    return null
-}
-
-interp_one :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
-    dir := t.repo("tests/conformance/run")
-    text := try t.read(kit.join(dir, t.param))
-    if marker(text, "native") is not null { return !t.skip("runs natively only") }
-    if arch := marker(text, "arch") {
-        if arch is not t.cfg.arch { return !t.skip("for {} only", arch) }
-    }
-    if os := marker(text, "os") {
-        if os is not t.cfg.os_kind { return !t.skip("for {} only", os) }
-    }
-    // The interpreter hands a program with foreign code or assembly to the C back end.
-    if str.contains(text, "foreign") or str.contains(text, "@asm") { return !t.skip("runs through the C back end") }
-    mode := marker(text, "mode") else "debug"
-    if mode is "safe" { return !t.skip("a Safe build test") }
-    flag := str.format("--mode={}", mode)!
-    tree := t.gamma_in(dir, [_]string("run", "--backend=interp", flag, t.param))
-    tree.set("GAMMA_INTERP_LIR", "0")
-    a := try t.run(tree)
-    lowered := t.gamma_in(dir, [_]string("run", "--backend=interp", flag, t.param))
-    lowered.set("GAMMA_INTERP_LIR", "1")
-    b := try t.run(lowered)
-    try t.expect_text("the standard output", a.out, b.out)
-    try t.expect_text("the standard error", a.err, b.err)
-    try t.check(a.code() is b.code(), "exit status {} from the tree, {} from LIR", a.code() else 999, b.code() else 999)
     return ()
 }

@@ -151,9 +151,8 @@ WithRec :: struct {
 
 /// What a fiber starts with.
 Start :: union {
-    /// The body of a `with … on`, run in the frame of the function containing it; its value
-    /// goes to `dst`.
-    Body: (fr: ^Frame, cx: u32, body: ^Node, dst: []u8)
+    /// The body of a `with … on`: a sub-code run in the frame of the function containing it.
+    Code: (fr: ^Frame, cx: u32, code: ^Code)
     /// `f(arg)` for `@fiber`.
     Call: (f: []u8, fty: Ty, arg: []u8, cx: u32, span: source.Span)
     /// A new thread calling function `f` with `arg` (`threads.gm`).
@@ -290,7 +289,7 @@ coro_main :: fn(m: ^Machine, id: u32) needs Run {
             start := rec.start else return ()
             rec.start = null
             r := match start {
-                .Body(fr, cx, body, dst) => m.ev(Act(fr: fr, cx: cx), body, dst)
+                .Code(fr, cx, code) => m.vm_sub(Act(fr: fr, cx: cx), code)
                 .Call(x) => {
                     args := [1][]u8(x.arg)
                     m.call_value(x.cx, x.span, x.f, x.fty, args[..], empty_slice(u8))
@@ -394,28 +393,6 @@ add_coro :: fn(m: ^Machine, start: Start, want: usize, thread: u32) -> u32 needs
 check_stack :: fn(m: ^Machine, span: source.Span, stack: []const u8) -> Flow!() needs Alloc {
     len := m.slice_parts(stack).len
     if not m.fast() and len < MIN_STACK { return !m.trap(span, str.format("a fiber stack needs at least {} bytes (`@min_stack`), but this one has {}", MIN_STACK, len)!) }
-}
-
-/// `with h on stack { body }` (§14.1) in frame `a.fr`, after the handlers are installed in
-/// `a.cx`.
-with_on :: fn(m: ^Machine, a: Act, w: With, stack: []u8, e: ^Node, dst: []u8) -> Flow!() needs Run {
-    try m.check_stack(e.span, stack)
-    key := WithKey(frame: a.fr.id, label: w.label)
-    if m.with_rec(key) is not null { return !m.trap(e.span, "internal error: a `with … on` is active twice") }
-    m.fib.withs.push(WithRec(key: key, driver: m.fib.cur, suspended: list(u32), body_cx: a.cx, owned: list(u32), span: e.span))!
-    first := m.new_fiber(key, .Body(a.fr, a.cx, w.body, dst), .Running, stack)
-    r := m.drive(e.span, key, first)
-    // Whatever way the driver ended, no fiber may outlive the records it uses.
-    m.abort_all(e.span, key)
-    for i in 0..m.fib.withs.items.len {
-        if same_key(m.fib.withs.items[i].key, key) {
-            x := m.fib.withs.swap_remove(i)
-            x.suspended.deinit()
-            x.owned.deinit()
-            break
-        }
-    }
-    return r
 }
 
 /// The driver loop of a `with … on` whose body runs on fiber `first`.
@@ -585,58 +562,6 @@ consume :: fn(m: ^Machine, span: source.Span, fr: ^Frame, k: []const u8) -> Flow
     }
     rec.state = .Running
     return (fiber: id.trunc(u32), key: w)
-}
-
-/// `resume k(v)` (§14.3).
-resume_ :: fn(m: ^Machine, a: Act, k, v: ^Node, e: ^Node) -> Flow!() needs Run {
-    mk := m.mark()
-    kb := m.tmp(k.size)
-    try m.ev(a, k, kb)
-    vb := m.tmp(v.size)
-    try m.ev(a, v, vb)
-    c := try m.consume(e.span, a.fr, kb)
-    saved := empty_slice(u8)
-    if vb.len > 0 {
-        saved = make(u8, vb.len)!
-        saved.copy_from(vb)
-    }
-    m.fib.resume_value = saved
-    m.release(mk)
-    return !.Resume(c.fiber)
-}
-
-/// `cancel k` (§14.5).
-cancel_ :: fn(m: ^Machine, a: Act, k: ^Node, e: ^Node) -> Flow!() needs Run {
-    mk := m.mark()
-    kb := m.tmp(k.size)
-    try m.ev(a, k, kb)
-    c := try m.consume(e.span, a.fr, kb)
-    m.release(mk)
-    try m.cancel_fiber(e.span, c.key, c.fiber)
-}
-
-/// `@fiber(f, arg, stack)` (§14.6) in a clause.
-fiber_builtin :: fn(m: ^Machine, a: Act, args: []^Node, e: ^Node, dst: []u8) -> Flow!() needs Run {
-    mk := m.mark()
-    fb := m.tmp(args[0].size)
-    try m.ev(a, args[0], fb)
-    ab := m.tmp(args[1].size)
-    try m.ev(a, args[1], ab)
-    sb := m.tmp(args[2].size)
-    try m.ev(a, args[2], sb)
-    try m.check_stack(e.span, sb)
-    inst := a.fr.installing else return !m.trap(e.span, "internal error: `@fiber` outside a clause")
-    key := WithKey(frame: inst.frame.id, label: inst.label)
-    w := m.with_rec(key) else return !m.trap(e.span, "internal error: `@fiber` in a clause of a `with` without `on`")
-    f := make(u8, fb.len)!
-    f.copy_from(fb)
-    arg := make(u8, ab.len.max(1))!
-    arg[0..ab.len].copy_from(ab)
-    start := Start.Call(f, args[0].ty, arg[0..ab.len], w.body_cx, w.span)
-    id := m.new_fiber(key, start, .Suspended(key), sb)
-    (m.with_rec(key) else return ()).suspended.push(id)!
-    m.put_cont(dst, id, 1)
-    m.release(mk)
 }
 
 /// True if `f` is an exit whose target lies outside the `with … on` `key`: anything but a

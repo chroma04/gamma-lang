@@ -431,14 +431,12 @@ them into static storage and the interpreter lays them out in its memory.
 
 ## The lowered form (LIR)
 
-The interpreter and the C back end each lower function bodies from TIR themselves, with
-analyses of their own. `compiler/lir/` is the lowering they are being moved onto: one form
-of a checked, monomorphic body that both can run or translate directly, and on which
-analyses such as the removal of checks a loop's range proves can be done once. The
-interpreter's register machine compiles from it the bodies it covers (`interp/vm_lir.gm`,
-below); the C back end does not use it yet. `gamma lir` prints it, and the `lir` suite
-checks that every conformance program and example lowers to well-formed LIR and that the
-interpreter runs each conformance program alike with and without it.
+`compiler/lir/` lowers a checked, monomorphic function body from TIR to one form that a back
+end can run or translate directly, and on which analyses such as the removal of checks a
+loop's range proves can be done once. The interpreter compiles every body from it
+(`interp/vm_lir.gm`, below); the C back end still walks TIR itself and is to move onto it.
+`gamma lir` prints it, and the `lir` suite checks that every conformance program and
+example lowers to well-formed LIR with nothing left to TIR.
 
 - **Structure** (`lir.gm`). A body is a list of instructions, structured as in
   WebAssembly: `Block`, `Loop` and `If` hold lists of their own, and control leaves a
@@ -460,13 +458,18 @@ interpreter runs each conformance program alike with and without it.
 - **Implicit operations are instructions**: bounds and slice range checks (`Check`), the
   unwrap check, the tests and bindings of patterns (a `match` is a block per arm, left
   when the arm's pattern fails), and integer arithmetic, which traps as its TIR operator
-  does.
-- **Escapes.** Lowering is total: a construct it does not handle yet (`with`, `break` and
-  `return` out of a function literal, continuations, the builtins that do not take the
-  values of their arguments, a few constants) is kept as a `Tir` instruction holding the
-  TIR expression, for a tree evaluator to run whole; `Func.escapes` counts them. Over the
-  conformance programs and examples (with the library functions they use), about one
-  instruction in 230 is an escape, `with` and builtins most of them.
+  does. Assertions are in a `DebugOnly` list that Fast builds leave out; `get`,
+  `get_ptr`, `first` and `last` are a bounds test and a branch; a field of a `#bits` struct
+  is read with `BitsGet` and written back into its struct with `BitsSet`.
+- **Effects and jumps between frames.** A `With` holds the `Install`s of its handlers
+  (each after the computation of its value) and its body, which runs on a fiber when the
+  `with` has `on`; leaving it uninstalls them. A `break`, `continue` or `return` to
+  another frame (out of a function literal or a clause, `try` in one) is an `Exit`, and
+  `resume` and `cancel` are instructions of their own.
+- **Escapes.** A construct lowering does not handle is kept as a `Tir` instruction holding
+  the TIR expression (`Func.escapes` counts them). Only what generic checking leaves in
+  generic bodies is one, and those are lowered only in their instances, so the bodies of
+  a program have none; the interpreter traps on one as an internal error.
 - **Verification** (`verify.gm`). The verifier checks the rules above (temporaries
   written once and read where their write is visible, branches to enclosing blocks only and
   never out of a `defer`'s body, a `Defer` directly in a block) and the types of loads and
@@ -480,59 +483,53 @@ interpreter runs each conformance program alike with and without it.
 language exactly as the target would: target integer sizes, layouts and float semantics, with
 every checked operation checked.
 
-- **Code.** A function's body is lowered when the function is first called (`code.gm`):
-  the typed IR becomes nodes that carry what running them needs, so that nothing is looked
-  up by type at run time: the size of every value, the frame offsets of locals, the offsets
-  of fields, the sizes of elements, the tags of variants, and operations specialized for the
-  values that fit in a machine word (integers of 8 to 64 bits, `f32` and `f64`, booleans,
-  pointers), which are computed as 64-bit words rather than as bytes (`word.gm`; its
-  overflow, saturation and shift rules are the ones of the byte arithmetic of `intarith.gm`,
-  which it calls when an operation leaves the common case).
-- **The register machine** (`vm.gm`; `vm_compile.gm` compiles bodies for it) runs the body. Its statement structure (blocks with
-  their `defer`s, `if`, loops, `match` and its patterns, `return`, `break`, `continue`),
-  its arithmetic and comparisons on words, the places it can address (locals, upvars and
-  their fields, dereferences, indexing of slices, arrays and pointers), its calls of
-  functions and function values, the operations it performs, `with` (except `with … on`),
-  `else` on optionals and results, and the building of structs, tuples, optionals,
-  results, variants and slices are compiled into a flat list of instructions on word registers, which one loop
-  executes. Every other construct is handed, as a whole subtree, to the tree evaluator
-  (`run.gm`, `stmt.gm`, `calls.gm`), which covers the whole language over the same
-  nodes: the machine only takes the common paths.
+- **Code.** A function's body is lowered to LIR when the function is first called and
+  compiled from it for the register machine (`vm_lir.gm`): nothing is looked up by type at
+  run time. Values that fit in a machine word (integers of 8 to 64 bits, `f32` and `f64`,
+  booleans, pointers) are computed as 64-bit words (`word.gm`; its overflow, saturation and
+  shift rules are the ones of the byte arithmetic of `intarith.gm`, which it calls when an
+  operation leaves the common case).
+- **The register machine** (`vm.gm`) runs the body: a flat list of instructions on word
+  registers that one loop executes.
   - *Registers.* The frame's storage, seen as 64-bit words, is the register file. A local
     that is a word (at most 8 bytes) and whose address is never taken, in the function or
     by a function nested in it, gets 8 bytes of its own and is a register; so is every
     8-byte part of a local at a multiple of 8 (the pointer and length of a slice local),
-    when host and target are both little-endian. Operations read and write those
-    registers directly, so a local costs nothing to read, and an operand is read late
-    only when the operands after it cannot change it. After the locals come byte slots
-    for values that are not words, the registers of the constants the body uses (filled
-    when it starts), and the temporaries. A local whose address is taken is reached
-    through it, as memory is.
-  - *Two forms of an instruction.* `vm_compile.gm` produces instructions that say
-    everything (`Ins`: the types of the operands, the node to blame for a trap). For
-    each, `vm_assemble` (`bc.gm`) picks a 16-byte form (`Bc`) that the loop dispatches
-    on: its operation is specialized on what `Ins` holds as data (the width and
-    signedness of an integer, the size of a load, the kind of comparison), its operands
-    are at most three registers or small constants, and it does only the common case.
-    When that case does not apply (an overflow, an access outside an allocation, an
-    index out of bounds), or for an instruction without such a form, the loop runs the
-    instruction from its `Ins` (`vm_free`, or `vm_framed` for the ones that need the
-    frame), which does every case and raises the traps. The two lists have the same
-    indices, so jump targets are shared.
-  - *Scratch memory* that the tree's buffers come from is marked and released only
-    around statements and loops that contain the tree's instructions.
-  - *Conditions* built with `and`, `or` and `not` compile to chains of jumps, so no
-    boolean is made for them.
-  - *Values that are not words* are built in slots by the machine when it can: the
-    operands of a binary operator on 128-bit integers or vectors go to slots and one
-    instruction applies the operator (on 128-bit integers, in little-endian words, the
-    common cases of arithmetic, comparisons and shifts by a word are computed directly),
-    and a closure value, a captured local copied out, or an integer widened to 128 bits is
-    an instruction of its own. A word truncated from a 128-bit integer is read from the
-    first bytes of its slot, and `@hash` of a word integer is computed like the other
-    operators on words.
-  - *String literals* get their storage when the body is compiled: the slice is then a
-    constant that an instruction copies to its slot.
+    when host and target are both little-endian. After the locals come byte slots for
+    values that are not words, the registers of the constants the body uses (filled when
+    it starts), and the temporaries. A local whose address is taken is reached through
+    it, as memory is.
+  - *Temporaries.* Each LIR temporary that is a word takes a register when it is written
+    and gives it back after its last read, or after the loop it is read in when it was
+    written before that loop; a temporary loaded from a local in a register shares that
+    register while nothing stores to the local (and no function captures it), a value
+    stored straight into such a local is computed there, a comparison read only by the
+    branch after it becomes a compare-and-jump, and a bounds check followed by the access
+    it guards becomes `SliceLd`/`SliceSt`. A larger temporary gets a slot, given out
+    before compiling in order of position and reused once the temporary is dead; an
+    instruction that needs bytes for a moment (a 128-bit constant, the value an unwrap
+    reports) has a scratch slot of its own.
+  - *Generic instructions.* An operation on values that are not words (128-bit
+    integers, vectors, strings, aggregates compared with `is`, formatted writes,
+    coercions) is one instruction (`Gen`, `vm_gen.gm`) that reads its operands as bytes
+    of the frame's storage (a word's register is 8 such bytes) and applies the byte-level
+    operation of the interpreter. Building structs, tuples, optionals and results in
+    slots, slicing, pointer casts and string literals (whose storage is made when the body
+    is compiled) have instructions on words and slots instead.
+  - *Two forms of an instruction.* `vm_lir.gm` produces instructions that say everything
+    (`Ins`: the types of the operands, the node to blame for a trap). For each,
+    `vm_assemble` (`bc.gm`) picks a 16-byte form (`Bc`) that the loop dispatches on: its
+    operation is specialized on what `Ins` holds as data (the width and signedness of an
+    integer, the size of a load, the kind of comparison), its operands are at most three
+    registers or small constants, and it does only the common case. When that case does
+    not apply (an overflow, an access outside an allocation, an index out of bounds), or
+    for an instruction without such a form, the loop runs the instruction from its `Ins`
+    (`vm_free`, or `vm_framed` for the ones that need the frame), which does every case
+    and raises the traps. The two lists have the same indices, so jump targets are shared.
+  - *Sub-codes.* The body of a `defer` and of a `with … on` is compiled into code of its
+    own (`Code.sub`) that runs in the same frame with the same registers: the deferred
+    body when its block is left, the `with`'s body on a fiber. Its registers are those
+    free where it is written, which no temporary live where it runs can hold.
   - *Size.* The loop's C must stay below the size at which the C back end has Clang
     compile a function without optimization (`GM_LONG_FN`): its arms are a few
     operations each, and the loop keeps only the registers, the code and a pointer to the
@@ -540,30 +537,19 @@ every checked operation checked.
     path and calls), so that the C compiler holds them
     in machine registers. Everything else about the body that is running is in its
     record (`CallRec`).
-
-  - *From LIR.* A body whose LIR holds only words and what `vm_lir.gm` covers (places in
-    locals, upvars and memory, arithmetic, comparisons and integer conversions on words,
-    direct calls, blocks, loops, `if`, branches, returns and bounds checks) is compiled
-    from its LIR instead, to the same instructions, and gets no tree. Each temporary
-    takes a register when it is written and gives it back after its last read, or after
-    the loop it is read in when it was written before that loop; a temporary loaded from
-    a local in a register shares that register while nothing stores to the local, a value
-    stored straight into such a local is computed there, a comparison read only by the
-    branch after it becomes a compare-and-jump, and a bounds check followed by the access
-    it guards becomes `SliceLd`/`SliceSt`. On the benchmarks this runs as fast as the
-    compilation from the tree (a slice loop 15% faster); lowering the bodies it then
-    does not cover costs short runs about 1% more. About one body in eight is covered.
-    `GAMMA_INTERP_LIR=0` turns it off.
-  A `break` or `continue` that a subtree raises to a loop of the machine jumps to it;
-  other flows leave the body as they would leave the tree's.
+  - *Jumps.* A jump out of blocks runs the `defer`s of those it leaves and uninstalls the
+    handlers of the `with`s it leaves. A `break` or `continue` that a call raises (from a
+    function literal or a clause) to a loop or `with` of the body jumps to it
+    (`Code.loops`, which records where the loop's deferred statements and handler context
+    start); other flows leave the body.
   - *Calls* stay in the loop: a call does not run the loop again on the host stack. The
     callee's storage and its record are taken from scratch memory, the arguments go from
     registers and slots straight to that storage, and a return steps back to the caller's
     record. This holds for direct calls, for function values, and for the clauses of
     handler literals and handler declarations that an operation runs (so a `for` over an
     iterator runs its body in the loop too). A body in which no instruction needs a
-    frame (no deferred statement, no handler installed, no closure made, nothing left to
-    the tree evaluator) runs without a frame object: a local whose address is taken
+    frame (no deferred statement, no handler installed, no closure made) runs without a
+    frame object: a local whose address is taken
     keeps the address of its memory in a register of its own, and the frame a nested
     function captures is reached through another. A call of such a body uses a *site*
     worked out when the call first runs (where each argument goes, the size of the
@@ -576,18 +562,16 @@ every checked operation checked.
     body that needs a frame gets one from the
     pool when it is called, and its deferred statements, handlers and temporaries end
     when it returns or a flow leaves it (`vm_ret`, `vm_raise`), exactly as for a call
-    made the general way (`enter`): through fibers, with several threads, or from the
-    tree evaluator.
+    made the general way (`enter`): through fibers or with several threads.
   - *Handler contexts.* The machine keeps the current handler context: a `with` records
     it, installs its handlers on top, and goes back to it when left, by its end, by a
     `break` out of it (from its body or from a clause), by a jump out of a loop around it,
     or by a flow that leaves the body. A deferred statement records the context it was
-    pushed in and runs there. A `break` with a value from a clause finds the `with`'s
-    result slot through the compiled body.
-- **Values** are bytes in the target's layout, and the tree evaluates each expression into a
-  destination buffer of the size of its type (or a word into a `u64`). Buffers for
-  intermediate values come from scratch memory used as a stack, which each statement and
-  call releases, so evaluating allocates nothing. A local whose address is never taken lives
+    pushed in and runs there. A `break` with a value from a clause finds the local of the
+    `with`'s value through the compiled body.
+- **Values** are bytes in the target's layout, or words in registers. Buffers for
+  intermediate values come from scratch memory used as a stack, which each instruction and
+  call releases, so running allocates nothing. A local whose address is never taken lives
   in its frame's part of that memory; the others get an allocation of their own.
 - **Memory** (`memory.gm`) is a flat address space in which every allocation gets fresh
   addresses and freed ones are remembered, so out-of-bounds, use-after-free, null, misaligned

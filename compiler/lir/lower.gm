@@ -137,12 +137,19 @@ escape :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
     return .Temp(d)
 }
 
+/// The float constant `x` of the type of `e` (rounded to it as an `f64` first).
+float_value :: fn(lw: ^Lw, e: ^Expr, x: f64) -> Value needs Alloc => match lw.s.tys.kind(e.ty) {
+    .Float(16) => .Word(e.ty, u64(ratio.f16_bits(x)))
+    .Float(32) => .Word(e.ty, u64(x.to(f32).bits(u32)))
+    .Float(64) => .Word(e.ty, x.bits(u64))
+    _ => lw.escape(e)
+}
+
 /// The scalar constant of type `t` with these bits, if `t` is a scalar of at most 8 bytes.
 word :: fn(lw: ^Lw, t: Ty, bits: u64) -> ?Value needs Alloc {
     match lw.s.tys.kind(t) {
         .Int(_, b) => if b > 64 { return null }
         .Usize, .Isize, .Bool => {}
-        .Float(w) => if w is 16 { return null }
         .Optional(inner) => if not lw.s.is_nullable_pointer(inner) { return null }
         _ => return null
     }
@@ -159,11 +166,11 @@ expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
     match e.kind {
         .Int(i) => {
             match s.tys.kind(e.ty) {
-                .Float(32) => return .Word(e.ty, u64(ratio.from_int(i).to_f64().to(f32).bits(u32)))
-                .Float(64) => return .Word(e.ty, ratio.from_int(i).to_f64().bits(u64))
+                .Float(_) => return lw.float_value(e, ratio.from_int(i).to_f64())
                 _ => {}
             }
             if not s.tys.is_integer(e.ty) { return lw.escape(e) }
+            if s.layout(e.ty).size > 8 { return .Big(e.ty, bigint.bits128(i)) }
             v := int_bits(i) else return lw.escape(e)
             return lw.word(e.ty, v) else lw.escape(e)
         }
@@ -187,9 +194,42 @@ expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
             lw.emit(.IsPresent(present, p, is_result), e.span)
             lw.emit(.Check(.Unwrap(.Temp(present), p, is_result)), e.span)
             if s.layout(e.ty).size is 0 { return zero(e.ty) }
-            return lw.load(project(p, .Payload(lw.payload_off(x.ty))), e.ty, e.span)
+            return lw.load(project(p, .Payload(lw.payload_off(x.ty), e.ty)), e.ty, e.span)
         }
         .Try(x) => return lw.try_expr(e, x)
+        .Template(t) => {
+            d := lw.temp(e.ty)
+            lw.emit(.Template(d, t), e.span)
+            return .Temp(d)
+        }
+        .AddrOfTemp(x) => {
+            v := lw.expr(x)
+            l := lw.synthetic(x.ty)
+            lw.locals.items[usize(l)].addressed = true
+            lw.emit(.Store(local_place(l), v), x.span)
+            d := lw.temp(e.ty)
+            lw.emit(.AddrOf(d, local_place(l)), e.span)
+            return .Temp(d)
+        }
+        .In(elem, container, negated) => {
+            a := lw.expr(elem)
+            b := lw.expr(container)
+            d := lw.temp(e.ty)
+            lw.emit(.In(d, negated, a, b), e.span)
+            return .Temp(d)
+        }
+        .Resume(k, v) => {
+            a := lw.expr(k)
+            b := lw.expr(v)
+            lw.emit(.Resume(a, b), e.span)
+            return zero(e.ty)
+        }
+        .Cancel(k) => {
+            a := lw.expr(k)
+            lw.emit(.Cancel(a), e.span)
+            return zero(e.ty)
+        }
+        .With(w) => return lw.with_expr(e, w)
         .Write(w) => {
             sink: Sink = match w.sink {
                 .Perform(eff, op) => .Perform(eff, op)
@@ -201,13 +241,7 @@ expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
             lw.emit(.Write(sink, w.pieces, w.specs, args, table), e.span)
             return zero(e.ty)
         }
-        .Float(x) => {
-            match s.tys.kind(e.ty) {
-                .Float(32) => return .Word(e.ty, u64(x.to(f32).bits(u32)))
-                .Float(64) => return .Word(e.ty, x.bits(u64))
-                _ => return lw.escape(e)
-            }
-        }
+        .Float(x) => return lw.float_value(e, x)
         .Bool(b) => return .Word(e.ty, if b { 1 } else { 0 })
         .Null => {
             if w := lw.word(e.ty, 0) { return w }
@@ -216,6 +250,12 @@ expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
             return .Temp(d)
         }
         .Local(_), .Upvar(_), .Global(_), .Const(_), .Deref(_), .Field(_), .Index(_) => {
+            if .Field(base, index) := e.kind and lw.is_bits(base.ty) {
+                whole := lw.expr(base)
+                d := lw.temp(e.ty)
+                lw.emit(.BitsGet(d, whole, index), e.span)
+                return .Temp(d)
+            }
             p := lw.place(e) else return lw.escape(e)
             if s.layout(e.ty).size is 0 { return zero(e.ty) }
             return lw.load(p, e.ty, e.span)
@@ -280,7 +320,15 @@ expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
             return .Temp(d)
         }
         .Builtin(op, args) => {
-            if not by_value(op) { return lw.escape(e) }
+            match op {
+                .Assert => {
+                    lw.assert_(e, args)
+                    return zero(e.ty)
+                }
+                .StaticAssert(_) => return zero(e.ty)
+                .Get, .GetPtr, .First, .Last => return lw.get(e, op, args)
+                _ => {}
+            }
             vals := lw.exprs(args)
             if s.layout(e.ty).size is 0 or lw.diverges(e) {
                 lw.emit(.Builtin(null, op, vals), e.span)
@@ -329,8 +377,16 @@ expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
         .If(x) => return lw.if_expr(e, x)
         .Loop(x) => return lw.loop_expr(e, x)
         .Break(x) => {
-            .Label(0, tl) := x.target else return lw.escape(e)
-            labels := lw.loop_labels(tl) else return lw.escape(e)
+            labels := lw.local_target(x.target) else {
+                v: ?Value = null
+                if y := x.value {
+                    val := lw.expr(y)
+                    if s.layout(y.ty).size > 0 and not lw.diverges(y) { v = val }
+                }
+                lw.emit(.Exit(.Break(x.target), v), e.span)
+                return zero(e.ty)
+            }
+            tl := labels.label
             if v := x.value {
                 val := lw.expr(v)
                 if r := lw.result_of(tl) { lw.emit(.Store(local_place(r), val), e.span) }
@@ -339,14 +395,20 @@ expr :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
             return zero(e.ty)
         }
         .Continue(t) => {
-            .Label(0, tl) := t else return lw.escape(e)
-            labels := lw.loop_labels(tl) else return lw.escape(e)
+            labels := lw.local_target(t) else {
+                lw.emit(.Exit(.Continue(t), null), e.span)
+                return zero(e.ty)
+            }
             lw.emit(.Br(labels.cont), e.span)
             return zero(e.ty)
         }
         .Return(levels, x) => {
-            if levels is not 0 { return lw.escape(e) }
             v := lw.expr(x)
+            if levels is not 0 {
+                val: ?Value = if s.layout(x.ty).size > 0 and not lw.diverges(x) { v } else { null }
+                lw.emit(.Exit(.Return(levels), val), e.span)
+                return zero(e.ty)
+            }
             lw.emit(.Return(v), e.span)
             return zero(e.ty)
         }
@@ -367,10 +429,89 @@ exprs :: fn(lw: ^Lw, xs: []Expr) -> []Value needs Alloc {
     return out.items
 }
 
-/// Whether a builtin takes the values of its arguments (the others are evaluated whole).
-by_value :: fn(op: tir.Builtin) -> bool => match op {
-    .Assert, .Cover(_), .Unreachable, .Fiber, .Sys(_), .Get, .GetPtr, .First, .Last, .Asm(_), .StaticAssert(_) => false
-    _ => true
+/// `@assert(cond)` or `@assert(cond, msg)`: in Debug builds, the message is computed and
+/// the assertion fails if the condition is false.
+assert_ :: fn(lw: ^Lw, e: ^Expr, args: []Expr) needs Alloc {
+    body := lw.region(fn() {
+        c := lw.expr(&args[0])
+        fail := lw.region(fn() {
+            msg: ?Value = null
+            if args.len > 1 { msg = lw.expr(&args[1]) }
+            lw.emit(.Assert(msg), e.span)
+        })
+        lw.emit(.If(c, empty_slice(Inst), fail), e.span)
+    })
+    lw.emit(.DebugOnly(body), e.span)
+}
+
+/// `a.get(i)`, `a.get_ptr(i)`, `a.first()` and `a.last()` of an array or slice `a`: the
+/// element (or its address) as a present optional if the index is in bounds, else `null`.
+get :: fn(lw: ^Lw, e: ^Expr, op: tir.Builtin, args: []Expr) -> Value needs Alloc {
+    s := lw.s
+    usize_ty := s.tys.usize_ty()
+    .Optional(inner) := s.tys.kind(e.ty) else return lw.escape(e)
+    elem := inner
+    if op is .GetPtr {
+        if .Ptr(_, pointee) := s.tys.kind(inner) { elem = pointee }
+    }
+    esz := s.layout(elem).size
+    base := &args[0]
+    // The array's place, or the temporary holding the slice's pointer; and the length.
+    seq: Place = local_place(0)
+    ptr: ?u32 = null
+    len: Value = .Word(usize_ty, 0)
+    match s.tys.kind(base.ty) {
+        .Array(n, _, _) => {
+            seq = lw.operand_place(base) else return lw.escape(e)
+            if op is .GetPtr { lw.mark_addressed(&seq) }
+            len = .Word(usize_ty, n)
+        }
+        .Slice(is_const, el) => {
+            p := lw.operand_place(base) else return lw.escape(e)
+            pt := s.tys.intern(.ManyPtr(is_const, el))
+            ptr = lw.in_temp(lw.load(project(p, .Field(0, 0)), pt, e.span), pt, e.span)
+            len = lw.load(project(p, .Field(1, lw.ptr_size())), usize_ty, e.span)
+        }
+        _ => return lw.escape(e)
+    }
+    i: Value = .Word(usize_ty, 0)
+    match op {
+        .First => {}
+        .Last => {
+            d := lw.temp(usize_ty)
+            lw.emit(.Bin(d, .Sub(.Wrap), len, .Word(usize_ty, 1)), e.span)
+            i = .Temp(d)
+        }
+        _ => { i = lw.expr(&args[1]) }
+    }
+    res := lw.synthetic(e.ty)
+    ok := lw.temp(s.tys.bool_ty())
+    lw.emit(.Bin(ok, .Lt, i, len), e.span)
+    found := lw.region(fn() {
+        at: Place = if p := ptr { Place(base: .Deref(p), proj: one(.Step(i, esz))) } else { project(seq, .Elem(i, esz)) }
+        v: Value = .Zero(elem)
+        if op is .GetPtr {
+            d := lw.temp(inner)
+            lw.emit(.AddrOf(d, at), e.span)
+            v = .Temp(d)
+        } else if s.layout(elem).size > 0 {
+            v = lw.load(at, elem, e.span)
+        }
+        w := lw.temp(e.ty)
+        lw.emit(.Wrap(w, .Some, v), e.span)
+        lw.emit(.Store(local_place(res), .Temp(w)), e.span)
+    })
+    missing := lw.region(fn() {
+        if w := lw.word(e.ty, 0) {
+            lw.emit(.Store(local_place(res), w), e.span)
+            return
+        }
+        w := lw.temp(e.ty)
+        lw.emit(.Wrap(w, .None, null), e.span)
+        lw.emit(.Store(local_place(res), .Temp(w)), e.span)
+    })
+    lw.emit(.If(.Temp(ok), found, missing), e.span)
+    return lw.load(local_place(res), e.ty, e.span)
 }
 
 ptr_size :: fn(lw: ^Lw) -> u64 needs Alloc => lw.s.layout(lw.s.tys.usize_ty()).size
@@ -404,7 +545,7 @@ place :: fn(lw: ^Lw, e: ^Expr) -> ?Place needs Alloc {
         .Local(l) => return local_place(l)
         .Upvar(levels, l) => return Place(base: .Upvar(levels, l))
         .Global(_, decl) => return Place(base: .Global(decl))
-        .Const(name, span) => return Place(base: .Const(name, span))
+        .Const(name, span) => return Place(base: .Const(name, span, e.ty))
         .Deref(x) => {
             p := lw.expr(x)
             return Place(base: .Deref(lw.in_temp(p, x.ty, x.span)))
@@ -424,7 +565,7 @@ place :: fn(lw: ^Lw, e: ^Expr) -> ?Place needs Alloc {
 /// The place holding the value of `e`: `e` itself if it is a place, otherwise a local
 /// that lowering adds and stores the value in.
 operand_place :: fn(lw: ^Lw, e: ^Expr) -> ?Place needs Alloc {
-    if is_place_expr(lw.s, e) { return lw.place(e) }
+    if is_place_expr(lw.s, e) and not lw.bits_field(e) { return lw.place(e) }
     v := lw.expr(e)
     l := lw.synthetic(e.ty)
     lw.emit(.Store(local_place(l), v), e.span)
@@ -437,6 +578,12 @@ is_place_expr :: fn(s: ^Sema, e: ^const Expr) -> bool => match e.kind {
     .Field(base, _) => is_place_expr(s, base)
     .Index(base, _, _) => if s.tys.kind(base.ty) is .Array(_, _, _) { is_place_expr(s, base) } else { true }
     _ => false
+}
+
+/// Whether `e` is a field of a `#bits` struct (a place without a byte address).
+bits_field :: fn(lw: ^Lw, e: ^const Expr) -> bool {
+    .Field(base, _) := e.kind else return false
+    return lw.is_bits(base.ty)
 }
 
 /// Whether `t` is a `#bits` struct, whose fields are not at byte offsets.
@@ -584,6 +731,44 @@ stmt :: fn(lw: ^Lw, st: ^tir.Stmt) needs Alloc {
         }
         .Assign(place, value) => {
             // The place's operands, then the value, then the store (§4.7).
+            if lw.bits_field(place) {
+                // A field of a `#bits` struct (perhaps of one that is itself such a field):
+                // the struct whose place it is part of is read, changed and written.
+                chain := list(^Expr)
+                root := place
+                while lw.bits_field(root) {
+                    chain.push(root)!
+                    .Field(base, _) := root.kind else break
+                    root = base
+                }
+                bp := lw.place(root) else {
+                    lw.escape_stmt(st, place.span)
+                    return
+                }
+                v := lw.expr(value)
+                if lw.diverges(value) { return }
+                // The wholes from the root's value down to the field's struct.
+                wholes := list(Value)
+                wholes.push(lw.load(bp, root.ty, place.span))!
+                k := chain.items.len
+                while k > 1 {
+                    k -= 1
+                    .Field(_, index) := chain.items[k].kind else break
+                    d := lw.temp(chain.items[k].ty)
+                    lw.emit(.BitsGet(d, wholes.items[wholes.items.len - 1], index), place.span)
+                    wholes.push(.Temp(d))!
+                }
+                // Then each set back into its struct, up to the root.
+                nv := v
+                for j in 0..chain.items.len {
+                    .Field(base, index) := chain.items[j].kind else break
+                    d := lw.temp(base.ty)
+                    lw.emit(.BitsSet(d, wholes.items[chain.items.len - 1 - j], index, nv), place.span)
+                    nv = .Temp(d)
+                }
+                lw.emit(.Store(bp, nv), value.span)
+                return
+            }
             p := lw.place(place) else {
                 // A place this lowering does not handle: the whole statement.
                 lw.escape_stmt(st, place.span)
@@ -593,7 +778,36 @@ stmt :: fn(lw: ^Lw, st: ^tir.Stmt) needs Alloc {
             if lw.diverges(value) or lw.s.layout(value.ty).size is 0 { return }
             lw.emit(.Store(p, v), value.span)
         }
-        .AssignTuple(_, value) => lw.escape_stmt(st, value.span)
+        .AssignTuple(places, value) => {
+            // The places' operands in order, then the value, then the stores.
+            ps := list(?Place)
+            for x in places {
+                q := x else {
+                    ps.push(null)!
+                    continue
+                }
+                if lw.bits_field(q) {
+                    lw.escape_stmt(st, value.span)
+                    return
+                }
+                ps.push(lw.place(q) else {
+                    lw.escape_stmt(st, value.span)
+                    return
+                })!
+            }
+            v := lw.expr(value)
+            if lw.diverges(value) { return }
+            l := lw.synthetic(value.ty)
+            lw.emit(.Store(local_place(l), v), value.span)
+            offs := lw.s.layout(value.ty).offsets
+            .Tuple(elems, _) := lw.s.tys.kind(value.ty) else return
+            for i, x in enumerate(ps.items) {
+                q := x else continue
+                if lw.s.layout(elems[i]).size is 0 { continue }
+                f := lw.load(project(local_place(l), .Field(i.trunc(u32), offs[i])), elems[i], value.span)
+                lw.emit(.Store(q, f), value.span)
+            }
+        }
         .Expr(x) => {
             _ = lw.expr(x)
         }
@@ -686,6 +900,12 @@ conds :: fn(lw: ^Lw, cond: []tir.CondPart, fail: u32) needs Alloc {
     }
 }
 
+/// The labels of the loop or `with` that `t` targets, if it is one of this function.
+local_target :: fn(lw: ^Lw, t: tir.Target) -> ?LoopLabels {
+    .Label(0, tl) := t else return null
+    return lw.loop_labels(tl)
+}
+
 /// The labels of TIR's loop or `with` `tl`, if this lowering made them.
 loop_labels :: fn(lw: ^Lw, tl: u32) -> ?LoopLabels {
     for x in lw.loops.items {
@@ -705,7 +925,7 @@ loop_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.LoopExpr) -> Value needs Alloc {
     brk := lw.label()
     top := lw.label()
     next_ := lw.label()
-    lw.loops.push(LoopLabels(label: x.label, brk: brk, cont: next_))!
+    lw.loops.push(LoopLabels(label: x.label, brk: brk, cont: next_, result: res))!
     while lw.results.items.len <= usize(x.label) { lw.results.push(null)! }
     lw.results.items[usize(x.label)] = res
     outer := lw.region(fn() {
@@ -796,23 +1016,31 @@ pattern :: fn(lw: ^Lw, pat: ^tir.Pat, p: Place, fail: u32) needs Alloc {
             d := lw.temp(bool_ty)
             lw.emit(.IsPresent(d, p, false), pat.span)
             lw.emit(.BrIf(.Temp(d), true, fail), pat.span)
-            lw.pattern(q, project(p, .Payload(0)), fail)
+            lw.pattern(q, project(p, .Payload(0, q.ty)), fail)
         }
         .Ok(q), .Err(q) => {
             d := lw.temp(bool_ty)
             lw.emit(.IsPresent(d, p, true), pat.span)
             lw.emit(.BrIf(.Temp(d), pat.kind is .Ok(_), fail), pat.span)
-            lw.pattern(q, project(p, .Payload(lw.payload_off(pat.ty))), fail)
+            lw.pattern(q, project(p, .Payload(lw.payload_off(pat.ty), q.ty)), fail)
         }
         .Variant(v, ?payload) => {
             d := lw.temp(bool_ty)
             lw.emit(.TagIs(d, p, v), pat.span)
             lw.emit(.BrIf(.Temp(d), true, fail), pat.span)
-            if q := payload { lw.pattern(q, project(p, .Payload(lw.payload_off(pat.ty))), fail) }
+            if q := payload { lw.pattern(q, project(p, .Payload(lw.payload_off(pat.ty), q.ty)), fail) }
         }
         .Fields(fs) => {
             if lw.is_bits(pat.ty) {
-                lw.escape_pattern(pat, p, fail)
+                // Each field is taken out of the struct into a local of its own.
+                whole := lw.load(p, pat.ty, pat.span)
+                for x in fs {
+                    d := lw.temp(x.pat.ty)
+                    lw.emit(.BitsGet(d, whole, x.index), pat.span)
+                    l := lw.synthetic(x.pat.ty)
+                    lw.emit(.Store(local_place(l), .Temp(d)), pat.span)
+                    lw.pattern(x.pat, local_place(l), fail)
+                }
                 return
             }
             offs := s.layout(pat.ty).offsets
@@ -843,8 +1071,10 @@ pattern :: fn(lw: ^Lw, pat: ^tir.Pat, p: Place, fail: u32) needs Alloc {
 /// The low 64 bits of `i` in two's complement: an integer of at most 64 bits as a word.
 int_bits :: fn(i: bigint.Int) -> ?u64 => bigint.bits128(i).trunc(u64)
 
-/// The offset of the payload in a result or union of type `t`.
+/// The offset of the payload in an optional, result or union of type `t`.
 payload_off :: fn(lw: ^Lw, t: Ty) -> u64 needs Alloc {
+    // An optional's value comes first, then its flag (none for a nullable pointer).
+    if lw.s.tys.kind(t) is .Optional(_) { return 0 }
     offs := lw.s.layout(t).offsets
     return if offs.len > 1 { offs[1] } else { 0 }
 }
@@ -852,6 +1082,7 @@ payload_off :: fn(lw: ^Lw, t: Ty) -> u64 needs Alloc {
 /// The integer `i` as a constant of type `t`, if it is a word.
 int_value :: fn(lw: ^Lw, t: Ty, i: bigint.Int) -> ?Value needs Alloc {
     if not lw.s.tys.is_integer(t) { return null }
+    if lw.s.layout(t).size > 8 { return .Big(t, bigint.bits128(i)) }
     v := int_bits(i) else return null
     return lw.word(t, v)
 }
@@ -889,9 +1120,7 @@ payload_ty :: fn(lw: ^Lw, t: Ty) -> ?Ty => match lw.s.tys.kind(t) {
 else_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.ElseExpr) -> Value needs Alloc {
     s := lw.s
     is_result := s.tys.kind(x.lhs.ty) is .Result(_)
-    // A fallback that turns the whole into an optional or a result is left to TIR.
     inner := lw.payload_ty(x.lhs.ty) else return lw.escape(e)
-    if inner is not e.ty and s.tys.kind(e.ty) is not .Never { return lw.escape(e) }
     p := lw.operand_place(x.lhs) else return lw.escape(e)
     res := lw.result_local(e.ty)
     present := lw.temp(s.tys.bool_ty())
@@ -899,15 +1128,30 @@ else_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.ElseExpr) -> Value needs Alloc {
     off := lw.payload_off(x.lhs.ty)
     then := lw.region(fn() {
         r := res else return
-        if s.layout(inner).size is 0 { return }
-        v := lw.load(project(p, .Payload(off)), inner, e.span)
+        if e.ty is x.lhs.ty and e.ty is not inner {
+            // `a else b` of two optionals (or results): `a` whole if it is present.
+            v := lw.load(p, e.ty, e.span)
+            lw.emit(.Store(local_place(r), v), e.span)
+            return
+        }
+        v: Value = .Zero(inner)
+        if s.layout(inner).size > 0 { v = lw.load(project(p, .Payload(off, inner)), inner, e.span) }
+        if e.ty is not inner {
+            // The value as a present optional (`r else null`) or a success of another
+            // result type.
+            w := lw.temp(e.ty)
+            lw.emit(.Wrap(w, if s.tys.kind(e.ty) is .Optional(_) { .Some } else { .Ok }, v), e.span)
+            v = .Temp(w)
+        } else if s.layout(inner).size is 0 {
+            return
+        }
         lw.emit(.Store(local_place(r), v), e.span)
     })
     otherwise := lw.region(fn() {
         if c := x.capture {
             .Result(err, _) := s.tys.kind(x.lhs.ty) else return
             if s.layout(err).size > 0 {
-                v := lw.load(project(p, .Payload(off)), err, e.span)
+                v := lw.load(project(p, .Payload(off, err)), err, e.span)
                 lw.emit(.Store(local_place(c), v), e.span)
             }
         }
@@ -917,30 +1161,38 @@ else_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.ElseExpr) -> Value needs Alloc {
     return lw.read_result(res, e.ty, e.span)
 }
 
-/// `try x` in the function itself (not one that a clause or literal returns from): the
-/// value of `x` if present, else the function returns `null` or the (lifted) error.
+/// `try x`: the value of `x` if present, else the function (or the one `levels` frames
+/// out, that a clause or literal returns from) returns `null` or the (lifted) error.
 try_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.TryExpr) -> Value needs Alloc {
     s := lw.s
-    if x.levels is not 0 { return lw.escape(e) }
-    ret := s.fns.items[usize(lw.f)].ret
+    target := ancestor(s, lw.f, x.levels) else return lw.escape(e)
+    ret := s.fns.items[usize(target)].ret
     is_result := s.tys.kind(x.expr.ty) is .Result(_)
     p := lw.operand_place(x.expr) else return lw.escape(e)
     present := lw.temp(s.tys.bool_ty())
     lw.emit(.IsPresent(present, p, is_result), e.span)
     off := lw.payload_off(x.expr.ty)
+    leave :: fn(v: Value) {
+        if x.levels is 0 {
+            lw.emit(.Return(v), e.span)
+        } else {
+            lw.emit(.Exit(.Return(x.levels), if s.layout(ret).size > 0 { v } else { null }), e.span)
+        }
+    }
     fail := lw.region(fn() {
         if not is_result {
             if w := lw.word(ret, 0) {
-                lw.emit(.Return(w), e.span)
+                leave(w)
                 return
             }
             d := lw.temp(ret)
             lw.emit(.Wrap(d, .None, null), e.span)
-            lw.emit(.Return(.Temp(d)), e.span)
+            leave(.Temp(d))
             return
         }
         .Result(err, _) := s.tys.kind(x.expr.ty) else return
-        v := lw.load(project(p, .Payload(off)), err, e.span)
+        v: Value = .Zero(err)
+        if s.layout(err).size > 0 { v = lw.load(project(p, .Payload(off, err)), err, e.span) }
         if variant := x.lift {
             .Result(ferr, _) := s.tys.kind(ret) else return
             lifted := lw.temp(ferr)
@@ -949,11 +1201,47 @@ try_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.TryExpr) -> Value needs Alloc {
         }
         d := lw.temp(ret)
         lw.emit(.Wrap(d, .Err, v), e.span)
-        lw.emit(.Return(.Temp(d)), e.span)
+        leave(.Temp(d))
     })
     lw.emit(.If(.Temp(present), empty_slice(Inst), fail), e.span)
     if s.layout(e.ty).size is 0 { return zero(e.ty) }
-    return lw.load(project(p, .Payload(off)), e.ty, e.span)
+    return lw.load(project(p, .Payload(off, e.ty)), e.ty, e.span)
+}
+
+/// `[label:] with h1, h2, … [on stack] { body }`: the stack, then each handler's value and
+/// its installation, then the body.
+with_expr :: fn(lw: ^Lw, e: ^Expr, w: tir.WithExpr) -> Value needs Alloc {
+    s := lw.s
+    on: ?Value = null
+    if st := w.on { on = lw.expr(st) }
+    res := lw.result_local(e.ty)
+    l := lw.label()
+    lw.loops.push(LoopLabels(label: w.label, brk: l, cont: l, result: res))!
+    while lw.results.items.len <= usize(w.label) { lw.results.push(null)! }
+    lw.results.items[usize(w.label)] = res
+    install := lw.region(fn() {
+        for h in w.handlers {
+            match h {
+                .Literal(x) => {
+                    if .HandlerRef(id) := x.kind {
+                        lw.emit(.Install(.Lit(id)), x.span)
+                        continue
+                    }
+                    v := lw.expr(x)
+                    id: u32 = 0
+                    if .Handler(i) := s.tys.kind(x.ty) { id = i }
+                    lw.emit(.Install(.Value(id, v)), x.span)
+                }
+                .Decl(decls, value) => {
+                    v := lw.expr(value)
+                    lw.emit(.Install(.Decl(decls, v)), value.span)
+                }
+            }
+        }
+    })
+    body := lw.region(fn() { lw.store_result(res, w.body) })
+    lw.emit(.With(l, w.label, install, on, body), e.span)
+    return lw.read_result(res, e.ty, e.span)
 }
 
 /// `base[lo..hi]` and its other forms: the bounds are checked, then the slice is made.

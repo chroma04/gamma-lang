@@ -7,7 +7,8 @@
 /// - every local, temporary and label exists;
 /// - `Br` and `BrIf` go to an enclosing block (not a loop), never out of a `defer`'s body;
 /// - each label is defined once;
-/// - a `Defer` is directly in the body of a block (or of the function);
+/// - a `Defer` is directly in the body of a block (or of the function), an `Install` in
+///   the `install` list of a `With`;
 /// - a `Load` gives a temporary of the place's type, a `Store` stores a value of it (where
 ///   `place_type` knows it), and a bounds check compares an integer with a `usize`.
 #allow("needless-pub")
@@ -40,6 +41,8 @@ Verifier :: struct {
     /// The blocks that enclose the instruction being checked, innermost last; a defer's
     /// body starts afresh (`NO_LABEL` marks where it starts).
     open: List(u32)
+    /// How many `install` lists of `With`s enclose the instruction being checked.
+    installing: u32 = 0
 }
 
 /// What `Verifier.open` holds where a `defer`'s body starts: no branch may cross it.
@@ -117,7 +120,7 @@ check_inst :: fn(v: ^Verifier, i: ^const Inst, block_body: bool) needs Alloc {
                 v.check_place(p)
             }
         }
-        .Str(_), .FnRef(_), .Closure(_), .HandlerRef(_), .NoArm, .Unreachable, .Tir(_) => {}
+        .Str(_), .Template(_), .FnRef(_), .Closure(_), .HandlerRef(_), .NoArm, .Unreachable, .Tir(_) => {}
         .Fill(_, x) => v.check_value(x)
         .MakeSlice(_, ptr, lo, hi, _, _) => {
             v.check_value(ptr)
@@ -160,6 +163,36 @@ check_inst :: fn(v: ^Verifier, i: ^const Inst, block_body: bool) needs Alloc {
             _ = v.open.pop()
         }
         .Trap(x) => v.check_value(x)
+        .Assert(?x) => if y := x { v.check_value(y) }
+        .In(_, _, a, b), .BitsSet(_, a, _, b) => {
+            v.check_value(a)
+            v.check_value(b)
+        }
+        .BitsGet(_, a, _) => v.check_value(a)
+        .DebugOnly(body) => v.check_list(body, false)
+        .With(l, _, install, ?on, body) => {
+            if x := on { v.check_value(x) }
+            v.check_define(l)
+            v.open.push(l)!
+            v.installing += 1
+            v.check_list(install, false)
+            v.installing -= 1
+            v.check_list(body, true)
+            _ = v.open.pop()
+        }
+        .Install(h) => {
+            if v.installing is 0 { v.fault("an install is not in the install list of a with") }
+            match h {
+                .Lit(_) => {}
+                .Value(_, x), .Decl(_, x) => v.check_value(x)
+            }
+        }
+        .Exit(_, ?x) => if y := x { v.check_value(y) }
+        .Resume(k, x) => {
+            v.check_value(k)
+            v.check_value(x)
+        }
+        .Cancel(k) => v.check_value(k)
     }
 }
 

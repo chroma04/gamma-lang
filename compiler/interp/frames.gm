@@ -39,15 +39,11 @@ make_fn_info :: fn(m: ^Machine, f: u32) -> ^FnInfo needs Alloc {
     // Registered before its body is lowered.
     m.infos.items[i] = made
     made.frame_size = made.store_size
-    if b := def.body {
-        // From LIR where it covers the body (it gives the frame its own locals first).
-        func: ?LirBody = if m.use_lir { m.lir_prepare(f, made) } else { null }
-        // A body compiled from LIR needs no tree: the machine always runs it (`enter`
-        // runs `FnInfo.vm` when there is one), so a placeholder stands for it.
-        body := if func is not null { new(Node(op: .Leftover, ty: def.ret, size: 0, span: b.span, place: false))! } else { lower_body(m, made, b) }
-        made.body = body
-        c := if lf := func { m.lir_compile(made, lf) } else { vm_compile(m, made, body) }
+    if def.body is not null {
+        // Compiled from the body's LIR, which gives the frame its own locals first.
+        c := m.lir_compile(made, m.lir_prepare(f, made))
         m.vm_assemble(made, c)
+        m.lir_assemble_subs(made, c)
         made.vm = c
         made.frame_size = c.size
     }
@@ -116,7 +112,7 @@ new_frame :: fn(m: ^Machine, fn_id: u32, info: ^FnInfo, ret: []u8, env: ?^Frame,
 /// `new_frame` takes it from.
 #noinline
 alloc_frame :: fn(m: ^Machine, info: ^FnInfo, ret: []u8) -> ^Frame needs Alloc {
-    fr := new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), labels: list(LabelDst), defers: list(Deferred), installing: null, is_clause_lit: false, next_free: null))!
+    fr := new(Frame(id: 0, handle: 0, fn_id: 0, info: info, ret: ret, env: null, store: empty_slice(u8), mem: empty_slice(u64), mem_buf: empty_slice(u64), allocs: list(u64), defers: list(Deferred), installing: null, is_clause_lit: false, next_free: null))!
     fr.next_free = m.frame_pool
     m.frame_pool = fr
     m.pooled += 1
@@ -147,7 +143,7 @@ frame_handle :: fn(m: ^Machine, fr: ^Frame) -> u32 needs Alloc {
 /// Ends frame `fr`: its allocations die and its handle is free again.
 #inline
 end_frame :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
-    if fr.allocs.items.len > 0 or fr.labels.items.len > 0 or fr.defers.items.len > 0 or fr.handle is not 0 or m.pooled >= 256 {
+    if fr.allocs.items.len > 0 or fr.defers.items.len > 0 or fr.handle is not 0 or m.pooled >= 256 {
         m.end_frame_slow(fr)
         return ()
     }
@@ -164,7 +160,6 @@ end_frame_slow :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
         fr.allocs.clear()
         fr.mem.fill(0)
     }
-    if fr.labels.items.len > 0 { fr.labels.clear() }
     if fr.defers.items.len > 0 { fr.defers.clear() }
     if fr.handle is not 0 {
         m.frames.items[us(fr.handle - 1)] = null
@@ -177,7 +172,6 @@ end_frame_slow :: fn(m: ^Machine, fr: ^Frame) needs Alloc {
         return ()
     }
     fr.allocs.deinit()
-    fr.labels.deinit()
     fr.defers.deinit()
     if fr.mem_buf.len > 0 { free(fr.mem_buf) }
     destroy(fr)
