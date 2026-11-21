@@ -1,33 +1,48 @@
-# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0 + P1a done
+# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0–P2 done
 
 User asks (after 074): "scope out the lowered IR", then "start on the plan with P0 …
 we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 first.
 
-## State after P1a (s80) — continue P1 here
-- interp/vm_lir.gm: LIR → Ins for covered bodies (lir_prepare → LirBody{func, an};
-  lir_compile). DEFAULT ON (Machine.use_lir; GAMMA_INTERP_LIR=0 = old path). frames.gm
-  make_fn_info: covered bodies get a placeholder tree node (enter runs info.vm). FnInfo
-  extended with LIR's synthetic locals (lir_extend, same rules as make_info).
-- Covered (lir_op_ok): Move/Load/Store/AddrOf (bases Local, Upvar w/ const proj, Deref;
-  not Global/Const), Bin/Un/Eq on words, Coerce IntWiden/PtrToPtr/TupleRename/FnPtrWiden,
-  Builtin Convert/Trunc/Sat on word ints, Call(Fn) only, Check.Bounds (unsigned index),
-  Block/Loop/If/Br/BrIf/Return/NoArm/Unreachable; all temps 1..8 bytes; no escapes; no
-  Uninit values. New Ins `Bounds(i, len, n)` (vm_free arm, no Bc form).
-- Codegen tricks (each measured): temp regs freed at last use, extended over loops read
-  in; Load of a register local (or 8-aligned word field of a frame local,
-  lc_frame_reg) aliases the register if no Store to that local in its lifetime;
-  value + Store-to-register-local retargeted; Cmp/Eq fused into BrIf/If (JCmp/JEq);
-  Bounds + Load/Store(Deref t, [Step i]) → SliceLd/SliceSt.
-- Measured (callgrind Ir, tree → LIR): collatz+fib 3785 → 3779 M; slice-sum loop 79.7 →
-  67.8 M; bench/programs within ±0.3% (iterate −2.9%, with −1.7%); json_query (short,
-  compile-heavy) +1.1% = lowering bodies that are then rejected. Coverage 1051 of 8250
-  compiled functions (conformance run + examples).
-- Tests: suite `lir` `interp/<name>`: each single-file conformance run program in the
-  interp with GAMMA_INTERP_LIR=0 vs default, stdout/stderr/status equal (493 programs, 0
-  diffs). Debug aid (not committed): a Machine `dumped` list printing each fn's Ins.
-- P1 next, by value: cover non-word temps (slots: aggregates, strings, optionals; needed
-  by most remaining bodies), Perform/CallValue, IsPresent/TagIs (patterns on unions),
-  Defer, then `with` and escapes (lower the TIR subtree with code.gm → EvalW). Then P2.
+## State after P1 + P2 (s81) — next: P3 (passes), then P4 (cgen)
+- The interpreter compiles EVERY body from LIR (interp/vm_lir.gm; no switch any more).
+  Deleted: code.gm (TIR→Node), vm_compile.gm, run.gm/stmt.gm (tree evaluator), the tree
+  parts of calls/place/ops/fiber/sys, Frame.labels, and Ins EvalW/EvalSlot/Discard/Stmt/
+  AssignW/Pat/RetEval/Defer(Node)/BinSlot/WidenSlot/ScaleIdx/SliceIdx/ArrIdx/JSlot/JTag/
+  Mark/Release/Nop/... (with their Bc forms). node.gm keeps a descriptor `Node` (ty, size,
+  span; op only Builtin/Perform/Str/CStr/Leftover for vm_builtin/vm_perform/StrSlot).
+- Lowering now total for monomorphic bodies (suite `lir` fails on any `tir` line): new LIR
+  ops With/Install (handlers installed in a With's install list; body on a fiber if `on`),
+  Exit (break/continue/return to another frame; `continue` to InstallingWith = clause
+  returns), Resume/Cancel, DebugOnly + Assert (assert), BitsGet/BitsSet (#bits fields,
+  nested chains), In, Template; Value.Big (u128/i128 constants); Payload(off, ty) and
+  Const(name, span, ty) carry types; get/get_ptr/first/last are written out; AssignTuple,
+  AddrOfTemp (synthetic addressed local), try at levels>0, `else` lifting into ?T / E!T.
+  Fixed: optional payload offset (0, was offs[1]).
+- Selector: words in registers; larger temps in slots (lir_slots: linear scan by position,
+  freed at release); per-position scratch (`need`, `until` = With end for Install);
+  generic Ins `Gen`/`GenF` (vm_gen.gm) read operands as store bytes (register r = bytes at
+  r*8 when word_locals; else WSlot to scratch — the big-endian path); sub-codes
+  (Code.sub/subs) for defer and with-on bodies share frame + registers, run by vm_sub
+  (CallRec.dbase = defers height at start); Code.loops gets a VmLoop per TIR loop/with
+  (DeferHeight/CxSave at the brk block when the body has defers/withs; at/size = result
+  local for label_dst). Br out of blocks emits Unwind/CxRestore; out of a sub-code = Exit.
+- Register canonical form: rd_word = zero-extended bytes; LIR Word bits are sign-extended
+  → word_bits() masks them. Load→register aliasing is off for captured locals.
+- Fast paths kept from vm_compile (each measured): Wrap/WrapOptional/WrapOk into slots
+  (ZeroSlot+WSlot) and word optionals (Bit or flag); ArrayPtrToSlice; same-size coercions
+  (CopySlot); Cast/Addr/ToPtr as Mov (+AlignCheck); Trunc of 128-bit = SlotW; RangeChk
+  and Bounds with Bc forms (Rng/Bnd); string literals resolved at compile time; empty
+  aggregates emit nothing; IntBit for rot/hash/bit counts.
+- Measured (callgrind Ir, `run --backend=interp`, main's build vs this, same Debug build):
+  bench/programs call −8.6%, iterate −7.3, list_push −12.5, map_insert −5.3, new_destroy
+  −4.9, perform −8.0, with −8.8, safe_call −11.4, safe_list_push −14.1, safe_map_insert
+  −5.8, safe_new_destroy −5.5, empty 0; examples nbody −78.5 (was on the tree), life
+  −3.3, mandelbrot −2.1; short compile-heavy runs json_query +1.0, wordfreq +1.1,
+  sha256sum +0.7 (lowering + analysis cost per first call). Profiling aid used (not
+  committed): count `str.format("{}", ins)` of Ins reaching vm_free / GenOps in vm_gen.
+- Not done / follow-ups: Machine.temps + kill_temps are dead since alloc_temp went (only
+  the tree used it; remove); P3 passes (bounds-check elimination first); P4 cgen on LIR;
+  the big-endian path (!word_locals) was tested only by forcing word_locals off on x86.
 
 ## State after P0 (s79)
 - compiler/lir/: lir.gm (types, place_type, value_type, dst_of), lower.gm (Ctx/context,
@@ -52,7 +67,6 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   Assert/Sys/Get…/Asm/Fiber/Cover/Unreachable/StaticAssert) 660, constants 514 (u128,
   f16, untyped), non-local break/return/continuation ~310, the rest small. 0 verifier
   faults. Scratch sweep: run `gamma lir` per file, grep `^!` and `tir <kind>$`.
-- (P1a done in s80: see above.)
 
 ## Problem, in lines of code (compiler/, s79)
 Function bodies are lowered three times, by hand, from TIR (a typed tree):

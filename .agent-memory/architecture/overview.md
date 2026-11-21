@@ -8,9 +8,11 @@ The full, maintained map is docs/architecture.md (a test requires it to name eve
   load/ (modules; core.gm loads lib/core from disk) → sema/ (declarations, layouts with
   generations) → check/ (bodies → TIR; see checker.md) → tir/ → eval/ (comptime, structured
   values, decisions/046) → interp/ or cgen/.
-- interp/: code.gm lowers TIR, vm_compile.gm → instructions, bc.gm 16-byte Bc forms +
-  CallRec/CallSite, vm.gm loop with in-loop calls, run.gm tree fallback (`with … on`, value
-  loops), memory.gm page table, fiber.gm host coroutines (decisions/051, 056, 064, 067).
+- interp/: every body TIR → LIR (compiler/lir) → vm_lir.gm → Ins (no tree evaluator since
+  s81, decisions/075); vm_gen.gm generic byte-level Ins (Gen/GenF), Exit, WithOn, sub-codes
+  for defer / with-on bodies; bc.gm 16-byte Bc forms + CallRec/CallSite, vm.gm loop with
+  in-loop calls, node.gm (descriptor Node, WordCmp, Deferred), memory.gm page table,
+  fiber.gm host coroutines (decisions/051, 064, 067, 075).
 - cgen/: names.gm stable C names (`gm_f_<name>_<hash>`), units.gm split by owning file
   (+ the n-way split for `--emit-c`), shared inline small fns (SHARED_SMALL_BYTES),
   outline.gm/chain.gm for huge functions (decisions/048, 065, 068, 069).

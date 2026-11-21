@@ -141,16 +141,8 @@ int_un :: fn(m: ^Machine, op: tir.UnOp, t: IntW, v: u64, n: ^Node) -> Flow!u64 n
     return (0 -% v) & mask
 }
 
-/// A binary operator on word integers of type `t`, the right operand of a shift having type
-/// `shift`.
-int_op :: fn(m: ^Machine, a: Act, op: tir.BinOp, t: IntW, shift: IntW, l, r: ^Node, n: ^Node) -> Flow!u64 needs Run {
-    p := try m.ew(a, l)
-    q := try m.ew(a, r)
-    return m.int_word(op, t, shift, p, q, n)
-}
-
 /// A binary operator on the words `p` and `q` of integers of type `t` (`q` of type `shift`
-/// for a shift), for the `IntOp` node `n`.
+/// for a shift), whose result is of the type of `n`.
 int_word :: fn(m: ^Machine, op: tir.BinOp, t: IntW, shift: IntW, p, q: u64, n: ^Node) -> Flow!u64 needs Alloc {
     mask := mask64(t.bits)
     bits := t.bits
@@ -241,9 +233,8 @@ int_done :: fn(m: ^Machine, n: ^Node, fl: ast.Flavor, t: IntW, low: u64, over: b
 shift_word :: fn(m: ^Machine, n: ^Node, rw: IntW, q: u64, bits: u32) -> Flow!u32 needs Alloc {
     neg := rw.signed and sext(q, rw.bits) < 0
     if not neg and q < u64(bits) { return q.trunc(u32) }
-    lt := n.ty
-    if .IntOp(x) := n.op { lt = x.l.ty }
-    return m.shift_check(n.span, lt, neg, u128(if neg { (0 -% sext(q, rw.bits)).bits(u64) } else { q }), bits)
+    // The shifted operand has the result's type.
+    return m.shift_check(n.span, n.ty, neg, u128(if neg { (0 -% sext(q, rw.bits)).bits(u64) } else { q }), bits)
 }
 
 test "word bounds agree with the general ones" {

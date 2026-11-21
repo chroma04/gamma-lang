@@ -1,28 +1,23 @@
 // The register machine that runs function bodies.
 //
-// A body's statement structure (blocks, `if`, loops of unit type, `match` and its
-// patterns, `return`, `break` and `continue`), its expressions on words (integers, floats,
-// booleans and pointers of at most 8 bytes), its calls and operations, and the building
-// of other values (structs, tuples, optionals, results, variants, slices) are compiled
-// into a flat list of instructions on word registers, which `vm_run` executes in one
-// loop. Everything else is left to the tree evaluator (`run.gm`), which an instruction
-// invokes on a whole subtree: the machine covers the common paths and the tree all the
-// language, so they always agree.
+// A body is compiled from its LIR (`vm_lir.gm`) into a flat list of instructions on word
+// registers, which `vm_run` executes in one loop: words (integers, floats, booleans and
+// pointers of at most 8 bytes) in registers, other values in byte slots, operations on
+// values of any size by generic instructions (`vm_gen.gm`).
 //
 // The frame's storage, seen as words, is the register file. A local that is a word and
 // whose address is never taken has 8 bytes of its own there and is a register, as is
 // every 8-byte word of a local at an offset that is a multiple of 8, when the host and
 // the target store words alike (little-endian). After the locals come the byte slots
-// (values that are not words: scrutinees, arguments and results of calls), then the
-// registers of the constants the body uses, then the temporaries, allocated as a stack
-// while compiling: each expression leaves its value in the first free one.
+// (values that are not words), then the registers of the constants the body uses, then
+// the temporaries.
 //
-// A `break` or `continue` that a subtree raises (as a `Flow`) to a loop of the machine
-// jumps to it; every other flow leaves the body, as the tree's would. The `defer` and
-// `errdefer` statements that run push their bodies on the frame's stack of deferred
-// statements (`Frame.defers`); leaving a block runs those it pushed, last first: at its
-// end, at a `break` or `continue` out of it, and when the function returns or a flow
-// leaves the body (errdefers then run as the tree's blocks would run them, §8.8).
+// A `break` or `continue` that a call raises (as a `Flow`, from another frame) to a loop
+// or `with` of the body jumps to it (`Code.loops`); every other flow leaves the body. The
+// `defer` and `errdefer` statements that run push their code on the frame's stack of
+// deferred statements (`Frame.defers`); leaving a block runs those it pushed, last first:
+// at its end, at a jump out of it, and when the function returns or a flow leaves the body
+// (errdefers then run only as §8.8 says).
 
 /// A compiled body.
 Code :: struct {
@@ -52,6 +47,12 @@ Code :: struct {
     consts: []u64
     /// The loops: their labels and where their `break`s and `continue`s go.
     loops: []VmLoop
+    /// The sub-codes of a body compiled from LIR (`vm_lir.gm`): the bodies of its `defer`s
+    /// and `with … on`s, which run in its frame with its registers.
+    subs: []^Code = empty_slice(^Code)
+    /// Whether this is a sub-code: its end does not end the body, and the deferred
+    /// statements a flow out of it runs are only those it pushed.
+    sub: bool = false
 }
 
 VmLoop :: struct {
@@ -96,10 +97,6 @@ Ins :: union {
     /// `LocalAt` and `SetLocalAt` at a further offset in register `d` (an array element).
     LocalAtD: (r: u32, at: u32, d: u32, size: u32)
     SetLocalAtD: (at: u32, d: u32, size: u32, v: u32)
-    /// Checks the index in a register against an array's length and scales it to a byte
-    /// offset; `AddR` adds a register to another.
-    ScaleIdx: (i: u32, len: u64, esz: u64, n: ^Node)
-    AddR: (r: u32, a: u32)
     /// `&`, `|` and `~` (`op` 0, 1, 2) on words; `>>` on integers whose shift amount is in
     /// range (else the general operator decides).
     Bit: (op: u8, r: u32, a: u32, b: u32)
@@ -109,27 +106,9 @@ Ins :: union {
     /// decides).
     Shl: (t: IntW, shift: IntW, wrap: bool, r: u32, a: u32, b: u32, n: ^Node)
     SetUpvarAt: (levels: u32, local: u32, rel: u32, size: u32, align: u32, v: u32, n: ^Node)
-    /// Copies the local `local` of the frame `levels` out (`n`, of `size` bytes) to the
-    /// slot at `at`.
-    UpvarSlot: (at: u32, levels: u32, local: u32, size: u32, n: ^Node)
-    /// The binary operator of `n` on its operands in the slots at `la` and `lb`, to the
-    /// slot at `at`: for values that are not words (128-bit integers, vectors).
-    /// `wide` is 1 (2) for unsigned (signed) 128-bit integers in little-endian words,
-    /// which most operators compute directly.
-    BinSlot: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node)
-    /// The integer word in register `r` (the value of `x`) widened to `n`, a value that
-    /// is not a word (a 128-bit integer), in the slot at `at`.
-    /// `ext` is the bits of the word, plus 128 if it is signed, when the wider integer
-    /// is 128-bit and little-endian (`word_locals`); otherwise 0.
-    WidenSlot: (at: u32, r: u32, ext: u8, x: ^Node, n: ^Node)
     /// A word at the address in register `base` plus `off`.
     Load: (r: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
     Store: (base: u32, off: u32, size: u32, align: u32, v: u32, n: ^Node)
-    /// The address of element `i` (in a register) of the slice whose pointer and length
-    /// are in registers `p` and `len`, into `p`; traps if `i` is out of bounds. With
-    /// `ArrIdx`, of an array of `len` elements at the address in `p`.
-    SliceIdx: (p: u32, len: u32, i: u32, esz: u64, n: ^Node)
-    ArrIdx: (p: u32, i: u32, len: u64, esz: u64, n: ^Node)
     /// Element `i` (a register) of the slice whose pointer and length are in registers `p`
     /// and `len`, of `size` bytes aligned to `align`: read into `r`, or (`SliceSt`) written
     /// from `v`; traps if `i` is out of bounds.
@@ -152,8 +131,6 @@ Ins :: union {
     Cmp: (op: tir.BinOp, how: WordCmp, r: u32, a: u32, b: u32)
     EqW: (how: WordCmp, negated: bool, r: u32, a: u32, b: u32)
     Not: (r: u32, a: u32)
-    /// A boolean of a word: 1 if it is nonzero.
-    Bool: u32
     IntUn: (op: tir.UnOp, t: IntW, r: u32, a: u32, n: ^Node)
     IntConv: (op: tir.Builtin, from: IntW, to: IntW, r: u32, a: u32)
     /// `bit_word` of registers `a` and `b` (`b` unused but by a rotation).
@@ -169,6 +146,29 @@ Ins :: union {
     MemPut: (base: u32, off: u32, at: u32, size: u32, align: u32, n: ^Node)
     /// Traps if the address in a register is not aligned to `align` (a pointer cast).
     AlignCheck: (r: u32, align: u64, n: ^Node)
+    /// The instructions of bodies compiled from LIR (`vm_gen.gm`): a generic operation
+    /// (`GenF` needs the frame), a jump to another frame, a `with … on`, a `defer`.
+    Gen: ^GenIns
+    GenF: ^GenIns
+    Exit: ^ExitIns
+    WithOn: ^WithOnIns
+    DeferCode: (is_err: bool, code: ^Code)
+    /// Copies `size` bytes from (or to) the frame's storage at `at` plus the offset in
+    /// register `d` to (from) the slot at `dst` (`src`).
+    SlotGetD: (dst: u32, at: u32, d: u32, size: u32)
+    SlotPutD: (at: u32, d: u32, src: u32, size: u32)
+    /// Copies `size` bytes at offset `rel` of local `local` of the frame `levels` out to
+    /// (from) the slot at `at` (`src`), and the address of that local (given memory).
+    /// With `d` (not `NO_REG`), at `rel` plus the offset in register `d`.
+    UpvarGet: (at: u32, levels: u32, local: u32, rel: u32, d: u32, size: u32, n: ^Node)
+    UpvarPut: (levels: u32, local: u32, rel: u32, d: u32, size: u32, src: u32, n: ^Node)
+    UpvarAddr: (r: u32, levels: u32, local: u32, n: ^Node)
+    /// Traps unless `lo <= hi` (`lo <= hi + 1` if `inclusive`) and, if `len` is a register,
+    /// `hi <= len` (`hi < len`): the bounds of a slicing.
+    RangeChk: (lo: u32, hi: u32, len: u32, inclusive: bool, n: ^Node)
+    /// The address of a global variable, and of a typed constant (of type `n.ty`).
+    GlobalAddr: (r: u32, decl: usize, n: ^Node)
+    ConstAddr: (r: u32, span: source.Span, n: ^Node)
     /// The trap of `n`, an unwrap of the absent optional or the error (`is_result`) of type
     /// `ty` in the slot at `at`.
     UnwrapTrap: (at: u32, ty: Ty, is_result: bool, n: ^Node)
@@ -186,17 +186,11 @@ Ins :: union {
     AssertFail: (at: u32, has_msg: bool, n: ^Node)
     /// Performs the operation of `node` (a `Perform`) with arguments in registers and slots.
     Perform: (args: []Arg, dst: Dest, node: ^Node)
-    /// Copies a slot's bytes to a local of this frame that has memory of its own (to one
-    /// kept in the frame's storage, `CopySlot` copies them).
-    SetLocalSlot: (local: u32, at: u32, size: u32, span: source.Span)
     /// Copies `size` bytes between slots, reads a word of a slot into a register, or writes
     /// one to a slot.
     CopySlot: (dst: u32, src: u32, size: u32)
     SlotW: (r: u32, at: u32, size: u32)
     WSlot: (at: u32, size: u32, r: u32)
-    /// Jumps if the word of `size` bytes in the slot at `at` is zero (or, with `nonzero`,
-    /// is not): the test of an optional's or a result's flag.
-    JSlot: (at: u32, size: u32, nonzero: bool, to: u32)
     /// Copies constant bytes to the slot at `at`, or zeroes `size` bytes there.
     ConstSlot: (at: u32, b: []const u8)
     ZeroSlot: (at: u32, size: u32)
@@ -206,46 +200,22 @@ Ins :: union {
     SliceMake: (at: u32, p: u32, len: u32, lo: u32, hi: u32, has_len: bool, inclusive: bool, esz: u64, n: ^Node)
     /// The address of a local of this frame, which is given memory of its own.
     LocalAddr: (r: u32, local: u32, n: ^Node)
-    /// Jumps unless the word of `size` bytes in the slot at `at` is `v`: the test of a
-    /// variant's tag.
-    JTag: (at: u32, size: u32, v: u64, to: u32)
-    /// The tree evaluator: a word into a register, a value into a slot, or for effects.
-    EvalW: (r: u32, n: ^Node)
-    EvalSlot: (off: u32, n: ^Node)
-    Discard: ^Node
-    /// A statement, run by the tree evaluator.
-    Stmt: St
     /// Copies a register.
     Mov: (r: u32, a: u32)
     /// Records the height of the frame's deferred statements in a register.
     DeferHeight: u32
-    /// A `defer` (or `errdefer`) statement: pushes its body.
-    Defer: (is_err: bool, body: ^Node)
     /// Runs the plain deferred statements pushed since the height in a register was taken,
     /// last first, and drops the others.
     Unwind: u32
-    /// A word assignment to a place, by the tree evaluator.
-    AssignW: (place: ^Node, value: ^Node)
-    /// Matches the value in a slot against a pattern, binding its locals; jumps if it fails.
-    Pat: (pat: ^Pat, off: u32, size: u32, fail: u32)
     /// No arm of a `match` matched.
     NoArm: ^Node
-    /// The function returns the word in a register, a value the tree evaluates into its
-    /// result, or nothing.
+    /// The function returns the word in a register, or nothing.
     RetW: u32
-    RetEval: ^Node
     /// The function returns the `size` bytes in the slot at `at`.
     RetSlot: (at: u32, size: u32)
     Ret
-    /// Takes the scratch mark into registers `r..r + 3`, or releases scratch memory and
-    /// temporaries to it.
-    Mark: u32
-    Release: u32
     /// Jumps back to the start of a loop, letting other threads run first.
     Loop: u32
-    /// Nothing: what compiling leaves of a mark that is not needed, removed at its end
-    /// (`vc_compact`).
-    Nop
     /// Records the handler context in a register, or (`CxRestore`) goes back to it,
     /// uninstalling the handlers installed since.
     CxSave: u32
@@ -275,8 +245,8 @@ Dest :: union {
     Ret
 }
 
-// Running (the compiler of bodies to instructions is in `vm_compile.gm`, the form they
-// run in is in `bc.gm`).
+// Running (the compiler of bodies to instructions is in `vm_lir.gm`, the form they run
+// in is in `bc.gm`).
 
 /// What `vm_framed` returns as the next instruction when the body returned.
 VM_RETURN: usize : ~usize(0)
@@ -300,7 +270,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
     // keeps only them and the index of the instruction in variables of its own; the rest
     // of what is running is in its record `cur`: this one for the body, and one in
     // scratch memory for each call made in the loop.
-    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), tm: 0)
+    base := CallRec(prev: null, code: body, regs: a.fr.store.ptr.cast([^]u64), dst: ret, fr: a.fr, cx: a.cx, base_cx: a.cx, pc: 0, f: 0, ret_reg: NO_REG, buf: [8]u8(fill: 0), mark: Mark(cur: 0, top: 0), tm: 0, dbase: if body.sub { a.fr.defers.items.len } else { 0 })
     cur := &base
     regs := cur.regs
     bc := body.bc.ptr
@@ -351,10 +321,8 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 .And => { regs[usize(i.a)] = regs[usize(i.b)] & regs[usize(i.c)] }
                 .Or => { regs[usize(i.a)] = regs[usize(i.b)] | regs[usize(i.c)] }
                 .Xor => { regs[usize(i.a)] = regs[usize(i.b)] ~ regs[usize(i.c)] }
-                .AddR => { regs[usize(i.a)] +%= regs[usize(i.b)] }
                 .AddK => { regs[usize(i.a)] +%= u64(i.b) | (u64(i.c) <<% 32) }
                 .Not => { regs[usize(i.a)] = if regs[usize(i.b)] is 0 { 1 } else { 0 } }
-                .Bool => { regs[usize(i.a)] = if regs[usize(i.a)] is 0 { 0 } else { 1 } }
                 .Mask => { regs[usize(i.a)] = regs[usize(i.b)] & mask64(u32(i.w)) }
                 .Sext => { regs[usize(i.a)] = sext(regs[usize(i.b)], u32(i.f)).bits(u64) & mask64(u32(i.w)) }
                 .LtU => { regs[usize(i.a)] = if regs[usize(i.b)] < regs[usize(i.c)] { 1 } else { 0 } }
@@ -435,18 +403,6 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                 .FrSet8 => st8(fat(regs, usize(i.a)), regs[usize(i.b)])
                 .FrD => { regs[usize(i.a)] = ldn(fat(regs, usize(i.b) + us(regs[usize(i.c)])), i.f) }
                 .FrSetD => stn(fat(regs, usize(i.a) + us(regs[usize(i.b)])), i.f, regs[usize(i.c)])
-                .JFrZ => if ldn(fat(regs, usize(i.a)), i.f) is 0 {
-                    ip = bc_at(bc, usize(i.c))
-                    continue
-                }
-                .JFrNz => if ldn(fat(regs, usize(i.a)), i.f) is not 0 {
-                    ip = bc_at(bc, usize(i.c))
-                    continue
-                }
-                .JTag => if ldn(fat(regs, usize(i.a)), i.f) is not u64(i.b) {
-                    ip = bc_at(bc, usize(i.c))
-                    continue
-                }
                 .Ld1 => {
                     p := m.mem.view(regs[usize(i.b)] +% u64(i.c), 1, false) else break
                     regs[usize(i.a)] = ld1(p)
@@ -490,21 +446,6 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     if k >= regs[usize(i.a) + 1] { break }
                     p := m.vm_view(regs[usize(i.a)] +% k *% u64(i.w), u64(i.f), u64(i.f), true) else break
                     stn(p, i.f, regs[usize(i.b)])
-                }
-                .ScaleIdx => {
-                    k := regs[usize(i.a)]
-                    if k >= u64(i.b) { break }
-                    regs[usize(i.a)] = k *% u64(i.c)
-                }
-                .SliceIdx => {
-                    k := regs[usize(i.c)]
-                    if k >= regs[usize(i.b)] { break }
-                    regs[usize(i.a)] = regs[usize(i.a)] +% k *% u64(i.w)
-                }
-                .ArrIdx => {
-                    k := regs[usize(i.b)]
-                    if k >= u64(i.c) { break }
-                    regs[usize(i.a)] = regs[usize(i.a)] +% k *% u64(i.w)
                 }
                 .PtrIdx => { regs[usize(i.a)] = regs[usize(i.a)] +% regs[usize(i.b)] *% u64(i.c) }
                 .ShrU => {
@@ -579,6 +520,12 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     stn(fat(regs, usize(i.a) + usize(pb)), pb, hi - lo)
                 }
                 .AlignChk => if regs[usize(i.a)] & u64(i.b) is not 0 { break }
+                .Bnd => if regs[usize(i.a)] >= regs[usize(i.b)] { break }
+                .Rng => {
+                    hi := regs[usize(i.b)]
+                    if i.f & 2 is not 0 { hi = hi +| 1 }
+                    if regs[usize(i.a)] > hi or (i.f & 1 is not 0 and hi > regs[usize(i.c)]) { break }
+                }
                 .MemGet => {
                     p := m.vm_view(regs[usize(i.b)] +% u64(i.c), u64(i.w), u64(1) << u64(i.f), false) else break
                     fat(regs, usize(i.a))[0..usize(i.w)].copy_from(p[0..usize(i.w)])
@@ -592,13 +539,6 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
                     fat(regs, usize(i.a))[0..k].copy_from(fat(regs, usize(i.b))[0..k])
                 }
                 .ZeroSlot => fat(regs, usize(i.a))[0..usize(i.b)].fill(0)
-                .Mark => {
-                    k := usize(i.a)
-                    regs[k] = u64(m.scratch.cur)
-                    regs[k + 1] = u64(m.scratch.top)
-                    regs[k + 2] = u64(m.temps.items.len)
-                }
-                .Release => m.vm_release(regs, i.a)
                 .Call => {
                     cur = m.vm_push(cur, bc_pc(bc, ip), i.a) else break
                     regs = cur.regs
@@ -653,7 +593,7 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
         if bc[pc].op is .Framed {
             fr := cur.fr else return !m.trap(source.DUMMY, "internal error: an instruction needs a frame")
             act := Act(fr: fr, cx: cur.cx)
-            res := m.vm_framed(&act, cur.code, regs, pc, cur.dst)
+            res := m.vm_framed(&act, cur.code, regs, pc)
             cur.cx = act.cx
             next = res else f => {
                 cur = try m.vm_raise(cur, f)
@@ -674,7 +614,8 @@ vm_run :: fn(m: ^Machine, a: Act, body: ^Code, ret: []u8) -> Flow!() needs Run {
         bc = cur.code.bc.ptr
         ip = bc_at(bc, next)
     }
-    // The body returns, its result in `ret`.
+    // The body returns, its result in `ret` (a sub-code just ends).
+    if body.sub { return () }
     if a.fr.defers.items.len is 0 and base.cx is a.cx { return () }
     return m.vm_return(Act(fr: a.fr, cx: base.cx), a.cx, ret)
 }
@@ -726,7 +667,7 @@ vm_raise :: fn(m: ^Machine, start: ^CallRec, flow: Flow) -> Flow!^CallRec needs 
     while true {
         if fr := r.fr {
             act := Act(fr: fr, cx: r.cx)
-            res := m.vm_flow(&act, r.base_cx, r.code, r.regs, f)
+            res := m.vm_flow(&act, r.base_cx, r.dbase, r.code, r.regs, f)
             r.cx = act.cx
             pc := res else g => {
                 f = g
@@ -1199,12 +1140,6 @@ vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: [
         }
         .LocalAtD(r, at, d, size) => { regs[usize(r)] = st_rd(m, regs, usize(at) + us(regs[usize(d)]), size) }
         .SetLocalAtD(at, d, size, v) => st_wr(m, regs, usize(at) + us(regs[usize(d)]), size, regs[usize(v)])
-        .ScaleIdx(ri, len, esz, n) => {
-            i := regs[usize(ri)]
-            if i >= len { return !m.bounds_trap(n, i, len) }
-            regs[usize(ri)] = i * esz
-        }
-        .AddR(r, x) => { regs[usize(r)] +%= regs[usize(x)] }
         .Bounds(ri, rl, n) => {
             i := regs[usize(ri)]
             len := regs[usize(rl)]
@@ -1240,13 +1175,6 @@ vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: [
             b := m.mem.write_view(addr, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
             m.wr_word(b, regs[usize(x.v)])
         }
-        .SliceIdx(x) => {
-            i := regs[usize(x.i)]
-            len := regs[usize(x.len)]
-            if i >= len { return !m.bounds_trap(x.n, i, len) }
-            k := usize(x.p)
-            regs[k] = regs[k] +% i * x.esz
-        }
         .SliceLd(x) => {
             i := regs[usize(x.i)]
             len := regs[usize(x.len)]
@@ -1261,12 +1189,6 @@ vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: [
             b := m.mem.write_view(regs[usize(x.p)] +% i * x.esz, u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
             m.wr_word(b, regs[usize(x.v)])
         }
-        .ArrIdx(x) => {
-            i := regs[usize(x.i)]
-            if i >= x.len { return !m.bounds_trap(x.n, i, x.len) }
-            k := usize(x.p)
-            regs[k] = regs[k] +% i * x.esz
-        }
         .PtrIdx(x) => {
             k := usize(x.p)
             regs[k] = regs[k] +% regs[usize(x.i)] *% x.esz
@@ -1275,7 +1197,6 @@ vm_free :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, dst: [
         .Cmp(op, how, r, ra, rb) => { regs[usize(r)] = if word_less(op, how, regs[usize(ra)], regs[usize(rb)]) { 1 } else { 0 } }
         .EqW(x) => { regs[usize(x.r)] = if word_eq(x.how, regs[usize(x.a)], regs[usize(x.b)]) is not x.negated { 1 } else { 0 } }
         .Not(r, x) => { regs[usize(r)] = if regs[usize(x)] is 0 { 1 } else { 0 } }
-        .Bool(r) => { regs[usize(r)] = if regs[usize(r)] is 0 { 0 } else { 1 } }
         .IntConv(x) => { regs[usize(x.r)] = conv_word(x.op, x.from, x.to, regs[usize(x.a)]) }
         .IntBit(x) => { regs[usize(x.r)] = bit_word(x.op, x.t, regs[usize(x.a)], regs[usize(x.b)]) }
         .FloatOp(x) => { regs[usize(x.r)] = float_op(x.op, x.wide, regs[usize(x.a)], regs[usize(x.b)]) }
@@ -1317,8 +1238,6 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
         }
         .SlotW(r, at, size) => { regs[usize(r)] = st_rd(m, regs, usize(at), size) }
         .WSlot(at, size, r) => st_wr(m, regs, usize(at), size, regs[usize(r)])
-        .JSlot(at, size, nonzero, to) => if (st_rd(m, regs, usize(at), size) is not 0) is nonzero { return usize(to) }
-        .JTag(at, size, v, to) => if st_rd(m, regs, usize(at), size) is not v { return usize(to) }
         .Builtin(x) => try m.vm_builtin(x.args, x.dst, x.node, regs, dst)
         .StrSlot(at, n) => {
             pb := us(m.ptr_bytes)
@@ -1330,38 +1249,6 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
         }
         .UpvarAt(x) => { regs[usize(x.r)] = try m.vm_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, x.n) }
         .SetUpvarAt(x) => try m.vm_set_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n)
-        .BinSlot(x) => if v := wide_op(x, regs) {
-            d := fat(regs, usize(x.at))
-            if x.n.size is 16 {
-                st8(d, v.trunc(u64))
-                st8(fat(regs, usize(x.at) + 8), (v >> 64).trunc(u64))
-            } else {
-                d[0] = v.trunc(u8)
-            }
-        } else {
-            try m.binop(x.n.span, x.op, x.l.ty, x.r.ty, x.n.ty, fat(regs, usize(x.la))[0..us(x.l.size)], fat(regs, usize(x.lb))[0..us(x.r.size)], fat(regs, usize(x.at))[0..us(x.n.size)])
-        }
-        .WidenSlot(x) => if x.ext is not 0 {
-            bits := u32(x.ext & 127)
-            v := regs[usize(x.r)]
-            hi: u64 = 0
-            if x.ext >= 128 {
-                v = sext(v, bits).bits(u64)
-                if (v >> 63) is 1 { hi = ~u64(0) }
-            }
-            st8(fat(regs, usize(x.at)), v)
-            st8(fat(regs, usize(x.at) + 8), hi)
-        } else {
-            b: [8]u8 = ---
-            w := b[0..us(x.x.size)]
-            m.wr_word(w, regs[usize(x.r)])
-            try m.coerce_bytes(x.n.span, .IntWiden, x.x.ty, x.n.ty, w, fat(regs, usize(x.at))[0..us(x.n.size)])
-        }
-        .UpvarSlot(x) => {
-            e := us(regs[usize(code.env_reg)]).to_ptr(^Frame) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
-            up := frame_up(e, x.levels - 1) else return !m.trap(x.n.span, "internal error: upvar without an enclosing frame")
-            try m.read_local(x.n.span, up, x.local, fat(regs, usize(x.at))[0..usize(x.size)])
-        }
         // The locals in memory of a body without a frame (`Code.hidden`).
         .LocalAddr(r, local, n) => { regs[usize(r)] = try m.vm_hidden_addr(code, regs, local, n.span) }
         .Local(r, local, _, size) => {
@@ -1374,10 +1261,6 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
             d := b[0..usize(x.size)]
             m.wr_word(d, regs[usize(x.r)])
             try m.store_at(x.n.span, addr, code.info.aligns[usize(x.local)], d)
-        }
-        .SetLocalSlot(x) => {
-            addr := try m.vm_hidden_addr(code, regs, x.local, x.span)
-            try m.store_at(x.span, addr, code.info.aligns[usize(x.local)], fat(regs, usize(x.at))[0..usize(x.size)])
         }
         .MemGet(x) => {
             b := m.mem.read(regs[usize(x.base)] +% u64(x.off), u64(x.size), u64(x.align)) else e => return !m.mem_trap(x.n.span, e)
@@ -1404,14 +1287,32 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
             return !m.trap(n.span, str.format("assertion failed: {}", msg)!)
         }
         .NoArm(n) => return !m.trap(n.span, "no match arm matched the scrutinee")
-        .Mark(r) => {
-            k := usize(r)
-            regs[k] = u64(m.scratch.cur)
-            regs[k + 1] = u64(m.scratch.top)
-            regs[k + 2] = u64(m.temps.items.len)
-        }
-        .Release(r) => m.vm_release(regs, r)
         .ZeroSlot(at, size) => fat(regs, usize(at))[0..usize(size)].fill(0)
+        .Gen(g) => try m.vm_gen(cx, null, regs, g)
+        .RangeChk(x) => {
+            lo := regs[usize(x.lo)]
+            hi := regs[usize(x.hi)]
+            if x.inclusive { hi = hi +| 1 }
+            if lo > hi or (x.len is not NO_REG and hi > regs[usize(x.len)]) { return !m.slice_trap(x.n, lo, hi, if x.len is not NO_REG { regs[usize(x.len)] } else { null }) }
+        }
+        .SlotGetD(to, at, d, size) => fat(regs, usize(to))[0..usize(size)].copy_from(slot_d(regs, at, d, size))
+        .SlotPutD(at, d, src, size) => slot_d(regs, at, d, size).copy_from(fat(regs, usize(src))[0..usize(size)])
+        .UpvarGet(x) => {
+            up := try m.gen_up(code, regs, x.levels, x.n)
+            rel := x.rel + (if x.d is NO_REG { 0 } else { regs[usize(x.d)].trunc(u32) })
+            try m.up_get(up, x.local, rel, fat(regs, usize(x.at))[0..usize(x.size)], x.n)
+        }
+        .UpvarPut(x) => {
+            up := try m.gen_up(code, regs, x.levels, x.n)
+            rel := x.rel + (if x.d is NO_REG { 0 } else { regs[usize(x.d)].trunc(u32) })
+            try m.up_put(up, x.local, rel, fat(regs, usize(x.src))[0..usize(x.size)], x.n)
+        }
+        .UpvarAddr(r, levels, local, n) => {
+            up := try m.gen_up(code, regs, levels, n)
+            regs[usize(r)] = try m.local_addr(n.span, up, local)
+        }
+        .GlobalAddr(r, decl, n) => { regs[usize(r)] = try m.global_addr(n.span, decl) }
+        .ConstAddr(r, span, n) => { regs[usize(r)] = try m.const_addr(span, n.ty, n.span) }
         _ => {}
     }
     return pc + 1
@@ -1419,10 +1320,9 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
 
 /// Runs the instruction at `pc` of `code` from its `Ins`, for one that needs the frame of
 /// `act` (its locals in memory, the frames it captures, its deferred statements, its
-/// handler context, or the tree evaluator): returns the index of the instruction to run
-/// next, or `VM_RETURN` when the body returned (`dst` is its result).
+/// handler context): returns the index of the instruction to run next.
 #noinline
-vm_framed :: fn(m: ^Machine, act: ^Act, code: ^Code, regs: [^]u64, pc: usize, dst: []u8) -> Flow!usize needs Run {
+vm_framed :: fn(m: ^Machine, act: ^Act, code: ^Code, regs: [^]u64, pc: usize) -> Flow!usize needs Run {
     fr := act.fr
     a := act^
     match code.ins.ptr[pc] {
@@ -1447,30 +1347,12 @@ vm_framed :: fn(m: ^Machine, act: ^Act, code: ^Code, regs: [^]u64, pc: usize, ds
             }
         }
         .LocalAddr(r, local, n) => { regs[usize(r)] = try m.local_addr(n.span, fr, local) }
-        .EvalW(r, n) => { regs[usize(r)] = try m.ew(a, n) }
-        .EvalSlot(off, n) => {
-            o := usize(off)
-            try m.ev(a, n, fr.store[o..o + us(n.size)])
-        }
-        .Discard(n) => try m.ev_discard(a, n)
-        .Stmt(st) => try m.exec_stmt(a, st)
-        .RetEval(n) => {
-            try m.ev(a, n, dst)
-            return VM_RETURN
-        }
         .DeferHeight(r) => { regs[usize(r)] = u64(fr.defers.items.len) }
-        .Defer(is_err, body) => fr.defers.push(Deferred(is_err: is_err, body: body, cx: a.cx))!
+        .DeferCode(is_err, sub) => fr.defers.push(Deferred(is_err: is_err, code: sub, cx: a.cx))!
+        .GenF(g) => try m.vm_gen(act.cx, fr, regs, g)
+        .Exit(x) => try m.vm_exit(a, regs, x)
+        .WithOn(x) => try m.vm_with_on(a, regs, x)
         .Unwind(r) => try m.vm_unwind(a, us(regs[usize(r)]), false)
-        .AssignW(place, value) => try m.assign_word(a, place, value)
-        .Pat(x) => {
-            o := usize(x.off)
-            ok := try m.match_pat(a, x.pat, fr.store[o..o + usize(x.size)])
-            if not ok { return usize(x.fail) }
-        }
-        .SetLocalSlot(x) => {
-            o := usize(x.at)
-            try m.set_local(x.span, fr, x.local, fr.store[o..o + usize(x.size)])
-        }
         .CxSave(r) => { regs[usize(r)] = u64(act.cx) }
         .CxRestore(r) => m.vm_cx_restore(act, regs, r)
         .WithDecl(x) => { act.cx = m.vm_with_decl(fr, act.cx, x.decls, x.at, x.size, x.label) }
@@ -1580,20 +1462,10 @@ slice_trap :: fn(m: ^Machine, n: ^Node, lo: u64, hi: u64, len: ?u64) -> Flow nee
 #noinline
 bounds_trap :: fn(m: ^Machine, n: ^Node, i: u64, len: u64) -> Flow needs Alloc => m.trap(n.span, str.format("index {} out of bounds for length {}", i, len)!)
 
-/// Releases scratch memory and temporaries to the mark in registers `r..r + 3`.
-#inline
-vm_release :: fn(m: ^Machine, regs: [^]u64, r: u32) needs Alloc {
-    k := usize(r)
-    m.scratch.cur = us(regs[k])
-    m.scratch.top = us(regs[k + 1])
-    tm := us(regs[k + 2])
-    if m.temps.items.len > tm { m.kill_temps(tm) }
-}
-
 /// Where a flow raised while running `code` continues: a `break` or `continue` to one of
 /// its loops jumps there (the exit releases to the iteration's mark and leaves the loop);
 /// any other flow leaves the body, running the deferred statements.
-vm_flow :: fn(m: ^Machine, act: ^Act, base: u32, code: ^Code, regs: [^]u64, f: Flow) -> Flow!usize needs Run {
+vm_flow :: fn(m: ^Machine, act: ^Act, base: u32, dbase: usize, code: ^Code, regs: [^]u64, f: Flow) -> Flow!usize needs Run {
     fr := act.fr
     match f {
         .Break(frame, label), .Continue(frame, label) => {
@@ -1613,7 +1485,7 @@ vm_flow :: fn(m: ^Machine, act: ^Act, base: u32, code: ^Code, regs: [^]u64, f: F
         }
         _ => {}
     }
-    if fr.defers.items.len > 0 { try m.vm_unwind(act^, 0, errdefers_run(fr, f)) }
+    if fr.defers.items.len > dbase { try m.vm_unwind(act^, dbase, errdefers_run(fr, f)) }
     m.vm_cx_leave(act, base)
     return !f
 }
@@ -1662,12 +1534,13 @@ vm_unwind :: fn(m: ^Machine, a: Act, height: usize, run_err: bool) -> Flow!() ne
         if d.is_err and not run_err { continue }
         tm := m.temps.items.len
         mk := m.mark()
-        r := m.ev_discard(Act(fr: fr, cx: d.cx), d.body)
+        r := m.vm_sub(Act(fr: fr, cx: d.cx), d.code)
+        span := source.DUMMY
         m.kill_temps(tm)
         m.release(mk)
         r else f => {
             if f is .Trap(_) { return !f }
-            return !m.trap(d.body.span, "internal error: control flow escaped a deferred statement")
+            return !m.trap(span, "internal error: control flow escaped a deferred statement")
         }
     }
 }
@@ -1836,13 +1709,17 @@ vm_perform :: fn(m: ^Machine, cx: u32, caller: ^const Code, args: []Arg, dst: De
     if .Reg(r) := dst { regs[usize(r)] = m.rd_word(d) }
 }
 
-/// The builtin operation of `n` (`vc_builtin_ok`) with the arguments `args` in registers
-/// and slots, as `ev_builtin` does it with their values; its result goes to `dst` (`ret` is
-/// the body's own result).
+/// The builtin operation of `n` (a `Builtin` that takes the values of its arguments) with
+/// the arguments `args` in registers and slots; its result goes to `dst` (`ret` is the
+/// body's own result).
 vm_builtin :: fn(m: ^Machine, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     .Builtin(op, xs) := n.op else return !m.trap(n.span, "internal error: not a builtin")
     mk := m.mark()
-    vs := [MAX_BUILTIN_ARGS][]u8(fill: empty_slice(u8))
+    fixed := [MAX_BUILTIN_ARGS][]u8(fill: empty_slice(u8))
+    // Most builtins have a few arguments; a vector shuffle may have many more.
+    many := empty_slice([]u8)
+    if args.len > MAX_BUILTIN_ARGS { many = make_fill(args.len, empty_slice(u8))! }
+    vs: [][]u8 = if args.len > MAX_BUILTIN_ARGS { many } else { fixed[..] }
     i: usize = 0
     while i < args.len {
         match args[i] {
@@ -1865,6 +1742,10 @@ vm_builtin :: fn(m: ^Machine, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, re
     vals := vs[0..args.len]
     match op {
         .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .CopyElems, .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore, .Fence, .CstrLen, .VecLoad, .VecStore => try m.memory_builtin(n.span, op, xs, vals, n.ty, d)
+        .Sys(sop) => {
+            r := if sop in (tir.SysOp.ThreadSpawn, tir.SysOp.ThreadJoin, tir.SysOp.ThreadDetach, tir.SysOp.ThreadYield, tir.SysOp.FutexWait, tir.SysOp.FutexWake) { m.thread_op(n.span, sop, vals, d) } else { m.sys_run(n.span, sop, xs, vals, d) }
+            try r
+        }
         _ => {
             t0 := if xs.len > 0 { xs[0].ty } else { n.ty }
             t1 := if xs.len > 1 { xs[1].ty } else { t0 }
@@ -1872,10 +1753,12 @@ vm_builtin :: fn(m: ^Machine, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, re
         }
     }
     m.release(mk)
+    if many.len > 0 { free(many) }
     if .Reg(r) := dst { regs[usize(r)] = m.rd_word(d) }
 }
 
-/// The most arguments of a builtin operation that the machine runs (`vm_builtin`).
+/// The arguments of a builtin operation that the machine keeps without allocating
+/// (`vm_builtin`).
 MAX_BUILTIN_ARGS: usize : 6
 
 /// Calls `f` (capturing `env`, in context `cx`, a clause of the `with` `installing` if any)
@@ -1884,7 +1767,7 @@ MAX_BUILTIN_ARGS: usize : 6
 /// the caller's own result).
 vm_invoke :: fn(m: ^Machine, caller: ^const Code, f: u32, env: ?^Frame, cx: u32, installing: ?(frame: ^Frame, label: u32), is_clause_lit: bool, self_: ?[]u8, args: []Arg, dst: Dest, n: ^Node, regs: [^]u64, ret: []u8) -> Flow!() needs Run {
     info := m.fn_info(f)
-    body := info.body else return m.call_missing(n.span, f)
+    if info.vm is null { return m.call_missing(n.span, f) }
     first: usize = if self_ is null { 0 } else { 1 }
     if args.len + first is not info.params.len { return !m.trap(n.span, str.format("internal error: `{}` called with {} arguments, expected {}", m.func(f).name, args.len + first, info.params.len)!) }
     if info.cost > sema.MAX_FRAME { return !m.trap(n.span, str.format("stack overflow: `{}` needs a frame of {} bytes", m.func(f).name, info.cost)!) }
@@ -1899,76 +1782,10 @@ vm_invoke :: fn(m: ^Machine, caller: ^const Code, f: u32, env: ?^Frame, cx: u32,
     b: [8]u8 = [8]u8(0, 0, 0, 0, 0, 0, 0, 0)
     direct := m.vm_direct(caller, dst, regs)
     d := m.vm_dest(dst, direct, n, regs, ret, b[..])
-    res := m.enter(n.span, f, info, body, store, env, cx, installing, is_clause_lit, d)
+    res := m.enter(n.span, f, info, store, env, cx, installing, is_clause_lit, d)
     m.release(mk)
     try res
     if .Reg(r) := dst and not direct { regs[usize(r)] = m.rd_word(d) }
-}
-
-/// The result of the `BinSlot` `x` on 128-bit integers, computed directly: `null` if it
-/// is not such an operation or its common case does not apply (an overflow, a division
-/// by zero, a shift too far), which `binop` then reports. A comparison gives 0 or 1, and
-/// a shift's amount is an unsigned word.
-wide_op :: fn(x: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node), regs: [^]u64) -> ?u128 {
-    if x.wide is 0 { return null }
-    p := u128(ld8(fat(regs, usize(x.la)))) | (u128(ld8(fat(regs, usize(x.la) + 8))) << 64)
-    signed := x.wide is 2
-    if x.op is .Shl(_) or x.op is .Shr {
-        b := fat(regs, usize(x.lb))
-        k: u64 = 0
-        for i in 0..us(x.r.size) { k |= u64(b[i]) << u64(8 * i) }
-        if k >= 128 { return null }
-        match x.op {
-            .Shr => return if signed { (p.bits(i128) >> k.trunc(u32)).bits(u128) } else { p >> u128(k) }
-            .Shl(f) => {
-                r := int_shl(signed, 128, p, k.trunc(u32))
-                if f is .Wrap or (f is .Checked and not r.over) { return r.low }
-            }
-            _ => {}
-        }
-        return null
-    }
-    q := u128(ld8(fat(regs, usize(x.lb)))) | (u128(ld8(fat(regs, usize(x.lb) + 8))) << 64)
-    match x.op {
-        .Lt, .Le, .Gt, .Ge => {
-            c := int_cmp(signed, p, q)
-            yes := match x.op {
-                .Lt => c < 0
-                .Le => c <= 0
-                .Gt => c > 0
-                _ => c >= 0
-            }
-            return if yes { 1 } else { 0 }
-        }
-        // The one quotient that overflows is left to `binop`.
-        .Div, .Rem => if signed and q is not 0 and not (q.bits(i128) is -1 and p is u128(1) << 127) {
-            a := p.bits(i128)
-            b := q.bits(i128)
-            return (if x.op is .Div { a / b } else { a % b }).bits(u128)
-        }
-        _ => {}
-    }
-    match x.op {
-        .Add(f) => {
-            if f is .Wrap { return p +% q }
-            if f is .Checked { return if signed { ((p.bits(i128) +? q.bits(i128)) else return null).bits(u128) } else { p +? q } }
-        }
-        .Sub(f) => {
-            if f is .Wrap { return p -% q }
-            if f is .Checked { return if signed { ((p.bits(i128) -? q.bits(i128)) else return null).bits(u128) } else { p -? q } }
-        }
-        .Mul(f) => {
-            if f is .Wrap { return p *% q }
-            if f is .Checked { return if signed { ((p.bits(i128) *? q.bits(i128)) else return null).bits(u128) } else { p *? q } }
-        }
-        .Div => if q is not 0 and not signed { return p / q }
-        .Rem => if q is not 0 and not signed { return p % q }
-        .BitAnd => return p & q
-        .BitOr => return p | q
-        .BitXor => return p ~ q
-        _ => {}
-    }
-    return null
 }
 
 /// The word at offset `rel` of local `l` of the frame `levels` capture links up from `fr`.
@@ -2005,14 +1822,4 @@ vm_set_local_at :: fn(m: ^Machine, fr: ^Frame, l: u32, rel: u64, size: u32, alig
     addr := try m.local_addr(n.span, fr, l)
     b := m.mem.write_view(addr + rel, u64(size), u64(align)) else e => return !m.mem_trap(n.span, e)
     m.wr_word(b, v)
-}
-
-/// `place = value` for a word value.
-assign_word :: fn(m: ^Machine, a: Act, place: ^Node, value: ^Node) -> Flow!() needs Run {
-    p := try m.place(a, place, false)
-    v := try m.ew(a, value)
-    b: [8]u8 = ---
-    d := b[0..us(value.size)]
-    m.wr_word(d, v)
-    return m.write_place(place.span, p, place.ty, d)
 }

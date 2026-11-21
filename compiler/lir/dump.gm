@@ -57,6 +57,7 @@ show_value :: fn(d: ^Dumper, v: Value) -> string needs Alloc => match v {
         if d.s.tys.kind(ty) is .Float(_) { return str.format("0x{:x}:{}", bits, d.s.show(ty))! }
         str.format("{}:{}", bits, d.s.show(ty))!
     }
+    .Big(ty, bits) => str.format("{}:{}", bits, d.s.show(ty))!
     .Zero(ty) => str.format("zero:{}", d.s.show(ty))!
     .Uninit(ty) => str.format("uninit:{}", d.s.show(ty))!
 }
@@ -73,7 +74,7 @@ show_place :: fn(d: ^Dumper, p: Place) -> string needs Alloc {
         .Local(l) => out.write("l{}", l)!
         .Upvar(levels, l) => out.write("up{}.l{}", levels, l)!
         .Global(decl) => out.write("global{}", decl)!
-        .Const(name, _) => out.write("const {}", name)!
+        .Const(name, _, _) => out.write("const {}", name)!
         .Deref(t) => out.write("*%{}", t)!
     }
     for x in p.proj {
@@ -82,7 +83,7 @@ show_place :: fn(d: ^Dumper, p: Place) -> string needs Alloc {
             .Elem(index, size) => out.write("[{} *{}]", d.show_value(index), size)!
             .Step(index, size) => out.write("+[{} *{}]", d.show_value(index), size)!
             .Deref => out.write(".*")!
-            .Payload(off) => out.write(".payload@{}", off)!
+            .Payload(off, _) => out.write(".payload@{}", off)!
         }
     }
     return out.items
@@ -175,8 +176,48 @@ show_inst :: fn(d: ^Dumper, depth: usize, i: ^const Inst) needs Alloc {
         .NoArm => "no-arm"
         .Unreachable => "unreachable"
         .Tir(?t, e) => str.format("{}tir {}", show_dst(t), tir_kind(e))!
+        .Template(t, tt) => str.format("%{} = template {} pieces", t, tt.pieces.len)!
+        .In(t, negated, a, b) => str.format("%{} = {} {}, {}", t, if negated { "not-in" } else { "in" }, d.show_value(a), d.show_value(b))!
+        .BitsGet(t, a, index) => str.format("%{} = bits-get {}.{}", t, d.show_value(a), index)!
+        .BitsSet(t, a, index, b) => str.format("%{} = bits-set {}.{} {}", t, d.show_value(a), index, d.show_value(b))!
+        .Assert(?v) => if x := v { str.format("assert-fail {}", d.show_value(x))! } else { "assert-fail" }
+        .DebugOnly(body) => {
+            d.line(depth, "debug-only")
+            d.show_insts(depth + 1, body)
+            return
+        }
+        .With(l, tl, install, ?on, body) => {
+            fiber: string = if x := on { str.format(" on {}", d.show_value(x))! } else { "" }
+            d.line(depth, str.format("with @{} label {}{}", l, tl, fiber)!)
+            d.show_insts(depth + 2, install)
+            d.line(depth + 1, "do")
+            d.show_insts(depth + 2, body)
+            return
+        }
+        .Install(h) => match h {
+            .Lit(id) => str.format("install handler {}", id)!
+            .Value(id, v) => str.format("install handler {} {}", id, d.show_value(v))!
+            .Decl(decls, v) => str.format("install decls {} {}", decls.len, d.show_value(v))!
+        }
+        .Exit(kind, ?v) => {
+            p: string = if x := v { str.format(" {}", d.show_value(x))! } else { "" }
+            k: string = match kind {
+                .Break(t) => str.format("break {}", target_text(t))!
+                .Continue(t) => str.format("continue {}", target_text(t))!
+                .Return(levels) => str.format("return up{}", levels)!
+            }
+            str.format("exit {}{}", k, p)!
+        }
+        .Resume(k, v) => str.format("resume {} {}", d.show_value(k), d.show_value(v))!
+        .Cancel(k) => str.format("cancel {}", d.show_value(k))!
     }
     d.line(depth, text)
+}
+
+/// The target of a TIR `break` or `continue` as text.
+target_text :: fn(t: tir.Target) -> string needs Alloc => match t {
+    .Label(levels, label) => str.format("up{} label {}", levels, label)!
+    .InstallingWith => "installing-with"
 }
 
 /// A union value as text without the dots of its variants: `Add(Checked)`.

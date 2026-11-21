@@ -1,0 +1,225 @@
+fn answer@effects.gm:8:1 escapes 0
+  local 0 _: i64 synthetic
+  temp 0: i64
+  temp 1: i64
+  ret i64
+  with @0 label 0
+      install handler 1
+    do
+      %0 = call perform Ask.0 ()
+      store l0, %0
+  %1 = load l0
+  return %1
+fn ask@effects.gm:8:46 escapes 0
+  ret i64
+  return 42:i64
+fn upto@effects.gm:12:1 escapes 0
+  local 0 n: u32 param
+  local 1 <tmp>: u32
+  local 2 <tmp>: u32
+  local 3 i: u32
+  temp 0: u32
+  temp 1: u32
+  temp 2: u32
+  temp 3: bool
+  temp 4: u32
+  temp 5: u32
+  temp 6: u32
+  temp 7: u32
+  ret ()
+  store l2, 0:u32
+  %0 = load l0
+  store l1, %0
+  block @0
+    loop @1
+      %1 = load l2
+      %2 = load l1
+      %3 = Lt %1, %2
+      br-unless %3 @0
+      block @2
+        block @3
+          block @4
+            %4 = load l2
+            store l3, %4
+            %5 = load l3
+            call perform Yield(u32).0 (%5)
+            br @3
+          no-arm
+      %6 = load l2
+      %7 = Add(Wrap) %6, 1:u32
+      store l2, %7
+  return zero:()
+fn below@effects.gm:16:1 escapes 0
+  local 0 limit: u32 param captured
+  local 1 n: u32 captured
+  local 2 <tmp>: usize
+  local 3 <tmp>: usize
+  local 4 <tmp>: u32
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: u32
+  temp 4: usize
+  temp 5: usize
+  temp 6: u32
+  ret u32
+  store l1, 0:u32
+  store l3, 0:usize
+  store l2, 2:usize
+  block @0
+    loop @1
+      %0 = load l3
+      %1 = load l2
+      %2 = Lt %0, %1
+      br-unless %2 @0
+      block @2
+        block @3
+          block @4
+            store l4, 10:u32
+            with @5 label 1
+                install handler 0
+              do
+                %3 = load l4
+                call fn upto (%3)
+            br @3
+          no-arm
+      %4 = load l3
+      %5 = Add(Wrap) %4, 1:usize
+      store l3, %5
+  %6 = load l1
+  return %6
+fn <for body>@effects.gm:19:9 escapes 0
+  local 0 <item>: u32 param
+  local 1 i: u32
+  temp 0: u32
+  temp 1: u32
+  temp 2: u32
+  temp 3: bool
+  temp 4: u32
+  temp 5: u32
+  ret ()
+  block @0
+    block @1
+      %0 = load l0
+      store l1, %0
+      %1 = load l1
+      %2 = load up1.l0
+      %3 = Ge %1, %2
+      if %3
+        exit break up1 label 0
+      %4 = load up1.l1
+      %5 = Add(Checked) %4, 1:u32
+      store up1.l1, %5
+      br @0
+    no-arm
+  return zero:()
+fn checks@effects.gm:27:1 escapes 0
+  local 0 xs: [4]u8 param
+  local 1 f: Flags param
+  local 2 g: Flags
+  local 3 k: u128
+  local 4 v: u8
+  local 5 _: ?u8 synthetic
+  local 6 _: ?u8 synthetic
+  local 7 _: u8 synthetic
+  local 8 _: ?u8 synthetic
+  local 9 _: ?u8 synthetic
+  local 10 _: u8 synthetic
+  temp 0: u8
+  temp 1: bool
+  temp 2: string
+  temp 3: Flags
+  temp 4: Flags
+  temp 5: Flags
+  temp 6: u128
+  temp 7: [4]u8
+  temp 8: bool
+  temp 9: Flags
+  temp 10: bool
+  temp 11: u128
+  temp 12: bool
+  temp 13: u8
+  temp 14: ?u8
+  temp 15: ?u8
+  temp 16: ?u8
+  temp 17: bool
+  temp 18: u8
+  temp 19: u8
+  temp 20: u8
+  temp 21: u128
+  temp 22: bool
+  temp 23: u8
+  temp 24: ?u8
+  temp 25: ?u8
+  temp 26: ?u8
+  temp 27: bool
+  temp 28: u8
+  temp 29: u8
+  temp 30: u128
+  temp 31: u128
+  ret u128
+  debug-only
+    check bounds 0:usize < 4:usize
+    %0 = load l0[0:usize *1]
+    %1 = Lt %0, 200:u8
+    if %1
+    else
+      %2 = str 5
+      assert-fail %2
+  %3 = load l1
+  store l2, %3
+  %4 = load l2
+  %5 = bits-set %4.1 5:u7
+  store l2, %5
+  %6 = Shl(Checked) 1:u128, 100:usize
+  store l3, %6
+  block @0
+    block @1
+      %7 = load l0
+      %8 = in 3:u8, %7
+      br-unless %8 @1
+      %9 = load l2
+      %10 = bits-get %9.0
+      br-unless %10 @1
+      %11 = load l3
+      return %11
+  %12 = Lt 9:usize, 4:usize
+  if %12
+    %13 = load l0[9:usize *1]
+    %14 = wrap Some %13
+    store l5, %14
+  else
+    %15 = wrap None
+    store l5, %15
+  %16 = load l5
+  store l6, %16
+  %17 = is-some l6
+  if %17
+    %18 = load l6.payload@0
+    store l7, %18
+  else
+    store l7, 0:u8
+  %19 = load l7
+  store l4, %19
+  %20 = load l4
+  %21 = coerce IntWiden %20
+  %22 = Lt 0:usize, 4:usize
+  if %22
+    %23 = load l0[0:usize *1]
+    %24 = wrap Some %23
+    store l8, %24
+  else
+    %25 = wrap None
+    store l8, %25
+  %26 = load l8
+  store l9, %26
+  %27 = is-some l9
+  if %27
+    %28 = load l9.payload@0
+    store l10, %28
+  else
+    store l10, 0:u8
+  %29 = load l10
+  %30 = coerce IntWiden %29
+  %31 = Add(Checked) %21, %30
+  return %31

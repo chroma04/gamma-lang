@@ -1,20 +1,25 @@
-// Compiling a function body for the register machine from its LIR (`compiler/lir`), for the
-// functions whose LIR holds only what this compiler covers (`lir_covers`): values that are
-// words, places in locals, upvars and memory, arithmetic and comparisons on words,
-// conversions between integers, direct calls, blocks, loops, `if`, branches, returns and
-// bounds checks. The other functions are compiled from their lowered tree (`vm_compile`).
-// `GAMMA_INTERP_LIR=0` turns it off (`Machine.use_lir`), which the `lir` test suite uses to
-// compare the two.
+// Compiling a function body for the register machine from its LIR (`compiler/lir`).
 //
-// LIR gives each value a temporary, written once and read after; here each temporary
-// gets a register, taken when it is written and given back after its last read (or, for
-// one read in a loop that it was written before, after that loop). Two cases need no
-// register of their own: a temporary loaded from a local kept in a register shares that
-// register when nothing stores to the local before the temporary's last read, and a value
-// stored straight into such a local (its only read) is computed into the local's register.
-// A comparison read only by the branch after it is compiled into that branch (`JCmp`,
-// `JEq`). Constant operands are registers filled when the body starts, as in
-// `vm_compile`.
+// LIR gives each value a temporary, written once and read after. A temporary that is a
+// word (at most 8 bytes) gets a register, taken when it is written and given back after its
+// last read (or, for one read in a loop that it was written before, after that loop). Two
+// cases need no register of their own: a temporary loaded from a local kept in a register
+// shares that register when nothing stores to the local before the temporary's last read,
+// and a value stored straight into such a local (its only read) is computed into the
+// local's register. A comparison read only by the branch after it is compiled into that
+// branch (`JCmp`, `JEq`). Constant operands are registers filled when the body starts.
+//
+// A temporary that is larger has a slot: bytes of the frame's storage after the locals,
+// given out by the analysis before compiling (`lir_slots`), and reused once the temporary
+// is dead. An instruction that needs bytes of its own for a moment (a 128-bit constant, the
+// value an unwrap reports) has a scratch slot for its position. Seen as bytes, a register is
+// a slot of 8 bytes too (the frame's storage is the register file), so an operation on
+// values of any size reads its operands as slots (`Gen`).
+//
+// The body of a `defer` and of a `with … on` is compiled into code of its own (a sub-code,
+// `Code.sub`) that runs in the same frame with the same registers: the deferred body when
+// its block is left, the `with`'s body on a fiber. Its registers are those free where it is
+// written, which no temporary live where it runs can hold.
 
 /// The state of compiling one function's LIR.
 Lc :: struct {
@@ -22,7 +27,7 @@ Lc :: struct {
     info: ^FnInfo
     f: ^const lir.Func
     ins: List(Ins)
-    /// The register of each temporary (`NO_REG` until it is written).
+    /// The register of each temporary that is a word (`NO_REG` until it is written).
     reg: List(u32)
     /// Whether each temporary's register is its own, to give back when it dies.
     owned: List(bool)
@@ -39,13 +44,41 @@ Lc :: struct {
     pos: u32
     /// The furthest instruction a jump goes to.
     joined: u32
+    /// Where the slots start in the frame's storage.
+    sbase: u32
+    /// The position of the instruction being compiled, and how much of its scratch slot is
+    /// used.
+    cur: u32
+    scratch_used: u32
+    /// The blocks, loops and `with`s around the instruction being compiled, innermost
+    /// last; `LcScope.sub` marks where a sub-code starts.
+    open: List(LcScope)
+    /// The loops and `with`s of the code being compiled that a flow can go to.
+    loops: List(VmLoop)
+    /// The sub-codes compiled so far.
+    subs: List(^Code)
+}
+
+/// A block, loop or `with` being compiled: what leaving it undoes.
+LcScope :: struct {
+    label: u32
+    /// The register holding the height of the deferred statements at its entry, if its
+    /// `defer`s are run when it is left (`NO_REG` if not).
+    defers: u32 = NO_REG
+    /// The register holding the handler context at its entry, for a `with` (else `NO_REG`).
+    cx: u32 = NO_REG
+    /// The start of a sub-code: no jump crosses it.
+    sub: bool = false
+    /// For a `with`: TIR's label of it, which its handlers are installed for.
+    with_label: u32 = NO_REG
 }
 
 /// What compiling a body needs to know before it starts. Every instruction has a
-/// position, in order, and a block, loop or `if` a second one after its lists.
+/// position, in order, and a block, loop, `if`, `defer`, `with` or `debug-only` a second
+/// one after its lists.
 LirAnalysis :: struct {
     /// Per temporary: where it is written, how often and where it is last read, and the
-    /// position after which its register is no longer needed.
+    /// position after which its register (or slot) is no longer needed.
     def: List(u32)
     uses: List(u32)
     last: List(u32)
@@ -56,9 +89,22 @@ LirAnalysis :: struct {
     stores: List(List(u32))
     /// The constants used as operands.
     consts: List(u64)
-    /// Whether everything is covered.
-    ok: bool
     count: u32
+    /// Per temporary larger than a word: the offset of its slot from the first slot
+    /// (`NO_REG` for the others).
+    slot: List(u32)
+    /// Per position: the bytes of scratch the instruction there needs, then the offset of
+    /// its scratch slot.
+    need: List(u32)
+    /// Per position: the position after which its scratch slot is no longer needed (its
+    /// own, but for an `Install` of a `With`, the `With`'s end).
+    until: List(u32)
+    scratch: List(u32)
+    /// The bytes the slots take.
+    slots: u64
+    /// Whether the body has `defer`s, and `with`s.
+    defers: bool
+    withs: bool
 }
 
 // ---------------------------------------------------------------------------------
@@ -83,14 +129,10 @@ LirBody :: struct {
     an: ^LirAnalysis
 }
 
-/// The LIR of `f` if this compiler covers it: then `info` is extended with the locals
-/// LIR adds, before the body is lowered for the tree evaluator with the same layout.
-lir_prepare :: fn(m: ^Machine, f: u32, info: ^FnInfo) -> ?LirBody needs Alloc {
-    if not m.word_locals { return null }
+/// The LIR of `f` and its analysis; `info` is extended with the locals LIR adds.
+lir_prepare :: fn(m: ^Machine, f: u32, info: ^FnInfo) -> LirBody needs Alloc {
     func := new(m.lir_of(f))!
-    if func.escapes > 0 { return null }
     an := m.lir_analyze(info, func)
-    if not an.ok { return null }
     m.lir_extend(info, func)
     return LirBody(func: func, an: an)
 }
@@ -99,6 +141,20 @@ lir_prepare :: fn(m: ^Machine, f: u32, info: ^FnInfo) -> ?LirBody needs Alloc {
 /// `make_info` places locals.
 lir_extend :: fn(m: ^Machine, info: ^FnInfo, func: ^const lir.Func) needs Alloc {
     n := info.offsets.len
+    // A local of the function whose address LIR takes (a temporary's, `get_ptr`'s) is given
+    // memory, as one whose address the source takes (`make_info`).
+    for i in 0..n.min(func.locals.len) {
+        if func.locals[i].addressed and not info.addressed[i] {
+            marked := list(bool)
+            marked.extend(info.addressed)!
+            for j in 0..n.min(func.locals.len) { marked.items[j] = marked.items[j] or func.locals[j].addressed }
+            info.addressed = marked.items
+            for q in info.params {
+                if info.addressed[usize(q)] { info.addressed_params = true }
+            }
+            break
+        }
+    }
     if func.locals.len is n { return () }
     offs := list(u64)
     sizes := list(u64)
@@ -129,16 +185,20 @@ lir_extend :: fn(m: ^Machine, info: ^FnInfo, func: ^const lir.Func) needs Alloc 
     info.store_size = top
 }
 
-/// Compiles the body `lb` (`lir_prepare` covered it) for the register machine.
+/// Compiles the body `lb` (from `lir_prepare`) for the register machine.
 lir_compile :: fn(m: ^Machine, info: ^FnInfo, lb: LirBody) -> ^Code needs Alloc {
     func := lb.func
     an := lb.an
+    if info.cost > sema.MAX_FRAME {
+        // Never run: a call is refused for its frame's size before it starts.
+        return new(Code(ins: m.lir_ret_only(), bc: empty_slice(Bc), frameless: false, locals_size: 0, hidden: empty_slice(u32), info: info, env_reg: NO_REG, sites: empty_slice(CallSite), regs_off: 0, size: 8, loops: empty_slice(VmLoop), consts: empty_slice(u64)))!
+    }
     sbase := (info.store_size + 7) / 8 * 8
-    rbase := (sbase / 8).trunc(u32)
+    rbase := ((sbase + an.slots + 7) / 8).trunc(u32)
     const_at := hash_map.hash_map(u64, u32)
     for i, v in enumerate(an.consts.items) { const_at.put(v, rbase + i.trunc(u32))! }
     first := rbase + an.consts.items.len.trunc(u32)
-    c := Lc(m: m, info: info, f: func, ins: list(Ins), reg: list(u32), owned: list(bool), an: an, free_regs: list(u32), top: first, max: first, const_at: const_at, pending: list((ins: u32, label: u32)), pos: 0, joined: 0)
+    c := Lc(m: m, info: info, f: func, ins: list(Ins), reg: list(u32), owned: list(bool), an: an, free_regs: list(u32), top: first, max: first, const_at: const_at, pending: list((ins: u32, label: u32)), pos: 0, joined: 0, sbase: sbase.trunc(u32), cur: 0, scratch_used: 0, open: list(LcScope), loops: list(VmLoop), subs: list(^Code))
     for _ in 0..func.temps.len {
         c.reg.push(NO_REG)!
         c.owned.push(false)!
@@ -147,37 +207,61 @@ lir_compile :: fn(m: ^Machine, info: ^FnInfo, lb: LirBody) -> ^Code needs Alloc 
     c.ins.push(.Ret)!
     regs_off := u64(rbase) * 8
     nregs := u64((c.max - rbase).max(1))
-    return new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: info.store_size, hidden: empty_slice(u32), info: info, env_reg: NO_REG, sites: empty_slice(CallSite), regs_off: regs_off, size: regs_off + 8 * nregs, loops: empty_slice(VmLoop), consts: an.consts.items))!
+    size := regs_off + 8 * nregs
+    code := new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: info.store_size, hidden: empty_slice(u32), info: info, env_reg: NO_REG, sites: empty_slice(CallSite), regs_off: regs_off, size: size, loops: c.loops.items, consts: an.consts.items, subs: c.subs.items))!
+    for s in c.subs.items {
+        s.regs_off = regs_off
+        s.size = size
+        s.consts = an.consts.items
+        s.locals_size = info.store_size
+    }
+    return code
+}
+
+/// The instructions of a body that only returns.
+lir_ret_only :: fn(m: ^Machine) -> []Ins needs Alloc {
+    out := list(Ins)
+    out.push(.Ret)!
+    return out.items
+}
+
+/// After `vm_assemble` assembled `code`: assembles its sub-codes, which run in its frame
+/// with its registers (and the register of the frame it captures, if any of them reads one).
+lir_assemble_subs :: fn(m: ^Machine, info: ^FnInfo, code: ^Code) needs Alloc {
+    for s in code.subs {
+        m.vm_assemble(info, s)
+        s.size = code.size
+        s.env_reg = code.env_reg
+        s.frameless = false
+    }
 }
 
 // ---------------------------------------------------------------------------------
 // Analysis and coverage
 // ---------------------------------------------------------------------------------
 
-/// Numbers the instructions of `func`, finds where each temporary lives and checks that
-/// every instruction is one this compiler covers.
+/// Numbers the instructions of `func`, finds where each temporary lives (and gives the
+/// larger ones slots) and checks that every instruction is one this compiler covers.
 lir_analyze :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func) -> ^LirAnalysis needs Alloc {
-    an := new(LirAnalysis(def: list(u32), uses: list(u32), last: list(u32), release: list(u32), dying: list(List(u32)), stores: list(List(u32)), consts: list(u64), ok: true, count: 0))!
-    for t in func.temps {
+    an := new(LirAnalysis(def: list(u32), uses: list(u32), last: list(u32), release: list(u32), dying: list(List(u32)), stores: list(List(u32)), consts: list(u64), count: 0, slot: list(u32), need: list(u32), until: list(u32), scratch: list(u32), slots: 0, defers: false, withs: false))!
+    for _ in func.temps {
         an.def.push(0)!
         an.uses.push(0)!
         an.last.push(0)!
         an.release.push(0)!
-        // Only words live in registers.
-        sz := m.size(t)
-        if sz is 0 or sz > 8 { an.ok = false }
+        an.slot.push(NO_REG)!
     }
     for _ in func.locals { an.stores.push(list(u32))! }
-    if not an.ok { return an }
     loops := list(LirLoop)
-    lir_walk(m, info, func, an, &loops, func.body)
-    if not an.ok { return an }
+    withs := list(List(u32))
+    lir_walk(m, info, func, an, &loops, &withs, func.body)
     for _ in 0..an.count + 1 { an.dying.push(list(u32))! }
     for t in 0..func.temps.len {
         r := an.last.items[t]
         an.release.items[t] = r
         an.dying.items[usize(r)].push(t.trunc(u32))!
     }
+    lir_slots(m, func, an)
     return an
 }
 
@@ -188,18 +272,15 @@ LirLoop :: struct {
     extend: List(u32)
 }
 
-/// Numbers the instructions `insts` for `lir_analyze`.
-lir_walk :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func, an: ^LirAnalysis, loops: ^List(LirLoop), insts: []const lir.Inst) needs Alloc {
+/// Numbers the instructions `insts` for `lir_analyze`. `withs` holds, for each `With`
+/// being numbered, the temporaries its `Install`s read: they live as long as it does.
+lir_walk :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func, an: ^LirAnalysis, loops: ^List(LirLoop), withs: ^List(List(u32)), insts: []const lir.Inst) needs Alloc {
     for i in 0..insts.len {
-        // A body that is not covered is not compiled: no need to go on.
-        if not an.ok { return () }
         inst := &insts[i]
         p := an.count
         an.count += 1
-        if not lir_op_ok(m, info, func, &inst.op) {
-            an.ok = false
-            return ()
-        }
+        an.need.push(lir_scratch_need(m, func, &inst.op))!
+        an.until.push(p)!
         lir_operands(&inst.op, fn(t: u32) {
             if usize(t) >= an.uses.items.len { return }
             an.uses.items[usize(t)] += 1
@@ -212,14 +293,32 @@ lir_walk :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func, an: ^Lir
                 }
             }
         })
+        if inst.op is .Install(_) {
+            if withs.items.len > 0 {
+                top := withs.items.len - 1
+                lir_operands(&inst.op, fn(t: u32) { withs.items[top].push(t)! })
+                // Its scratch (a value it keeps) lives as long as the `With` too.
+                withs.items[top].push(NO_REG - 1 - p)!
+            }
+        }
         lir_values(&inst.op, fn(v: lir.Value) {
             match v {
-                .Word(_, bits) => if bits not in an.consts.items { an.consts.push(bits)! }
+                .Word(ty, bits) => {
+                    k := m.word_bits(ty, bits)
+                    if k not in an.consts.items { an.consts.push(k)! }
+                }
                 .Zero(_) => if 0 not in an.consts.items { an.consts.push(0)! }
-                .Uninit(_) => { an.ok = false }
+                .Uninit(t) => if m.size(t) <= 8 {
+                    bits := m.uninit_word(t)
+                    if bits not in an.consts.items { an.consts.push(bits)! }
+                }
                 _ => {}
             }
         })
+        // The constants the instruction compares with.
+        for k in lir_op_consts(m, func, &inst.op) {
+            if k not in an.consts.items { an.consts.push(k)! }
+        }
         if d := lir.dst_of(&inst.op) {
             if usize(d) < an.def.items.len {
                 an.def.items[usize(d)] = p
@@ -231,35 +330,197 @@ lir_walk :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func, an: ^Lir
                 if usize(l) < an.stores.items.len { an.stores.items[usize(l)].push(p)! }
             }
             .Block(_, body) => {
-                lir_walk(m, info, func, an, loops, body)
+                lir_walk(m, info, func, an, loops, withs, body)
+                an.until.push(an.count)!
                 an.count += 1
+                an.need.push(0)!
             }
             .Loop(_, body) => {
                 loops.push(LirLoop(start: p, extend: list(u32)))!
-                lir_walk(m, info, func, an, loops, body)
+                lir_walk(m, info, func, an, loops, withs, body)
                 end := an.count
+                an.until.push(an.count)!
                 an.count += 1
+                an.need.push(0)!
                 lp := loops.pop() else @unreachable()
                 for t in lp.extend.items {
                     if an.last.items[usize(t)] < end { an.last.items[usize(t)] = end }
                 }
             }
             .If(_, then, else_) => {
-                lir_walk(m, info, func, an, loops, then)
-                lir_walk(m, info, func, an, loops, else_)
+                lir_walk(m, info, func, an, loops, withs, then)
+                lir_walk(m, info, func, an, loops, withs, else_)
+                an.until.push(an.count)!
                 an.count += 1
+                an.need.push(0)!
+            }
+            .Defer(_, body), .DebugOnly(body) => {
+                if inst.op is .Defer(_) { an.defers = true }
+                lir_walk(m, info, func, an, loops, withs, body)
+                an.until.push(an.count)!
+                an.count += 1
+                an.need.push(0)!
+            }
+            .With(_, _, install, ?on, body) => {
+                an.withs = true
+                withs.push(list(u32))!
+                // The stack is read when the body starts, after the installs.
+                if .Temp(t) := on else .Zero(m.s.tys.unit()) { withs.items[withs.items.len - 1].push(t)! }
+                lir_walk(m, info, func, an, loops, withs, install)
+                lir_walk(m, info, func, an, loops, withs, body)
+                end := an.count
+                an.until.push(an.count)!
+                an.count += 1
+                an.need.push(0)!
+                kept := withs.pop() else @unreachable()
+                for t in kept.items {
+                    if t >= an.uses.items.len.trunc(u32) {
+                        an.until.items[usize(NO_REG - 1 - t)] = end
+                        continue
+                    }
+                    if an.last.items[usize(t)] < end { an.last.items[usize(t)] = end }
+                }
             }
             _ => {}
         }
     }
 }
 
-/// How many positions instruction `i` takes: one, and for a block, loop or `if` those of
-/// its lists and one after them.
+/// Gives each temporary larger than a word a slot, and each instruction that needs scratch
+/// bytes a scratch slot: in order of position, each taken when it is written and given
+/// back after the position where it is no longer needed.
+lir_slots :: fn(m: ^Machine, func: ^const lir.Func, an: ^LirAnalysis) needs Alloc {
+    born := list(List(u32))
+    for _ in 0..an.count + 1 { born.push(list(u32))! }
+    for t in 0..func.temps.len {
+        if m.size(func.temps[t]) > 8 { born.items[usize(an.def.items[t])].push(t.trunc(u32))! }
+    }
+    free := list((at: u64, size: u64))
+    top: u64 = 0
+    take :: fn(size: u64) -> u64 {
+        n := (size + 7) / 8 * 8
+        for k in 0..free.items.len {
+            if free.items[k].size is n {
+                at := free.items[k].at
+                _ = free.swap_remove(k)
+                return at
+            }
+        }
+        at := top
+        top += n
+        return at
+    }
+    for _ in 0..an.count + 1 { an.scratch.push(NO_REG)! }
+    // The scratch slots freed after each position.
+    later := list(List(u32))
+    for _ in 0..an.count + 1 { later.push(list(u32))! }
+    for p in 0..an.count {
+        for t in born.items[usize(p)].items { an.slot.items[usize(t)] = take(m.size(func.temps[usize(t)])).trunc(u32) }
+        need := an.need.items[usize(p)]
+        if need > 0 { an.scratch.items[usize(p)] = take(u64(need)).trunc(u32) }
+        for t in an.dying.items[usize(p)].items {
+            s := an.slot.items[usize(t)]
+            if s is not NO_REG { free.push((at: u64(s), size: (m.size(func.temps[usize(t)]) + 7) / 8 * 8))! }
+        }
+        if need > 0 { later.items[usize(an.until.items[usize(p)])].push(p)! }
+        for q in later.items[usize(p)].items { free.push((at: u64(an.scratch.items[usize(q)]), size: (u64(an.need.items[usize(q)]) + 7) / 8 * 8))! }
+    }
+    an.slots = top
+}
+
+/// The bytes of scratch instruction `op` needs: for its constants of more than 8 bytes
+/// and unspecified values larger than a word, and for the value an unwrap or a test of a
+/// large tag reads.
+lir_scratch_need :: fn(m: ^Machine, func: ^const lir.Func, op: ^const lir.Op) -> u32 needs Alloc {
+    n: u64 = 0
+    lir_values(op, fn(v: lir.Value) {
+        match v {
+            .Big(t, _) => { n += (m.size(t) + 7) / 8 * 8 }
+            .Uninit(t) => if m.size(t) > 8 { n += (m.size(t) + 7) / 8 * 8 }
+            _ => {}
+        }
+    })
+    if not m.word_locals {
+        // Words are written to scratch to be read as bytes (`lc_arg`).
+        lir_values(op, fn(v: lir.Value) {
+            k := m.size(lir.value_type(func, v))
+            if k > 0 and k <= 8 { n += 8 }
+        })
+        n += 8
+    }
+    match op^ {
+        .Check(.Unwrap(_, p, _)) => if t := lir.place_type(m.s, func, &p) { n += (m.size(t) + 7) / 8 * 8 }
+        .TagIs(_, p, _) => if t := lir.place_type(m.s, func, &p) {
+            if lir_tag(m, t) is null { n += (m.size(t) + 7) / 8 * 8 }
+        }
+        _ => {}
+    }
+    return n.trunc(u32)
+}
+
+/// The constants instruction `op` compares with, besides its operands: 0 for the test of
+/// a nullable pointer, the tag of a variant.
+lir_op_consts :: fn(m: ^Machine, func: ^const lir.Func, op: ^const lir.Op) -> []u64 needs Alloc {
+    out := list(u64)
+    match op^ {
+        .IsPresent(_, p, false) => out.push(0)!
+        .Wrap(d, _, _) => {
+            out.push(1)!
+            out.push(0)!
+            if k := lir_wrap_word_flag(m, func.temps[usize(d)]) { out.push(k)! }
+        }
+        .Coerce(d, kind, _) => if kind in (tir.Coercion.WrapOptional, .WrapOk, .ArrayPtrToSlice) {
+            out.push(1)!
+            out.push(0)!
+            if k := lir_wrap_word_flag(m, func.temps[usize(d)]) { out.push(k)! }
+            if .Slice(_, _) := m.kind(func.temps[usize(d)]) {
+                if .Ptr(_, pt) := m.kind(lir_coerce_src(func, op)) {
+                    if .Array(n, _, _) := m.kind(pt) { out.push(n)! }
+                }
+            }
+        }
+        .TagIs(_, p, v) => if t := lir.place_type(m.s, func, &p) {
+            if tg := lir_tag(m, t) {
+                if usize(v) < tg.values.len { out.push(tg.values[usize(v)])! }
+            }
+        }
+        _ => {}
+    }
+    return out.items
+}
+
+/// The type of the value coerced by `op` (a `Coerce`).
+lir_coerce_src :: fn(func: ^const lir.Func, op: ^const lir.Op) -> Ty => match op^ {
+    .Coerce(_, _, v) => lir.value_type(func, v)
+    _ => Ty(id: 0)
+}
+
+/// For a present optional of type `t` that is a word with a flag (not a nullable pointer):
+/// the word of the flag set alone, which `or` with the value's word makes it.
+lir_wrap_word_flag :: fn(m: ^Machine, t: Ty) -> ?u64 needs Alloc {
+    .Optional(inner) := m.kind(t) else return null
+    if cgen.nullable_pointer(m.s, inner) or m.size(t) > 8 or not m.little { return null }
+    return u64(1) << (8 * m.offsets(t)[1])
+}
+
+/// The size of the tag of union type `t` and the tag of each variant as a word, if the tag
+/// is at most 8 bytes.
+lir_tag :: fn(m: ^Machine, t: Ty) -> ?(size: u32, values: []u64) needs Alloc {
+    u := m.union_def(t) else return null
+    ts := m.size(u.tag)
+    if ts > 8 or ts is 0 { return null }
+    vals := list(u64)
+    for v in u.variants { vals.push(bigint.bits128(v.tag).trunc(u64) & mask64((8 * ts).trunc(u32)))! }
+    return (size: ts.trunc(u32), values: vals.items)
+}
+
+/// How many positions instruction `i` takes: one, and for an instruction with lists those
+/// of its lists and one after them.
 lir_positions :: fn(i: ^const lir.Inst) -> u32 {
     match i.op {
-        .Block(_, body), .Loop(_, body) => return 2 + lir_list_positions(body)
+        .Block(_, body), .Loop(_, body), .Defer(_, body), .DebugOnly(body) => return 2 + lir_list_positions(body)
         .If(_, then, else_) => return 2 + lir_list_positions(then) + lir_list_positions(else_)
+        .With(_, _, install, _, body) => return 2 + lir_list_positions(install) + lir_list_positions(body)
         _ => return 1
     }
 }
@@ -279,6 +540,7 @@ lir_operands :: fn(op: ^const lir.Op, f: fn(t: u32)) {
         .Load(_, p), .AddrOf(_, p), .Store(p, _), .IsPresent(_, p, _), .TagIs(_, p, _) => {
             if .Deref(t) := p.base { f(t) }
         }
+        .Check(.Unwrap(_, p, _)) => if .Deref(t) := p.base { f(t) }
         _ => {}
     }
 }
@@ -295,13 +557,13 @@ lir_values :: fn(op: ^const lir.Op, f: fn(v: lir.Value)) {
         }
     }
     match op^ {
-        .Move(_, v), .Un(_, _, v), .Coerce(_, _, v), .Fill(_, v), .Trap(v) => f(v)
+        .Move(_, v), .Un(_, _, v), .Coerce(_, _, v), .Fill(_, v), .Trap(v), .BitsGet(_, v, _), .Cancel(v) => f(v)
         .Load(_, p), .AddrOf(_, p), .IsPresent(_, p, _), .TagIs(_, p, _) => place(&p)
         .Store(p, v) => {
             place(&p)
             f(v)
         }
-        .Bin(_, _, a, b), .Eq(_, _, a, b) => {
+        .Bin(_, _, a, b), .Eq(_, _, a, b), .In(_, _, a, b), .BitsSet(_, a, _, b), .Resume(a, b) => {
             f(a)
             f(b)
         }
@@ -310,7 +572,7 @@ lir_values :: fn(op: ^const lir.Op, f: fn(v: lir.Value)) {
             if .Value(v) := c { f(v) }
             for v in args { f(v) }
         }
-        .Variant(_, _, ?v), .Wrap(_, _, ?v) => if x := v { f(x) }
+        .Variant(_, _, ?v), .Wrap(_, _, ?v), .Assert(?v), .Exit(_, ?v) => if x := v { f(x) }
         .Check(c) => match c {
             .Bounds(a, b) => {
                 f(a)
@@ -338,63 +600,16 @@ lir_values :: fn(op: ^const lir.Op, f: fn(v: lir.Value)) {
         }
         .If(c, _, _), .BrIf(c, _, _) => f(c)
         .Return(?v) => if x := v { f(x) }
+        .With(_, _, _, ?on, _) => if x := on { f(x) }
+        .Install(h) => match h {
+            .Value(_, v), .Decl(_, v) => f(v)
+            .Lit(_) => {}
+        }
         _ => {}
     }
 }
 
-/// Whether this compiler covers instruction `op` of `func`.
-lir_op_ok :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func, op: ^const lir.Op) -> bool needs Alloc {
-    match op^ {
-        .Move(_), .Block(_), .Loop(_), .If(_), .Br(_), .BrIf(_), .Return(_), .NoArm, .Unreachable => return true
-        .Load(_, p), .Store(p, _) => return m.lir_place_ok(info, func, &p, false)
-        .AddrOf(_, p) => return m.lir_place_ok(info, func, &p, true)
-        .Bin(d, op_, a, _) => return m.lir_bin(lir.value_type(func, a), func.temps[usize(d)], op_) is not null
-        .Un(_, op_, a) => {
-            t := lir.value_type(func, a)
-            return match op_ {
-                .Not => m.kind(t) is .Bool
-                _ => int_w(m, t) is not null
-            }
-        }
-        .Eq(_, _, a, _) => return word_cmp(m, lir.value_type(func, a)) is not null
-        .Coerce(d, kind, v) => return m.lir_coerce(kind, lir.value_type(func, v), func.temps[usize(d)]) is not null
-        .Builtin(?d, b, args) => {
-            dt := d else return false
-            if b not in (tir.Builtin.Convert, .Trunc, .Sat) or args.len is not 1 { return false }
-            return int_w(m, lir.value_type(func, args[0])) is not null and int_w(m, func.temps[usize(dt)]) is not null
-        }
-        .Call(_, c, _) => return c is .Fn(_)
-        .Check(c) => {
-            .Bounds(i, _) := c else return false
-            // A negative index is reported as such by the tree: left to it.
-            w := int_w(m, lir.value_type(func, i)) else return false
-            return not w.signed
-        }
-        _ => return false
-    }
-}
-
-/// Whether this compiler reaches place `p`: (with `addr`) its address can be taken.
-lir_place_ok :: fn(m: ^Machine, info: ^const FnInfo, func: ^const lir.Func, p: ^const lir.Place, addr: bool) -> bool needs Alloc {
-    match p.base {
-        .Local(l) => {
-            // The locals LIR adds are placed only once the body is covered (`lir_extend`).
-            addressed := if usize(l) < info.addressed.len { info.addressed[usize(l)] } else if usize(l) < func.locals.len { func.locals[usize(l)].addressed } else { return false }
-            if addr and not addressed { return false }
-        }
-        .Upvar(_) => {
-            if addr { return false }
-            for x in p.proj {
-                if not (x is .Field(_) or x is .Payload(_)) { return false }
-            }
-        }
-        .Deref(_) => {}
-        .Global(_), .Const(_) => return false
-    }
-    return true
-}
-
-/// How `Bin` of operands of type `t` to a result of type `rt` compiles, if it does.
+/// How `Bin` of operands of type `t` to a result of type `rt` compiles on words, if it does.
 LirBin :: union {
     /// `+ - *` checked or wrapping (`Arith64`, `Arith32`).
     Arith: (op: u8, wrap: bool, t: IntW)
@@ -432,7 +647,7 @@ lir_coerce :: fn(m: ^Machine, kind: tir.Coercion, from: Ty, to: Ty) -> ?(same: b
         b := int_w(m, to) else return null
         return (same: false, from: a, to: b)
     }
-    if kind in (tir.Coercion.PtrToPtr, .TupleRename, .FnPtrWiden) and m.size(from) is m.size(to) {
+    if kind in (tir.Coercion.PtrToPtr, .TupleRename, .FnPtrWiden) and m.size(from) is m.size(to) and m.size(to) <= 8 {
         w := IntW(signed: false, bits: 64)
         return (same: true, from: w, to: w)
     }
@@ -440,7 +655,7 @@ lir_coerce :: fn(m: ^Machine, kind: tir.Coercion, from: Ty, to: Ty) -> ?(same: b
 }
 
 // ---------------------------------------------------------------------------------
-// Compiling
+// Compiling: registers, slots and operands
 // ---------------------------------------------------------------------------------
 
 lc_emit :: fn(c: ^Lc, i: Ins) needs Alloc {
@@ -489,12 +704,111 @@ lc_def :: fn(c: ^Lc, t: u32) -> u32 needs Alloc {
     return r
 }
 
-/// The register holding operand `v`.
-lc_val :: fn(c: ^Lc, v: lir.Value) -> u32 => match v {
+/// Whether values of type `t` are words, which live in registers.
+lc_word :: fn(c: ^const Lc, t: Ty) -> bool needs Alloc {
+    n := c.m.size(t)
+    return n > 0 and n <= 8
+}
+
+/// Whether value `v` is a word in a register (a temporary's or a constant's).
+lc_in_reg :: fn(c: ^const Lc, v: lir.Value) -> bool needs Alloc => match v {
+    .Temp(t) => c.lc_word(c.f.temps[usize(t)])
+    .Word(_), .Zero(_) => true
+    .Uninit(t) => c.m.size(t) <= 8
+    .Big(_) => false
+}
+
+/// The register holding operand `v`, a word (`lc_in_reg`).
+lc_val :: fn(c: ^Lc, v: lir.Value) -> u32 needs Alloc => match v {
     .Temp(t) => c.reg.items[usize(t)]
-    .Word(_, bits) => c.const_at.get(bits) else NO_REG
+    .Word(ty, bits) => c.const_at.get(c.m.word_bits(ty, bits)) else NO_REG
     .Zero(_) => c.const_at.get(0) else NO_REG
-    .Uninit(_) => NO_REG
+    .Uninit(t) => c.const_at.get(c.m.uninit_word(t)) else NO_REG
+    .Big(_) => NO_REG
+}
+
+/// The slot of temporary `t`, which is larger than a word.
+lc_slot :: fn(c: ^const Lc, t: u32) -> u32 => c.sbase + c.an.slot.items[usize(t)]
+
+/// `size` bytes of the scratch slot of the instruction being compiled.
+lc_scratch :: fn(c: ^Lc, size: u64) -> u32 {
+    at := c.sbase + c.an.scratch.items[usize(c.cur)] + c.scratch_used
+    c.scratch_used += ((size + 7) / 8 * 8).trunc(u32)
+    return at
+}
+
+/// Operand `v` as bytes of the frame's storage: a word's register, or a slot (constants
+/// larger than a word are written to scratch first).
+lc_arg :: fn(c: ^Lc, v: lir.Value) -> Arg needs Alloc {
+    m := c.m
+    match v {
+        .Temp(t) => {
+            n := m.size(c.f.temps[usize(t)])
+            if n is 0 { return .Slot(0, 0) }
+            if n <= 8 { return c.lc_word_bytes(c.reg.items[usize(t)], n) }
+            return .Slot(c.lc_slot(t), n.trunc(u32))
+        }
+        .Word(ty, _) => return c.lc_word_bytes(c.lc_val(v), m.size(ty))
+        .Zero(_) => return .Slot(0, 0)
+        .Uninit(ty) => {
+            n := m.size(ty)
+            if n <= 8 { return c.lc_word_bytes(c.lc_val(v), n) }
+            at := c.lc_scratch(n)
+            c.lc_gen(.Bytes(if m.mode is .Debug { 0xAA } else { 0 }), empty_slice(Arg), .Slot(at), ty, source.DUMMY, false)
+            return .Slot(at, n.trunc(u32))
+        }
+        .Big(ty, bits) => {
+            n := m.size(ty)
+            at := c.lc_scratch(n)
+            b := make_fill(us(n), u8(0))!
+            m.put_uint(b, bits)
+            c.lc_emit(.ConstSlot(at, b))
+            return .Slot(at, n.trunc(u32))
+        }
+    }
+}
+
+/// The `n` bytes of the word in register `r`: the register itself where the frame's
+/// storage holds words as their bytes (`word_locals`), else written to scratch.
+lc_word_bytes :: fn(c: ^Lc, r: u32, n: u64) -> Arg needs Alloc {
+    if c.m.word_locals { return .Slot(r * 8, n.trunc(u32)) }
+    at := c.lc_scratch(8)
+    c.lc_emit(.WSlot(at, n.trunc(u32), r))
+    return .Slot(at, n.trunc(u32))
+}
+
+/// Operand `v` of a call: a word in its register, else its bytes (`lc_arg`).
+lc_call_arg :: fn(c: ^Lc, v: lir.Value) -> Arg needs Alloc {
+    if c.lc_in_reg(v) and not (v is .Zero(_)) { return .Reg(c.lc_val(v)) }
+    return c.lc_arg(v)
+}
+
+lc_args :: fn(c: ^Lc, vs: []const lir.Value) -> []Arg needs Alloc {
+    out := list(Arg)
+    for v in vs { out.push(c.lc_arg(v))! }
+    return out.items
+}
+
+/// `a` alone, as a list of arguments.
+lc_args_of :: fn(c: ^const Lc, a: Arg) -> []Arg needs Alloc {
+    out := list(Arg)
+    out.push(a)!
+    return out.items
+}
+
+/// The slot at which `a` (from `lc_arg`) is.
+arg_at :: fn(a: Arg) -> u32 => match a {
+    .Slot(at, _) => at
+    .Reg(r) => r * 8
+}
+
+/// Where the value written to temporary `d` goes (as `lc_target`, for a word).
+lc_dest :: fn(c: ^Lc, d: u32, next: ?^const lir.Inst) -> (dst: Dest, skip: bool) needs Alloc {
+    n := c.m.size(c.f.temps[usize(d)])
+    if n is 0 { return (dst: .None, skip: false) }
+    if n > 8 { return (dst: .Slot(c.lc_slot(d)), skip: false) }
+    r := c.lc_target(d, next)
+    return (dst: .Reg(r.reg), skip: r.skip)
 }
 
 /// Gives back the registers of the temporaries that die after position `p`.
@@ -508,7 +822,18 @@ lc_die :: fn(c: ^Lc, p: u32) needs Alloc {
 }
 
 /// A node for an instruction's traps and calls: its type, size and place in the source.
-lc_node :: fn(c: ^Lc, t: Ty, span: source.Span) -> ^Node needs Alloc => new(Node(op: .Leftover, ty: t, size: c.m.size(t), span: span, place: false))!
+lc_node :: fn(c: ^Lc, t: Ty, span: source.Span) -> ^Node needs Alloc => new(Node(op: .Leftover, ty: t, size: c.m.size(t), span: span))!
+
+/// A node with operation `op`, for the instructions that read it (`Builtin`, `Perform`,
+/// `StrSlot`).
+lc_op_node :: fn(c: ^Lc, op: Op, t: Ty, span: source.Span) -> ^Node needs Alloc => new(Node(op: op, ty: t, size: c.m.size(t), span: span))!
+
+/// Nodes standing for values of the types of `vs`.
+lc_type_nodes :: fn(c: ^Lc, vs: []const lir.Value, span: source.Span) -> []^Node needs Alloc {
+    out := list(^Node)
+    for v in vs { out.push(c.lc_node(lir.value_type(c.f, v), span))! }
+    return out.items
+}
 
 /// The register local `l` is kept in, if it is one (`vc_local_reg`).
 lc_local_reg :: fn(c: ^const Lc, l: u32) -> ?u32 {
@@ -539,6 +864,10 @@ lc_frame_reg :: fn(c: ^Lc, l: u32, pl: ^const lir.Place) -> ?u32 needs Alloc {
                 off += bits *% size
                 ty = elem
             }
+            .Payload(o, pt) => {
+                off += o
+                ty = pt
+            }
             _ => return null
         }
     }
@@ -555,6 +884,47 @@ lc_unstored :: fn(c: ^const Lc, l: u32, from: u32, to: u32) -> bool {
     return true
 }
 
+/// Emits a generic instruction (`vm_gen`), framed if it needs the frame.
+lc_gen :: fn(c: ^Lc, op: GenOp, args: []Arg, dst: Dest, t: Ty, span: source.Span, framed: bool) needs Alloc {
+    g := new(GenIns(op: op, args: args, dst: dst, ty: t, span: span))!
+    c.lc_emit(if framed { Ins.GenF(g) } else { .Gen(g) })
+}
+
+/// Whether the code being compiled is a sub-code.
+lc_in_sub :: fn(c: ^const Lc) -> bool {
+    for s in c.open.items {
+        if s.sub { return true }
+    }
+    return false
+}
+
+/// Compiles `body` into a sub-code of its own (`Code.sub`).
+lc_sub :: fn(c: ^Lc, body: []const lir.Inst) -> ^Code needs Alloc {
+    saved_ins := c.ins
+    saved_pending := c.pending
+    saved_loops := c.loops
+    saved_joined := c.joined
+    c.ins = list(Ins)
+    c.pending = list((ins: u32, label: u32))
+    c.loops = list(VmLoop)
+    c.joined = 0
+    c.open.push(LcScope(label: NO_REG, sub: true))!
+    c.lc_list(body)
+    c.ins.push(.Ret)!
+    _ = c.open.pop()
+    code := new(Code(ins: c.ins.items, bc: empty_slice(Bc), frameless: false, locals_size: c.info.store_size, hidden: empty_slice(u32), info: c.info, env_reg: NO_REG, sites: empty_slice(CallSite), regs_off: 0, size: 0, loops: c.loops.items, consts: empty_slice(u64), sub: true))!
+    c.subs.push(code)!
+    c.ins = saved_ins
+    c.pending = saved_pending
+    c.loops = saved_loops
+    c.joined = saved_joined
+    return code
+}
+
+// ---------------------------------------------------------------------------------
+// Compiling: instructions
+// ---------------------------------------------------------------------------------
+
 lc_list :: fn(c: ^Lc, insts: []const lir.Inst) needs Alloc {
     i: usize = 0
     while i < insts.len {
@@ -562,43 +932,70 @@ lc_list :: fn(c: ^Lc, insts: []const lir.Inst) needs Alloc {
     }
 }
 
-/// Compiles instruction `i` of `insts`; returns how many instructions it compiled (two
-/// when it compiled the next one into it).
+/// Compiles instruction `i` of `insts`; returns how many instructions it compiled (more than
+/// one when it compiled the next ones into it).
 lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
     inst := &insts[i]
     p := c.pos
     c.pos += 1
+    c.cur = p
+    c.scratch_used = 0
     next: ?^const lir.Inst = if i + 1 < insts.len { &insts[i + 1] } else { null }
     span := inst.span
+    m := c.m
     taken: usize = 1
     match inst.op {
         .Move(d, v) => {
-            r := c.lc_target(d, next)
-            if r.skip { taken = 2 }
-            match v {
-                .Temp(t) => if c.lc_val(v) is not r.reg { c.lc_emit(.Mov(r.reg, c.reg.items[usize(t)])) }
-                .Word(_, bits) => c.lc_emit(.Const(r.reg, bits))
-                _ => c.lc_emit(.Const(r.reg, 0))
+            if c.lc_word(c.f.temps[usize(d)]) {
+                r := c.lc_target(d, next)
+                if r.skip { taken = 2 }
+                match v {
+                    .Temp(t) => if c.lc_val(v) is not r.reg { c.lc_emit(.Mov(r.reg, c.reg.items[usize(t)])) }
+                    .Word(ty, bits) => c.lc_emit(.Const(r.reg, m.word_bits(ty, bits)))
+                    .Uninit(t) => c.lc_emit(.Const(r.reg, m.uninit_word(t)))
+                    _ => c.lc_emit(.Const(r.reg, 0))
+                }
+            } else if m.size(c.f.temps[usize(d)]) > 8 {
+                a := c.lc_arg(v)
+                if .Slot(at, n) := a { c.lc_emit(.CopySlot(c.lc_slot(d), at, n)) }
             }
         }
         .Load(d, pl) => {
-            // A local (or a word of one) in a register: shared when nothing stores to the
-            // local while it lives.
-            if .Local(l) := pl.base {
-                if lr := c.lc_frame_reg(l, &pl) {
-                    if c.lc_unstored(l, p, c.an.release.items[usize(d)]) {
-                        c.reg.items[usize(d)] = lr
-                        c.lc_die(p)
-                        return 1
+            t := c.f.temps[usize(d)]
+            if c.lc_word(t) {
+                // A local (or a word of one) in a register: shared when nothing stores to
+                // the local while it lives.
+                if .Local(l) := pl.base and not c.f.locals[usize(l)].captured {
+                    if lr := c.lc_frame_reg(l, &pl) {
+                        if c.lc_unstored(l, p, c.an.release.items[usize(d)]) {
+                            c.reg.items[usize(d)] = lr
+                            c.lc_die(p)
+                            return 1
+                        }
                     }
                 }
+                r := c.lc_target(d, next)
+                if r.skip { taken = 2 }
+                c.lc_load(r.reg, pl, t, span)
+            } else {
+                c.lc_get(c.lc_slot(d), pl, m.size(t), span)
             }
-            t := c.f.temps[usize(d)]
-            r := c.lc_target(d, next)
-            if r.skip { taken = 2 }
-            c.lc_load(r.reg, pl, t, span)
         }
-        .Store(pl, v) => c.lc_store(pl, v, span)
+        .Store(pl, v) => {
+            t := lir.value_type(c.f, v)
+            n := m.size(t)
+            if n > 0 {
+                if c.lc_in_reg(v) {
+                    c.lc_store(pl, v, span)
+                } else if .Uninit(_) := v and pl.proj.len is 0 and .Local(l) := pl.base and not c.info.addressed[usize(l)] {
+                    // `x: T = ---` written where it is, without a copy.
+                    c.lc_gen(.Bytes(if m.mode is .Debug { 0xAA } else { 0 }), empty_slice(Arg), .Slot(c.info.offsets[usize(l)].trunc(u32)), t, span, false)
+                } else {
+                    a := c.lc_arg(v)
+                    c.lc_put(pl, arg_at(a), n, span)
+                }
+            }
+        }
         .AddrOf(d, pl) => {
             r := c.lc_target(d, next)
             if r.skip { taken = 2 }
@@ -606,7 +1003,10 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
         }
         .Bin(d, op, a, b) => {
             t := lir.value_type(c.f, a)
-            kind := c.m.lir_bin(t, c.f.temps[usize(d)], op) else @unreachable()
+            kind := m.lir_bin(t, c.f.temps[usize(d)], op) else {
+                c.lc_generic(.Bin(op, t, lir.value_type(c.f, b)), insts, i, d, c.lc_args([2]lir.Value(a, b)[..]), span, &taken)
+                return c.lc_end(p, taken)
+            }
             ra := c.lc_val(a)
             rb := c.lc_val(b)
             // A comparison read only by the branch after it is that branch.
@@ -620,7 +1020,7 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
                     c.pos += 1
                 }
                 c.lc_branch_cmp(nx, op, how, ra, rb)
-                c.lc_skip_fused(p, nx)
+                c.lc_skip_fused()
                 return 2
             }
             r := c.lc_target(d, next)
@@ -635,7 +1035,7 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
                     }
                 }
                 .Int(w) => {
-                    sw := int_w(c.m, lir.value_type(c.f, b)) else w
+                    sw := int_w(m, lir.value_type(c.f, b)) else w
                     match op {
                         .BitAnd => c.lc_emit(.Bit(0, r.reg, ra, rb))
                         .BitOr => c.lc_emit(.Bit(1, r.reg, ra, rb))
@@ -659,18 +1059,31 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
             }
         }
         .Un(d, op, a) => {
+            t := lir.value_type(c.f, a)
+            word := match op {
+                .Not => m.kind(t) is .Bool
+                _ => int_w(m, t) is not null
+            }
+            if not word {
+                c.lc_generic(.Un(op, t), insts, i, d, c.lc_args([1]lir.Value(a)[..]), span, &taken)
+                return c.lc_end(p, taken)
+            }
             ra := c.lc_val(a)
             r := c.lc_target(d, next)
             if r.skip { taken = 2 }
             if op is .Not {
                 c.lc_emit(.Not(r.reg, ra))
             } else {
-                w := int_w(c.m, lir.value_type(c.f, a)) else @unreachable()
+                w := int_w(m, t) else @unreachable()
                 c.lc_emit(.IntUn(op, w, r.reg, ra, c.lc_node(c.f.temps[usize(d)], span)))
             }
         }
         .Eq(d, negated, a, b) => {
-            how := word_cmp(c.m, lir.value_type(c.f, a)) else @unreachable()
+            t := lir.value_type(c.f, a)
+            how := word_cmp(m, t) else {
+                c.lc_generic(.Eq(negated, t), insts, i, d, c.lc_args([2]lir.Value(a, b)[..]), span, &taken)
+                return c.lc_end(p, taken)
+            }
             ra := c.lc_val(a)
             rb := c.lc_val(b)
             if c.lc_fuses(d, next) {
@@ -681,7 +1094,7 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
                     c.pos += 1
                 }
                 c.lc_branch_eq(nx, how, negated, ra, rb)
-                c.lc_skip_fused(p, nx)
+                c.lc_skip_fused()
                 return 2
             }
             r := c.lc_target(d, next)
@@ -689,7 +1102,37 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
             c.lc_emit(.EqW(how, negated, r.reg, ra, rb))
         }
         .Coerce(d, kind, v) => {
-            k := c.m.lir_coerce(kind, lir.value_type(c.f, v), c.f.temps[usize(d)]) else @unreachable()
+            from := lir.value_type(c.f, v)
+            k := m.lir_coerce(kind, from, c.f.temps[usize(d)]) else {
+                wk: ?lir.Wrap = match kind {
+                    .WrapOptional => .Some
+                    .WrapOk => .Ok
+                    _ => null
+                }
+                if w := wk {
+                    if not c.lc_wrap(d, w, v, next, &taken) {
+                        c.lc_generic(.Coerce(kind, from), insts, i, d, c.lc_args([1]lir.Value(v)[..]), span, &taken)
+                    }
+                    return c.lc_end(p, taken)
+                }
+                if kind in (tir.Coercion.PtrToPtr, .TupleRename, .FnPtrWiden) and m.size(from) is m.size(c.f.temps[usize(d)]) and m.size(from) > 8 {
+                    // The same bytes.
+                    a := c.lc_arg(v)
+                    c.lc_emit(.CopySlot(c.lc_slot(d), arg_at(a), m.size(from).trunc(u32)))
+                    return c.lc_end(p, taken)
+                }
+                if kind is .ArrayPtrToSlice and m.size(c.f.temps[usize(d)]) > 8 and c.lc_in_reg(v) {
+                    if .Ptr(_, pt) := m.kind(from) and .Array(n, _, _) := m.kind(pt) {
+                        at := c.lc_slot(d)
+                        pb := m.ptr_bytes.trunc(u32)
+                        c.lc_emit(.WSlot(at, pb, c.lc_val(v)))
+                        c.lc_emit(.WSlot(at + pb, pb, c.const_at.get(n) else NO_REG))
+                        return c.lc_end(p, taken)
+                    }
+                }
+                c.lc_generic(.Coerce(kind, from), insts, i, d, c.lc_args([1]lir.Value(v)[..]), span, &taken)
+                return c.lc_end(p, taken)
+            }
             rv := c.lc_val(v)
             r := c.lc_target(d, next)
             if r.skip { taken = 2 }
@@ -699,65 +1142,237 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
                 c.lc_emit(.IntConv(.Convert, k.from, k.to, r.reg, rv))
             }
         }
-        .Builtin(?d, b, args) => {
-            dt := d else @unreachable()
-            from := int_w(c.m, lir.value_type(c.f, args[0])) else @unreachable()
-            to := int_w(c.m, c.f.temps[usize(dt)]) else @unreachable()
-            rv := c.lc_val(args[0])
-            r := c.lc_target(dt, next)
-            if r.skip { taken = 2 }
-            c.lc_emit(.IntConv(b, from, to, r.reg, rv))
-        }
+        .Builtin(?d, b, args) => c.lc_builtin(insts, i, d, b, args, span, &taken)
         .Call(?d, callee, args) => {
-            .Fn(f) := callee else @unreachable()
-            out := list(Arg)
-            for v in args { out.push(.Reg(c.lc_val(v)))! }
-            t: Ty = c.m.s.tys.unit()
-            dst: Dest = .None
-            if x := d {
-                t = c.f.temps[usize(x)]
-                r := c.lc_target(x, next)
-                if r.skip { taken = 2 }
-                dst = .Reg(r.reg)
-            }
-            c.lc_emit(.Call(f, out.items, dst, c.lc_node(t, span)))
-        }
-        .Check(ch) => {
-            .Bounds(i_, len) := ch else @unreachable()
-            if next is not null {
-                if k := c.lc_slice_access(insts, i, i_, len) {
-                    c.lc_die(p)
-                    return k
+            t: Ty = m.s.tys.unit()
+            if x := d { t = c.f.temps[usize(x)] }
+            match callee {
+                .Fn(f) => {
+                    out := list(Arg)
+                    for v in args { out.push(c.lc_call_arg(v))! }
+                    dst := c.lc_call_dest(d, next, &taken)
+                    c.lc_emit(.Call(f, out.items, dst, c.lc_node(t, span)))
+                }
+                .Value(fv) => {
+                    at := arg_at(c.lc_arg(fv))
+                    out := list(Arg)
+                    for v in args { out.push(c.lc_call_arg(v))! }
+                    dst := c.lc_call_dest(d, next, &taken)
+                    c.lc_emit(.CallValue(at, c.lc_node(lir.value_type(c.f, fv), span), out.items, dst, c.lc_node(t, span)))
+                }
+                .Perform(eff, op) => {
+                    out := list(Arg)
+                    for v in args { out.push(c.lc_call_arg(v))! }
+                    dst := c.lc_call_dest(d, next, &taken)
+                    n := c.lc_op_node(.Perform(eff, op, c.lc_type_nodes(args, span)), t, span)
+                    c.lc_emit(.Perform(out.items, dst, n))
                 }
             }
-            c.lc_emit(.Bounds(c.lc_val(i_), c.lc_val(len), c.lc_node(c.m.s.tys.usize_ty(), span)))
+        }
+        .Aggregate(d, items) => c.lc_aggregate(insts, i, d, items, span, &taken)
+        .Str(d, bytes, cstr) => {
+            t := c.f.temps[usize(d)]
+            n := m.size(t)
+            op: Op = if cstr { .CStr(bytes) } else { .Str(bytes) }
+            // The literal's memory is made once, now: its address (and length) are constants.
+            addr: ?u64 = m.string_literal(span, bytes, cstr) else null
+            if a := addr and n > 8 and not cstr {
+                b := make_fill(us(n), u8(0))!
+                m.put_slice(b, a, u64(bytes.len))
+                c.lc_emit(.ConstSlot(c.lc_slot(d), b))
+            } else if a := addr and cstr and n <= 8 {
+                r := c.lc_target(d, next)
+                if r.skip { taken = 2 }
+                c.lc_emit(.Const(r.reg, a))
+            } else if n > 8 {
+                c.lc_emit(.StrSlot(c.lc_slot(d), c.lc_op_node(op, t, span)))
+            } else if n is 8 and m.word_locals {
+                r := c.lc_target(d, next)
+                if r.skip { taken = 2 }
+                c.lc_emit(.StrSlot(r.reg * 8, c.lc_op_node(op, t, span)))
+            } else {
+                c.lc_generic(.Str(bytes, cstr), insts, i, d, empty_slice(Arg), span, &taken)
+            }
+        }
+        .Fill(d, v) => {
+            t := c.f.temps[usize(d)]
+            n: u64 = 0
+            if .Array(k, _, _) := m.kind(t) { n = k }
+            c.lc_generic(.Fill(n), insts, i, d, c.lc_args([1]lir.Value(v)[..]), span, &taken)
+        }
+        .MakeSlice(d, ptr, lo, hi, inclusive, esz) => {
+            if m.size(c.f.temps[usize(d)]) > 8 and c.lc_in_reg(ptr) and c.lc_in_reg(lo) and c.lc_in_reg(hi) {
+                c.lc_emit(.SliceMake(c.lc_slot(d), c.lc_val(ptr), NO_REG, c.lc_val(lo), c.lc_val(hi), false, inclusive, esz, c.lc_node(c.f.temps[usize(d)], span)))
+            } else {
+                c.lc_generic(.MakeSlice(inclusive, esz), insts, i, d, c.lc_args([3]lir.Value(ptr, lo, hi)[..]), span, &taken)
+            }
+        }
+        .Write(sink, pieces, specs, args, ?table) => {
+            all := list(lir.Value)
+            gs: GenSink = .Value(m.s.tys.unit())
+            match sink {
+                .Perform(eff, op) => { gs = .Perform(eff, op) }
+                .Value(v) => {
+                    gs = .Value(lir.value_type(c.f, v))
+                    all.push(v)!
+                }
+            }
+            all.extend(args)!
+            if t := table { all.push(t)! }
+            tys := list(Ty)
+            for v in args { tys.push(lir.value_type(c.f, v))! }
+            c.lc_gen(.Write(gs, pieces, specs, tys.items, table is not null), c.lc_args(all.items), .None, m.s.tys.unit(), span, false)
+        }
+        .Variant(d, variant, ?payload) => {
+            args: []Arg = if v := payload { c.lc_args([1]lir.Value(v)[..]) } else { empty_slice(Arg) }
+            c.lc_generic(.Variant(variant), insts, i, d, args, span, &taken)
+        }
+        .Wrap(d, kind, ?v) => {
+            t := c.f.temps[usize(d)]
+            if kind is .None and c.lc_word(t) {
+                r := c.lc_target(d, next)
+                if r.skip { taken = 2 }
+                c.lc_emit(.Const(r.reg, 0))
+            } else if kind is .None and m.size(t) > 8 {
+                c.lc_emit(.ZeroSlot(c.lc_slot(d), m.size(t).trunc(u32)))
+            } else if not c.lc_wrap(d, kind, v else .Zero(m.s.tys.unit()), next, &taken) {
+                args: []Arg = if x := v { c.lc_args([1]lir.Value(x)[..]) } else { empty_slice(Arg) }
+                c.lc_generic(.Wrap(kind), insts, i, d, args, span, &taken)
+            }
+        }
+        .FnRef(d, f, second) => {
+            if second {
+                c.lc_generic(.FnRef(f), insts, i, d, empty_slice(Arg), span, &taken)
+            } else {
+                r := c.lc_target(d, next)
+                if r.skip { taken = 2 }
+                c.lc_emit(.Const(r.reg, m.fn_addr(f)))
+            }
+        }
+        .Closure(d, f) => c.lc_emit(.ClosureSlot(c.lc_slot(d), f))
+        .HandlerRef(d, _) => {
+            dst := c.lc_dest(d, next)
+            if dst.skip { taken = 2 }
+            c.lc_gen(.HandlerRef, empty_slice(Arg), dst.dst, c.f.temps[usize(d)], span, true)
+        }
+        .Template(d, t) => {
+            m.templates.push(t)!
+            r := c.lc_target(d, next)
+            if r.skip { taken = 2 }
+            c.lc_emit(.Const(r.reg, u64(m.templates.items.len)))
+        }
+        .IsPresent(d, pl, _) => {
+            t := lir.place_type(m.s, c.f, &pl) else {
+                c.lc_gen(.Fail("internal error: a test of a place of unknown type"), empty_slice(Arg), .None, m.s.tys.unit(), span, false)
+                return c.lc_end(p, taken)
+            }
+            r := c.lc_target(d, next)
+            if r.skip { taken = 2 }
+            match m.kind(t) {
+                .Optional(inner) => if cgen.nullable_pointer(m.s, inner) {
+                    w := c.lc_alloc()
+                    c.lc_load_at(w, pl, 0, m.ptr_bytes, m.s.tys.usize_ty(), span)
+                    c.lc_emit(.EqW(.Unsigned, true, r.reg, w, c.const_at.get(0) else NO_REG))
+                    c.lc_give(w)
+                } else {
+                    c.lc_load_at(r.reg, pl, m.offsets(t)[1], 1, m.s.tys.bool_ty(), span)
+                }
+                _ => {
+                    w := c.lc_alloc()
+                    c.lc_load_at(w, pl, m.offsets(t)[0], 1, m.s.tys.bool_ty(), span)
+                    c.lc_emit(.Not(r.reg, w))
+                    c.lc_give(w)
+                }
+            }
+        }
+        .TagIs(d, pl, variant) => {
+            t := lir.place_type(m.s, c.f, &pl) else {
+                c.lc_gen(.Fail("internal error: a test of a place of unknown type"), empty_slice(Arg), .None, m.s.tys.unit(), span, false)
+                return c.lc_end(p, taken)
+            }
+            if tg := lir_tag(m, t) {
+                r := c.lc_target(d, next)
+                if r.skip { taken = 2 }
+                w := c.lc_alloc()
+                c.lc_load_at(w, pl, 0, u64(tg.size), m.s.tys.usize_ty(), span)
+                c.lc_emit(.EqW(.Unsigned, false, r.reg, w, c.const_at.get(tg.values[usize(variant)]) else NO_REG))
+                c.lc_give(w)
+            } else {
+                at := c.lc_scratch(m.size(t))
+                c.lc_get(at, pl, m.size(t), span)
+                c.lc_generic(.TagIs(variant, t), insts, i, d, c.lc_args_of(.Slot(at, m.size(t).trunc(u32))), span, &taken)
+            }
+        }
+        .In(d, negated, a, b) => c.lc_generic(.In(negated, lir.value_type(c.f, a), lir.value_type(c.f, b)), insts, i, d, c.lc_args([2]lir.Value(a, b)[..]), span, &taken)
+        .BitsGet(d, v, index) => c.lc_generic(.BitsGet(index, lir.value_type(c.f, v)), insts, i, d, c.lc_args([1]lir.Value(v)[..]), span, &taken)
+        .BitsSet(d, w, index, v) => c.lc_generic(.BitsSet(index, lir.value_type(c.f, v)), insts, i, d, c.lc_args([2]lir.Value(w, v)[..]), span, &taken)
+        .Check(ch) => match ch {
+            .Bounds(i_, len) => {
+                idx_word := if w := int_w(m, lir.value_type(c.f, i_)) { not w.signed } else { false }
+                if not idx_word {
+                    c.lc_gen(.Bounds, c.lc_args([2]lir.Value(i_, len)[..]), .None, m.s.tys.usize_ty(), span, false)
+                } else {
+                    if next is not null {
+                        if k := c.lc_slice_access(insts, i, i_, len) {
+                            c.lc_die(p)
+                            return k
+                        }
+                    }
+                    c.lc_emit(.Bounds(c.lc_val(i_), c.lc_val(len), c.lc_node(m.s.tys.usize_ty(), span)))
+                }
+            }
+            .Range(lo, hi, ?len, inclusive) => {
+                // Checked by the slicing after it, when that reads the same bounds.
+                if nx := next and len is not null {
+                    if .MakeSlice(d, ptr, lo2, hi2, incl2, esz) := nx.op and lo2 is lo and hi2 is hi and incl2 is inclusive and m.size(c.f.temps[usize(d)]) > 8 and c.lc_in_reg(ptr) and c.lc_in_reg(lo) and c.lc_in_reg(hi) and c.lc_in_reg(len else lo) {
+                        q := c.pos
+                        c.pos += 1
+                        c.cur = q
+                        c.lc_emit(.SliceMake(c.lc_slot(d), c.lc_val(ptr), c.lc_val(len else lo), c.lc_val(lo), c.lc_val(hi), true, inclusive, esz, c.lc_node(c.f.temps[usize(d)], nx.span)))
+                        c.lc_die(p)
+                        c.lc_die(q)
+                        return 2
+                    }
+                }
+                if c.lc_in_reg(lo) and c.lc_in_reg(hi) and (if x := len { c.lc_in_reg(x) } else { true }) {
+                    lr: u32 = if x := len { c.lc_val(x) } else { NO_REG }
+                    c.lc_emit(.RangeChk(c.lc_val(lo), c.lc_val(hi), lr, inclusive, c.lc_node(m.s.tys.usize_ty(), span)))
+                    return c.lc_end(p, taken)
+                }
+                vs := list(lir.Value)
+                vs.push(lo)!
+                vs.push(hi)!
+                if x := len { vs.push(x)! }
+                c.lc_gen(.Range(inclusive, len is not null), c.lc_args(vs.items), .None, m.s.tys.usize_ty(), span, false)
+            }
+            .Unwrap(present, pl, result) => if not m.fast() {
+                t := lir.place_type(m.s, c.f, &pl) else {
+                    c.lc_gen(.Fail("internal error: a test of a place of unknown type"), empty_slice(Arg), .None, m.s.tys.unit(), span, false)
+                    return c.lc_end(p, taken)
+                }
+                j := c.lc_jump(.Jnz(c.lc_val(present), 0))
+                at := c.lc_scratch(m.size(t))
+                c.lc_get(at, pl, m.size(t), span)
+                c.lc_emit(.UnwrapTrap(at, t, result, c.lc_node(t, span)))
+                c.lc_patch(j, c.lc_here())
+            }
         }
         .Block(l, body) => {
             c.lc_die(p)
-            c.lc_list(body)
-            here := c.lc_here()
-            k: usize = 0
-            while k < c.pending.items.len {
-                x := c.pending.items[k]
-                if x.label is l {
-                    c.lc_patch(x.ins, here)
-                    c.pending.items[k] = c.pending.items[c.pending.items.len - 1]
-                    _ = c.pending.pop()
-                } else {
-                    k += 1
-                }
-            }
+            c.lc_block(l, body)
             end := c.pos
             c.pos += 1
             c.lc_die(end)
             return 1
         }
-        .Loop(_, body) => {
+        .Loop(l, body) => {
             c.lc_die(p)
+            c.open.push(LcScope(label: l))!
             start := c.lc_here()
             if start > c.joined { c.joined = start }
             c.lc_list(body)
             c.lc_emit(.Loop(start))
+            _ = c.open.pop()
             end := c.pos
             c.pos += 1
             c.lc_die(end)
@@ -766,7 +1381,7 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
         .If(cond, then, else_) => {
             // `if c { br l }` is a branch.
             if else_.len is 0 and then.len is 1 {
-                if .Br(l) := then[0].op {
+                if .Br(l) := then[0].op and not c.lc_br_needs(l) {
                     at := c.lc_jump(.Jnz(c.lc_val(cond), 0))
                     c.pending.push((ins: at, label: l))!
                     c.lc_die(p)
@@ -784,32 +1399,514 @@ lc_inst :: fn(c: ^Lc, insts: []const lir.Inst, i: usize) -> usize needs Alloc {
             c.lc_die(end)
             return 1
         }
-        .Br(l) => {
-            at := c.lc_jump(.Jmp(0))
-            c.pending.push((ins: at, label: l))!
-        }
+        .Br(l) => c.lc_br(l, span)
         .BrIf(cond, negated, l) => {
             rc := c.lc_val(cond)
-            at := if negated { c.lc_jump(.Jz(rc, 0)) } else { c.lc_jump(.Jnz(rc, 0)) }
-            c.pending.push((ins: at, label: l))!
-        }
-        .Return(?v) => {
-            x: lir.Value = v else .Zero(c.m.s.tys.unit())
-            match x {
-                .Temp(_), .Word(_) => c.lc_emit(.RetW(c.lc_val(x)))
-                _ => c.lc_emit(.Ret)
+            if c.lc_br_needs(l) {
+                skip := if negated { c.lc_jump(.Jnz(rc, 0)) } else { c.lc_jump(.Jz(rc, 0)) }
+                c.lc_br(l, span)
+                c.lc_patch(skip, c.lc_here())
+            } else {
+                at := if negated { c.lc_jump(.Jz(rc, 0)) } else { c.lc_jump(.Jnz(rc, 0)) }
+                c.pending.push((ins: at, label: l))!
             }
         }
-        .NoArm => c.lc_emit(.NoArm(c.lc_node(c.m.s.tys.unit(), span)))
+        .Return(?v) => {
+            x: lir.Value = v else .Zero(m.s.tys.unit())
+            if c.lc_in_sub() {
+                // A sub-code returns from the function as a flow.
+                val: ?Arg = if m.size(lir.value_type(c.f, x)) > 0 { c.lc_arg(x) } else { null }
+                c.lc_emit(.Exit(new(ExitIns(kind: .Return(0), v: val, ty: c.f.ret, span: span))!))
+            } else if x is .Zero(_) or m.size(lir.value_type(c.f, x)) is 0 {
+                c.lc_emit(.Ret)
+            } else if c.lc_in_reg(x) {
+                c.lc_emit(.RetW(c.lc_val(x)))
+            } else {
+                a := c.lc_arg(x)
+                if .Slot(at, n) := a { c.lc_emit(.RetSlot(at, n)) }
+            }
+        }
+        .Defer(is_err, body) => {
+            c.lc_die(p)
+            sub := c.lc_sub(body)
+            c.lc_emit(.DeferCode(is_err, sub))
+            end := c.pos
+            c.pos += 1
+            c.lc_die(end)
+            return 1
+        }
+        .Trap(v) => c.lc_gen(.Trap, c.lc_args([1]lir.Value(v)[..]), .None, m.s.tys.unit(), span, false)
+        .Assert(?v) => {
+            if x := v {
+                c.lc_emit(.AssertFail(arg_at(c.lc_arg(x)), true, c.lc_node(m.s.tys.unit(), span)))
+            } else {
+                c.lc_emit(.AssertFail(0, false, c.lc_node(m.s.tys.unit(), span)))
+            }
+        }
+        .DebugOnly(body) => {
+            c.lc_die(p)
+            if m.fast() {
+                // Not compiled: its positions pass.
+                n := lir_list_positions(body)
+                for k in 0..n { c.lc_die(c.pos + k) }
+                c.pos += n
+            } else {
+                c.lc_list(body)
+            }
+            end := c.pos
+            c.pos += 1
+            c.lc_die(end)
+            return 1
+        }
+        .With(l, tl, install, ?on, body) => {
+            stack: ?Arg = if x := on { c.lc_arg(x) } else { null }
+            c.lc_die(p)
+            c.lc_with(l, tl, install, stack, body, span)
+            end := c.pos
+            c.pos += 1
+            c.lc_die(end)
+            return 1
+        }
+        .Install(h) => {
+            tl: u32 = 0
+            for s in c.open.items {
+                if s.with_label is not NO_REG { tl = s.with_label }
+            }
+            match h {
+                .Lit(id) => c.lc_emit(.WithLit(id, NO_REG, tl))
+                .Value(id, v) => c.lc_emit(.WithLit(id, arg_at(c.lc_arg(v)), tl))
+                .Decl(decls, v) => {
+                    a := c.lc_arg(v)
+                    n: u32 = if .Slot(_, k) := a { k } else { 0 }
+                    c.lc_emit(.WithDecl(decls, arg_at(a), n, tl))
+                }
+            }
+        }
+        .Exit(kind, ?v) => {
+            val: ?Arg = null
+            t := m.s.tys.unit()
+            if x := v {
+                t = lir.value_type(c.f, x)
+                if m.size(t) > 0 { val = c.lc_arg(x) }
+            }
+            c.lc_emit(.Exit(new(ExitIns(kind: kind, v: val, ty: t, span: span))!))
+        }
+        .Resume(k, v) => c.lc_gen(.Resume, c.lc_args([2]lir.Value(k, v)[..]), .None, lir.value_type(c.f, k), span, true)
+        .Cancel(k) => c.lc_gen(.Cancel, c.lc_args([1]lir.Value(k)[..]), .None, lir.value_type(c.f, k), span, true)
+        .NoArm => c.lc_emit(.NoArm(c.lc_node(m.s.tys.unit(), span)))
         .Unreachable => {}
-        _ => @unreachable()
+        .Tir(_) => c.lc_gen(.Fail("internal error: an expression left over from generic checking"), empty_slice(Arg), .None, m.s.tys.unit(), span, false)
     }
+    return c.lc_end(p, taken)
+}
+
+/// Gives back what dies at the position of the instruction compiled (at `p`), and at the
+/// next one's if it compiled that too.
+lc_end :: fn(c: ^Lc, p: u32, taken: usize) -> usize needs Alloc {
     c.lc_die(p)
     if taken is 2 {
         c.pos += 1
         c.lc_die(p + 1)
     }
     return taken
+}
+
+/// An optional or result around `v` (`kind` is not `None`) into temporary `d`, with
+/// instructions on words and slots, if it can be: false for a word that is not a
+/// nullable pointer's optional or an empty success.
+lc_wrap :: fn(c: ^Lc, d: u32, kind: lir.Wrap, v: lir.Value, next: ?^const lir.Inst, taken: ^usize) -> bool needs Alloc {
+    m := c.m
+    t := c.f.temps[usize(d)]
+    vt := lir.value_type(c.f, v)
+    vn := m.size(vt)
+    if kind is .None { return false }
+    if m.size(t) <= 8 {
+        if kind is .Some {
+            .Optional(inner) := m.kind(t) else return false
+            if not c.lc_in_reg(v) and vn > 0 { return false }
+            if cgen.nullable_pointer(m.s, inner) {
+                rv := c.lc_val(v)
+                r := c.lc_target(d, next)
+                if r.skip { taken^ = 2 }
+                if rv is not r.reg { c.lc_emit(.Mov(r.reg, rv)) }
+                return true
+            }
+            k := lir_wrap_word_flag(m, t) else return false
+            rv := if vn > 0 { c.lc_val(v) } else { c.const_at.get(0) else NO_REG }
+            r := c.lc_target(d, next)
+            if r.skip { taken^ = 2 }
+            c.lc_emit(.Bit(1, r.reg, rv, c.const_at.get(k) else NO_REG))
+            return true
+        }
+        if kind is .Ok and vn is 0 {
+            r := c.lc_target(d, next)
+            if r.skip { taken^ = 2 }
+            c.lc_emit(.Const(r.reg, 0))
+            return true
+        }
+        return false
+    }
+    at := c.lc_slot(d)
+    size := m.size(t).trunc(u32)
+    offs := m.offsets(t)
+    flag: u64 = 0
+    pay: u64 = 0
+    set := false
+    match m.kind(t) {
+        .Optional(inner) => {
+            if cgen.nullable_pointer(m.s, inner) { return false }
+            flag = offs[1]
+            set = true
+        }
+        .Result(_, _) => {
+            pay = offs[1]
+            set = kind is .Err
+        }
+        _ => return false
+    }
+    // The value is read before the slot is written: it may be in it.
+    a: ?Arg = if vn > 0 and not c.lc_in_reg(v) { c.lc_arg(v) } else { null }
+    rv := if vn > 0 and c.lc_in_reg(v) { c.lc_val(v) } else { NO_REG }
+    if let_overlap(a, at, size) { return false }
+    c.lc_emit(.ZeroSlot(at, size))
+    if vn > 0 {
+        o := at + pay.trunc(u32)
+        if x := a { c.lc_emit(.CopySlot(o, arg_at(x), vn.trunc(u32))) } else { c.lc_emit(.WSlot(o, vn.trunc(u32), rv)) }
+    }
+    if set { c.lc_emit(.WSlot(at + flag.trunc(u32), 1, c.const_at.get(1) else NO_REG)) }
+    return true
+}
+
+/// Whether the bytes of argument `a` overlap the `size` bytes at `at`.
+let_overlap :: fn(a: ?Arg, at: u32, size: u32) -> bool {
+    x := a else return false
+    .Slot(o, n) := x else return false
+    return o < at + size and at < o + n
+}
+
+/// A generic instruction writing temporary `d` (of `insts[i]`) from `args`.
+lc_generic :: fn(c: ^Lc, op: GenOp, insts: []const lir.Inst, i: usize, d: u32, args: []Arg, span: source.Span, taken: ^usize) needs Alloc {
+    next: ?^const lir.Inst = if i + 1 < insts.len { &insts[i + 1] } else { null }
+    dst := c.lc_dest(d, next)
+    if dst.skip { taken^ = 2 }
+    c.lc_gen(op, args, dst.dst, c.f.temps[usize(d)], span, false)
+}
+
+/// Where a call's result goes: to temporary `d` if it has one.
+lc_call_dest :: fn(c: ^Lc, d: ?u32, next: ?^const lir.Inst, taken: ^usize) -> Dest needs Alloc {
+    x := d else return .None
+    dst := c.lc_dest(x, next)
+    if dst.skip { taken^ = 2 }
+    return dst.dst
+}
+
+/// A builtin of the values `args`: the word conversions and bit operations as
+/// instructions of their own, the others as `vm_builtin` runs them.
+lc_builtin :: fn(c: ^Lc, insts: []const lir.Inst, i: usize, d: ?u32, b: tir.Builtin, args: []const lir.Value, span: source.Span, taken: ^usize) needs Alloc {
+    m := c.m
+    next: ?^const lir.Inst = if i + 1 < insts.len { &insts[i + 1] } else { null }
+    rt: Ty = if x := d { c.f.temps[usize(x)] } else { m.s.tys.unit() }
+    match b {
+        .Cover(_), .StaticAssert(_) => return ()
+        .Unreachable => {
+            c.lc_gen(.Fail("reached `@unreachable()`"), empty_slice(Arg), .None, rt, span, false)
+            return ()
+        }
+        .Asm(_) => {
+            c.lc_gen(.Unsupported("`@asm`"), empty_slice(Arg), .None, rt, span, false)
+            return ()
+        }
+        .Fiber => {
+            dst := c.lc_call_dest(d, next, taken)
+            c.lc_gen(.Fiber(lir.value_type(c.f, args[0])), c.lc_args(args), dst, rt, span, true)
+            return ()
+        }
+        _ => {}
+    }
+    if dt := d {
+        // A pointer cast, an address, a pointer from an address: the same word (a cast
+        // checks the alignment).
+        if b in (tir.Builtin.Cast, .Addr, .ToPtr, .BlackBox) and args.len is 1 and c.lc_in_reg(args[0]) and m.size(lir.value_type(c.f, args[0])) is m.size(rt) and c.lc_word(rt) {
+            rv := c.lc_val(args[0])
+            r := c.lc_target(dt, next)
+            if r.skip { taken^ = 2 }
+            if rv is not r.reg { c.lc_emit(.Mov(r.reg, rv)) }
+            if b is .Cast and not m.fast() {
+                // A pointer to something at least as aligned is aligned already.
+                al := m.ptr_align(rt)
+                if al > 1 and m.ptr_align(lir.value_type(c.f, args[0])) < al { c.lc_emit(.AlignCheck(r.reg, al, c.lc_node(rt, span))) }
+            }
+            return ()
+        }
+        // The low bytes of a 128-bit integer.
+        if b is .Trunc and args.len is 1 and int_w(m, rt) is not null and m.word_locals {
+            if info := m.int_info(lir.value_type(c.f, args[0])) and info.bits is 128 {
+                a := c.lc_arg(args[0])
+                r := c.lc_target(dt, next)
+                if r.skip { taken^ = 2 }
+                c.lc_emit(.SlotW(r.reg, arg_at(a), m.size(rt).trunc(u32)))
+                return ()
+            }
+        }
+        t0: ?IntW = if args.len > 0 { int_w(m, lir.value_type(c.f, args[0])) } else { null }
+        to := int_w(m, rt)
+        if b in (tir.Builtin.Convert, .Trunc, .Sat) and args.len is 1 {
+            if from := t0 and tw := to {
+                rv := c.lc_val(args[0])
+                r := c.lc_target(dt, next)
+                if r.skip { taken^ = 2 }
+                c.lc_emit(.IntConv(b, from, tw, r.reg, rv))
+                return ()
+            }
+        }
+        rot := b in (tir.Builtin.Rotl, .Rotr) and args.len is 2 and t0 is not null
+        hash := b is .Hash and args.len is 2 and t0 is not null and (if s := int_w(m, lir.value_type(c.f, args[1])) { not s.signed } else { false })
+        if (rot or hash) and c.lc_in_reg(args[1]) {
+            t := t0 else @unreachable()
+            ra := c.lc_val(args[0])
+            rb := c.lc_val(args[1])
+            r := c.lc_target(dt, next)
+            if r.skip { taken^ = 2 }
+            c.lc_emit(.IntBit(b, t, r.reg, ra, rb))
+            return ()
+        }
+        if b in (tir.Builtin.Clz, .Ctz, .Popcount, .Bswap, .Bitreverse) and args.len is 1 {
+            if t := t0 {
+                ra := c.lc_val(args[0])
+                r := c.lc_target(dt, next)
+                if r.skip { taken^ = 2 }
+                c.lc_emit(.IntBit(b, t, r.reg, ra, ra))
+                return ()
+            }
+        }
+    }
+    out := list(Arg)
+    for v in args { out.push(c.lc_call_arg(v))! }
+    dst := c.lc_call_dest(d, next, taken)
+    n := c.lc_op_node(.Builtin(b, c.lc_type_nodes(args, span)), rt, span)
+    c.lc_emit(.Builtin(out.items, dst, n))
+}
+
+/// A struct, tuple or array of `items`: written field by field into its slot, or put
+/// together by a generic instruction (a word, a `#bits` struct).
+lc_aggregate :: fn(c: ^Lc, insts: []const lir.Inst, i: usize, d: u32, items: []const lir.Value, span: source.Span, taken: ^usize) needs Alloc {
+    m := c.m
+    t := c.f.temps[usize(d)]
+    if m.size(t) is 0 { return () }
+    offs := c.lc_agg_offsets(t, items.len)
+    if m.size(t) <= 8 or m.bits_struct_ty(t) is not null {
+        c.lc_generic(.Aggregate(offs), insts, i, d, c.lc_args(items), span, taken)
+        return ()
+    }
+    at := c.lc_slot(d)
+    for k, v in enumerate(items) {
+        o := at + offs[k].trunc(u32)
+        n := m.size(lir.value_type(c.f, v)).trunc(u32)
+        if n is 0 { continue }
+        if c.lc_in_reg(v) {
+            c.lc_emit(.WSlot(o, n, c.lc_val(v)))
+        } else {
+            a := c.lc_arg(v)
+            c.lc_emit(.CopySlot(o, arg_at(a), n))
+        }
+    }
+}
+
+/// The offsets of the `n` items of an aggregate of type `t`.
+lc_agg_offsets :: fn(c: ^Lc, t: Ty, n: usize) -> []u64 needs Alloc {
+    m := c.m
+    out := list(u64)
+    match m.kind(t) {
+        .Array(_, elem, _) => {
+            esz := m.size(elem)
+            for k in 0..n { out.push(u64(k) * esz)! }
+            return out.items
+        }
+        _ => {}
+    }
+    if m.s.c_union_fields(t) is not null {
+        for _ in 0..n { out.push(0)! }
+        return out.items
+    }
+    offs := m.offsets(t)
+    for k in 0..n { out.push(if k < offs.len { offs[k] } else { 0 })! }
+    return out.items
+}
+
+// ---------------------------------------------------------------------------------
+// Compiling: blocks, `with`s and branches
+// ---------------------------------------------------------------------------------
+
+/// The loop of TIR whose `break` (or, `cont`, `continue`) goes to the end of block `l`.
+lc_tir_loop :: fn(c: ^const Lc, l: u32, at_cont: bool) -> ?lir.LoopLabels {
+    for x in c.f.loops {
+        if x.brk is x.cont { continue }
+        if (if at_cont { x.cont } else { x.brk }) is l { return x }
+    }
+    return null
+}
+
+/// Block `l`: its `defer`s run when it is left. The block a TIR loop's `break` leaves is
+/// where flows to that loop go (`Code.loops`).
+lc_block :: fn(c: ^Lc, l: u32, body: []const lir.Inst) needs Alloc {
+    m := c.m
+    has_defers := false
+    for k in 0..body.len {
+        if body[k].op is .Defer(_) { has_defers = true }
+    }
+    // A loop that a flow may go to records the height of the deferred statements and the
+    // handler context, which a flow to it goes back to.
+    li: ?usize = null
+    held := list(u32)
+    if lp := c.lc_tir_loop(l, false) {
+        x := VmLoop(label: lp.label, brk: 0, cont: 0, defers: NO_DEFERS, dblocks: 0, cx: NO_CX, withs: 0, is_with: false)
+        if c.an.defers {
+            h := c.lc_alloc()
+            held.push(h)!
+            c.lc_emit(.DeferHeight(h))
+            x.defers = h
+        }
+        if c.an.withs {
+            cx := c.lc_alloc()
+            held.push(cx)!
+            c.lc_emit(.CxSave(cx))
+            x.cx = cx
+        }
+        if r := lp.result { c.lc_result_dst(&x, r) }
+        li = c.loops.items.len
+        c.loops.push(x)!
+    }
+    h: u32 = NO_REG
+    if has_defers {
+        h = c.lc_alloc()
+        c.lc_emit(.DeferHeight(h))
+    }
+    c.open.push(LcScope(label: l, defers: h))!
+    c.lc_list(body)
+    _ = c.open.pop()
+    here := c.lc_here()
+    c.lc_patch_label(l, here)
+    if has_defers {
+        c.lc_emit(.Unwind(h))
+        c.lc_give(h)
+    }
+    if k := li { c.loops.items[k].brk = here }
+    if lp := c.lc_tir_loop(l, true) {
+        for k in 0..c.loops.items.len {
+            if c.loops.items[k].label is lp.label and not c.loops.items[k].is_with { c.loops.items[k].cont = here }
+        }
+    }
+    for r in held.items { c.lc_give(r) }
+    _ = m
+}
+
+/// Where a `break` with a value from another frame leaves it: the result local `r`, in the
+/// frame's storage (`label_dst`).
+lc_result_dst :: fn(c: ^Lc, x: ^VmLoop, r: u32) {
+    if usize(r) >= c.info.offsets.len or c.info.addressed[usize(r)] { return () }
+    x.at = c.info.offsets[usize(r)].trunc(u32)
+    x.size = c.info.sizes[usize(r)].trunc(u32)
+}
+
+/// Patches the jumps to the end of block `l` to go to `here`.
+lc_patch_label :: fn(c: ^Lc, l: u32, here: u32) {
+    k: usize = 0
+    while k < c.pending.items.len {
+        x := c.pending.items[k]
+        if x.label is l {
+            c.lc_patch(x.ins, here)
+            c.pending.items[k] = c.pending.items[c.pending.items.len - 1]
+            _ = c.pending.pop()
+        } else {
+            k += 1
+        }
+    }
+}
+
+/// `With(l, tl, install, on, body)`:
+///
+///     CxSave; DeferHeight; install (WithLit, WithDecl); body, or WithOn of its sub-code;
+///     exit: CxRestore
+///
+/// A `break` to the `with` (a `Br(l)` in it, or a flow to `tl`) goes to the exit.
+lc_with :: fn(c: ^Lc, l: u32, tl: u32, install: []const lir.Inst, stack: ?Arg, body: []const lir.Inst, span: source.Span) needs Alloc {
+    cx := c.lc_alloc()
+    c.lc_emit(.CxSave(cx))
+    x := VmLoop(label: tl, brk: 0, cont: 0, defers: NO_DEFERS, dblocks: 0, cx: NO_CX, withs: 0, is_with: true)
+    h: u32 = NO_REG
+    if c.an.defers {
+        h = c.lc_alloc()
+        c.lc_emit(.DeferHeight(h))
+        x.defers = h
+    }
+    for lp in c.f.loops {
+        if lp.label is tl and lp.brk is l {
+            if r := lp.result { c.lc_result_dst(&x, r) }
+        }
+    }
+    li := c.loops.items.len
+    c.loops.push(x)!
+    c.open.push(LcScope(label: l, cx: cx, with_label: tl))!
+    c.lc_list(install)
+    if st := stack {
+        sub := c.lc_sub(body)
+        c.lc_emit(.WithOn(new(WithOnIns(stack: st, code: sub, label: tl, span: span))!))
+    } else {
+        c.lc_list(body)
+    }
+    _ = c.open.pop()
+    exit := c.lc_here()
+    c.lc_patch_label(l, exit)
+    c.lc_emit(.CxRestore(cx))
+    c.loops.items[li].brk = exit
+    c.loops.items[li].cont = exit
+    if h is not NO_REG { c.lc_give(h) }
+    c.lc_give(cx)
+}
+
+/// Whether a `Br(l)` from here does more than jump: it leaves blocks whose `defer`s run or
+/// `with`s whose handlers go, or the sub-code (`lc_br`).
+lc_br_needs :: fn(c: ^const Lc, l: u32) -> bool {
+    i := c.open.items.len
+    while i > 0 {
+        i -= 1
+        s := c.open.items[i]
+        if s.sub { return true }
+        if s.label is l { return false }
+        if s.defers is not NO_REG or s.cx is not NO_REG { return true }
+    }
+    return true
+}
+
+/// `Br(l)`: runs the `defer`s of the blocks it leaves and uninstalls the handlers of the
+/// `with`s it leaves, then jumps to the end of block `l`. Out of a sub-code it is a flow
+/// to the loop or `with` of TIR whose label `l` is.
+lc_br :: fn(c: ^Lc, l: u32, span: source.Span) needs Alloc {
+    defers: u32 = NO_REG
+    cx: u32 = NO_REG
+    i := c.open.items.len
+    while i > 0 {
+        i -= 1
+        s := c.open.items[i]
+        if s.sub { break }
+        if s.label is l {
+            if defers is not NO_REG { c.lc_emit(.Unwind(defers)) }
+            if cx is not NO_REG { c.lc_emit(.CxRestore(cx)) }
+            at := c.lc_jump(.Jmp(0))
+            c.pending.push((ins: at, label: l))!
+            return ()
+        }
+        if s.defers is not NO_REG { defers = s.defers }
+        if s.cx is not NO_REG { cx = s.cx }
+    }
+    for x in c.f.loops {
+        if x.brk is l or x.cont is l {
+            kind: lir.Exit = if x.brk is l { .Break(.Label(0, x.label)) } else { .Continue(.Label(0, x.label)) }
+            c.lc_emit(.Exit(new(ExitIns(kind: kind, v: null, ty: c.m.s.tys.unit(), span: span))!))
+            return ()
+        }
+    }
+    c.lc_gen(.Fail("internal error: a jump out of deferred code"), empty_slice(Arg), .None, c.m.s.tys.unit(), span, false)
 }
 
 /// The lists of an `if` whose test jumps (the instruction at `j`) when it fails.
@@ -825,15 +1922,9 @@ lc_if_body :: fn(c: ^Lc, j: u32, then, else_: []const lir.Inst) needs Alloc {
     }
 }
 
-/// After a comparison at position `p` compiled into the branch `nx` after it: moves past
-/// the branch's positions, giving back what dies at each.
-lc_skip_fused :: fn(c: ^Lc, p: u32, nx: ^const lir.Inst) needs Alloc {
-    if nx.op is .If(_) {
-        // `lc_if_body` compiled its lists and moved past them; only its end is left.
-        c.lc_die(c.pos)
-        c.pos += 1
-        return ()
-    }
+/// After a comparison compiled into the branch after it: moves past the branch's end,
+/// giving back what dies there.
+lc_skip_fused :: fn(c: ^Lc) needs Alloc {
     c.lc_die(c.pos)
     c.pos += 1
 }
@@ -858,8 +1949,10 @@ lc_slice_access :: fn(c: ^Lc, insts: []const lir.Inst, i: usize, idx, len: lir.V
     if is_packed(m, elem) { return null }
     size := m.size(elem)
     if size is 0 or size > 8 { return null }
+    if .Store(_, v) := nx.op and not c.lc_in_reg(v) { return null }
     align := m.align(elem).max(1).trunc(u32)
-    n := c.lc_node(elem, nx.span)
+    // A trap is the check's.
+    n := c.lc_node(elem, insts[i].span)
     rp := c.reg.items[usize(t)]
     ri := c.lc_val(idx)
     rl := c.lc_val(len)
@@ -906,12 +1999,13 @@ lc_target :: fn(c: ^Lc, d: u32, next: ?^const lir.Inst) -> (reg: u32, skip: bool
     return (reg: c.lc_def(d), skip: false)
 }
 
-/// Whether temporary `d` is read only by the next instruction, a branch on it.
+/// Whether temporary `d` is read only by the next instruction, a branch on it (one that
+/// only jumps).
 lc_fuses :: fn(c: ^const Lc, d: u32, next: ?^const lir.Inst) -> bool {
     if c.an.uses.items[usize(d)] is not 1 { return false }
     nx := next else return false
     match nx.op {
-        .BrIf(.Temp(t), _, _) => return t is d
+        .BrIf(.Temp(t), _, l) => return t is d and not c.lc_br_needs(l)
         .If(.Temp(t), _, _) => return t is d
         _ => return false
     }
@@ -965,6 +2059,10 @@ lc_branch_eq :: fn(c: ^Lc, nx: ^const lir.Inst, how: WordCmp, negated: bool, a, 
     }
 }
 
+// ---------------------------------------------------------------------------------
+// Compiling: places
+// ---------------------------------------------------------------------------------
+
 /// Where a place is.
 LcPlace :: union {
     /// A local in a register.
@@ -975,15 +2073,17 @@ LcPlace :: union {
     AtD: (at: u32, d: u32)
     /// In local `local`'s own memory, `off` bytes in.
     Local: (local: u32, off: u64)
-    /// A local of the frame `levels` out, `rel` bytes in.
+    /// A local of the frame `levels` out, `rel` bytes in, plus (`UpvarD`) a register.
     Upvar: (levels: u32, local: u32, rel: u64)
+    UpvarD: (levels: u32, local: u32, rel: u64, d: u32)
     /// In memory at the address in a register, plus `off`.
     Mem: (base: u32, off: u64)
 }
 
 /// The place `pl`, and its alignment, reached with the registers in `scratch` (given back
-/// by the caller after the access).
-lc_place :: fn(c: ^Lc, pl: lir.Place, span: source.Span, scratch: ^List(u32)) -> (where: LcPlace, align: u64) needs Alloc {
+/// by the caller after the access). With `regs`, a word of the frame's storage at a
+/// multiple of 8 is its register; without, it stays bytes of the storage (`At`).
+lc_place :: fn(c: ^Lc, pl: lir.Place, span: source.Span, scratch: ^List(u32), regs: bool) -> (where: LcPlace, align: u64) needs Alloc {
     m := c.m
     // The type at the place so far, and whether a packed struct was entered since the
     // last dereference (its fields may be unaligned).
@@ -993,23 +2093,48 @@ lc_place :: fn(c: ^Lc, pl: lir.Place, span: source.Span, scratch: ^List(u32)) ->
     match pl.base {
         .Local(l) => {
             ty = c.f.locals[usize(l)].ty
-            if pl.proj.len is 0 {
+            if pl.proj.len is 0 and regs {
                 if r := c.lc_local_reg(l) { return (where: .Reg(r), align: 8) }
             }
-            where = if c.info.addressed[usize(l)] { .Local(l, 0) } else { .At(c.info.offsets[usize(l)].trunc(u32)) }
+            if c.info.addressed[usize(l)] {
+                // A local with memory of its own: reached through its address.
+                where = .Mem(c.lc_base(.Local(l, 0), span, scratch), 0)
+            } else {
+                where = .At(c.info.offsets[usize(l)].trunc(u32))
+            }
         }
         .Upvar(levels, l) => {
             where = .Upvar(levels, l, 0)
             if outer := lir_ancestor(m, c.f.fn_id, levels) {
                 locals := m.s.defs.items[usize(outer)].locals
                 if usize(l) < locals.len { ty = locals[usize(l)].ty }
+                // A local with memory of its own in its frame: reached through its address.
+                if us(outer) < m.infos.items.len {
+                    if oi := m.infos.items[us(outer)] {
+                        if usize(l) < oi.addressed.len and oi.addressed[usize(l)] { where = .Mem(c.lc_base(where, span, scratch), 0) }
+                    }
+                }
             }
         }
         .Deref(t) => {
             where = .Mem(c.reg.items[usize(t)], 0)
             ty = pointee_of(m, c.f.temps[usize(t)])
         }
-        _ => {}
+        .Global(decl) => {
+            b := c.lc_alloc()
+            scratch.push(b)!
+            c.lc_emit(.GlobalAddr(b, decl, c.lc_node(m.s.tys.usize_ty(), span)))
+            where = .Mem(b, 0)
+            gp := lir.Place(base: pl.base)
+            ty = lir.place_type(m.s, c.f, &gp)
+        }
+        .Const(_, cspan, ct) => {
+            b := c.lc_alloc()
+            scratch.push(b)!
+            c.lc_emit(.ConstAddr(b, cspan, c.lc_node(ct, span)))
+            where = .Mem(b, 0)
+            ty = ct
+        }
     }
     for x in pl.proj {
         match x {
@@ -1020,8 +2145,8 @@ lc_place :: fn(c: ^Lc, pl: lir.Place, span: source.Span, scratch: ^List(u32)) ->
                 }
                 where = add_off(where, off)
             }
-            .Payload(off) => {
-                ty = null
+            .Payload(off, pt) => {
+                ty = pt
                 where = add_off(where, off)
             }
             .Elem(i, size), .Step(i, size) => {
@@ -1033,7 +2158,7 @@ lc_place :: fn(c: ^Lc, pl: lir.Place, span: source.Span, scratch: ^List(u32)) ->
                 if .Word(_, bits) := i {
                     where = add_off(where, bits *% size)
                 } else {
-                    ri := c.lc_val(i)
+                    ri := c.lc_index_reg(i, scratch)
                     match where {
                         .At(at) => {
                             d := c.lc_alloc()
@@ -1042,7 +2167,15 @@ lc_place :: fn(c: ^Lc, pl: lir.Place, span: source.Span, scratch: ^List(u32)) ->
                             c.lc_emit(.PtrIdx(d, ri, size))
                             where = .AtD(at, d)
                         }
-                        .AtD(_, d) => c.lc_emit(.PtrIdx(d, ri, size))
+                        .AtD(_, d), .UpvarD(_, _, _, d) => c.lc_emit(.PtrIdx(d, ri, size))
+                        .Upvar(levels, l, rel) => {
+                            // A local of another frame kept in its storage has no address.
+                            d := c.lc_alloc()
+                            scratch.push(d)!
+                            c.lc_emit(.Const(d, 0))
+                            c.lc_emit(.PtrIdx(d, ri, size))
+                            where = .UpvarD(levels, l, rel, d)
+                        }
                         _ => {
                             b := c.lc_base(where, span, scratch)
                             c.lc_emit(.PtrIdx(b, ri, size))
@@ -1068,12 +2201,26 @@ lc_place :: fn(c: ^Lc, pl: lir.Place, span: source.Span, scratch: ^List(u32)) ->
         if t := ty { align = m.align(t).max(1) }
     }
     // A word at a multiple of 8 in the frame's storage is a register (`vc_place_reg`).
-    if .At(at) := where and at % 8 is 0 and m.word_locals {
-        if t := ty {
-            if m.size(t) is 8 { return (where: .Reg(at / 8), align: align) }
+    if regs {
+        if .At(at) := where and at % 8 is 0 and m.word_locals {
+            if t := ty {
+                if m.size(t) is 8 { return (where: .Reg(at / 8), align: align) }
+            }
         }
     }
     return (where: where, align: align)
+}
+
+/// The register holding index `i` as a word: a 128-bit index (in bounds, or wrapping
+/// as an unchecked pointer step does) by its low word.
+lc_index_reg :: fn(c: ^Lc, i: lir.Value, scratch: ^List(u32)) -> u32 needs Alloc {
+    if c.lc_in_reg(i) { return c.lc_val(i) }
+    a := c.lc_arg(i)
+    r := c.lc_alloc()
+    scratch.push(r)!
+    // The low 8 bytes: first in little-endian order.
+    c.lc_emit(.SlotW(r, arg_at(a) + (if c.m.little { 0 } else { 8 }), 8))
+    return r
 }
 
 /// `w` moved on by `off` bytes.
@@ -1082,12 +2229,13 @@ add_off :: fn(w: LcPlace, off: u64) -> LcPlace => match w {
     .AtD(at, d) => .AtD(at + off.trunc(u32), d)
     .Local(l, o) => .Local(l, o + off)
     .Upvar(levels, l, rel) => .Upvar(levels, l, rel + off)
+    .UpvarD(levels, l, rel, d) => .UpvarD(levels, l, rel + off, d)
     .Mem(b, o) => .Mem(b, o + off)
     .Reg(r) => .Reg(r)
 }
 
 /// A register of its own (in `scratch`) holding the address of place `w`, which is in
-/// memory (or a local given memory of its own).
+/// memory (or a local given memory of its own, or a local of another frame).
 lc_base :: fn(c: ^Lc, w: LcPlace, span: source.Span, scratch: ^List(u32)) -> u32 needs Alloc {
     b := c.lc_alloc()
     scratch.push(b)!
@@ -1099,6 +2247,10 @@ lc_base :: fn(c: ^Lc, w: LcPlace, span: source.Span, scratch: ^List(u32)) -> u32
         .Local(l, off) => {
             c.lc_emit(.LocalAddr(b, l, c.lc_node(c.m.s.tys.usize_ty(), span)))
             if off is not 0 { c.lc_emit(.AddK(b, off)) }
+        }
+        .Upvar(levels, l, rel) => {
+            c.lc_emit(.UpvarAddr(b, levels, l, c.lc_node(c.m.s.tys.usize_ty(), span)))
+            if rel is not 0 { c.lc_emit(.AddK(b, rel)) }
         }
         _ => {}
     }
@@ -1113,14 +2265,33 @@ lc_read :: fn(c: ^Lc, r: u32, w: LcPlace, size: u32, align: u32, t: Ty, span: so
         .AtD(at, d) => c.lc_emit(.LocalAtD(r, at, d, size))
         .Local(l, off) => c.lc_emit(.Local(r, l, off.trunc(u32), size))
         .Upvar(levels, l, rel) => c.lc_emit(.UpvarAt(r, levels, l, rel.trunc(u32), size, align, c.lc_node(t, span)))
+        .UpvarD(levels, l, rel, d) => {
+            if c.m.word_locals {
+                c.lc_emit(.Const(r, 0))
+                c.lc_emit(.UpvarGet(r * 8, levels, l, rel.trunc(u32), d, size, c.lc_node(t, span)))
+            } else {
+                at := c.lc_scratch(8)
+                c.lc_emit(.UpvarGet(at, levels, l, rel.trunc(u32), d, size, c.lc_node(t, span)))
+                c.lc_emit(.SlotW(r, at, size))
+            }
+        }
         .Mem(b, off) => c.lc_emit(.Load(r, b, off.trunc(u32), size, align, c.lc_node(t, span)))
     }
 }
 
 lc_load :: fn(c: ^Lc, r: u32, pl: lir.Place, t: Ty, span: source.Span) needs Alloc {
     scratch := list(u32)
-    w := c.lc_place(pl, span, &scratch)
+    w := c.lc_place(pl, span, &scratch, true)
     c.lc_read(r, w.where, c.m.size(t).trunc(u32), w.align.trunc(u32), t, span)
+    for x in scratch.items { c.lc_give(x) }
+}
+
+/// Reads the `size` bytes `off` bytes into place `pl` (a flag or a tag) into register `r`.
+lc_load_at :: fn(c: ^Lc, r: u32, pl: lir.Place, off: u64, size: u64, t: Ty, span: source.Span) needs Alloc {
+    scratch := list(u32)
+    w := c.lc_place(pl, span, &scratch, false)
+    align: u64 = if off is 0 { w.align.min(size) } else { 1 }
+    c.lc_read(r, add_off(w.where, off), size.trunc(u32), align.max(1).trunc(u32), t, span)
     for x in scratch.items { c.lc_give(x) }
 }
 
@@ -1129,25 +2300,70 @@ lc_store :: fn(c: ^Lc, pl: lir.Place, v: lir.Value, span: source.Span) needs All
     size := c.m.size(t).trunc(u32)
     if size is 0 { return () }
     scratch := list(u32)
-    w := c.lc_place(pl, span, &scratch)
+    w := c.lc_place(pl, span, &scratch, true)
     rv := c.lc_val(v)
     match w.where {
         .Reg(x) => match v {
-            .Word(_, bits) => c.lc_emit(.Const(x, bits))
+            .Word(ty, bits) => c.lc_emit(.Const(x, c.m.word_bits(ty, bits)))
             _ => if rv is not x { c.lc_emit(.Mov(x, rv)) }
         }
         .At(at) => c.lc_emit(.SetLocalAt(at, size, rv))
         .AtD(at, d) => c.lc_emit(.SetLocalAtD(at, d, size, rv))
         .Local(l, off) => c.lc_emit(.SetLocal(l, off.trunc(u32), size, rv, c.lc_node(t, span)))
         .Upvar(levels, l, rel) => c.lc_emit(.SetUpvarAt(levels, l, rel.trunc(u32), size, w.align.trunc(u32), rv, c.lc_node(t, span)))
+        .UpvarD(levels, l, rel, d) => c.lc_emit(.UpvarPut(levels, l, rel.trunc(u32), d, size, arg_at(c.lc_word_bytes(rv, u64(size))), c.lc_node(t, span)))
         .Mem(b, off) => c.lc_emit(.Store(b, off.trunc(u32), size, w.align.trunc(u32), rv, c.lc_node(t, span)))
+    }
+    for x in scratch.items { c.lc_give(x) }
+}
+
+/// Copies the `size` bytes at place `pl` to the slot at `at`.
+lc_get :: fn(c: ^Lc, at: u32, pl: lir.Place, size: u64, span: source.Span) needs Alloc {
+    if size is 0 { return () }
+    n := size.trunc(u32)
+    scratch := list(u32)
+    w := c.lc_place(pl, span, &scratch, false)
+    node := c.lc_node(c.m.s.tys.unit(), span)
+    match w.where {
+        .Reg(x) => c.lc_emit(.WSlot(at, n, x))
+        .At(a) => c.lc_emit(.CopySlot(at, a, n))
+        .AtD(a, d) => c.lc_emit(.SlotGetD(at, a, d, n))
+        .Upvar(levels, l, rel) => c.lc_emit(.UpvarGet(at, levels, l, rel.trunc(u32), NO_REG, n, node))
+        .UpvarD(levels, l, rel, d) => c.lc_emit(.UpvarGet(at, levels, l, rel.trunc(u32), d, n, node))
+        .Mem(b, off) => c.lc_emit(.MemGet(at, b, off.trunc(u32), n, w.align.trunc(u32), node))
+        .Local(_) => {
+            b := c.lc_base(w.where, span, &scratch)
+            c.lc_emit(.MemGet(at, b, 0, n, w.align.trunc(u32), node))
+        }
+    }
+    for x in scratch.items { c.lc_give(x) }
+}
+
+/// Copies the `size` bytes of the slot at `src` to place `pl`.
+lc_put :: fn(c: ^Lc, pl: lir.Place, src: u32, size: u64, span: source.Span) needs Alloc {
+    if size is 0 { return () }
+    n := size.trunc(u32)
+    scratch := list(u32)
+    w := c.lc_place(pl, span, &scratch, false)
+    node := c.lc_node(c.m.s.tys.unit(), span)
+    match w.where {
+        .Reg(x) => c.lc_emit(.SlotW(x, src, n))
+        .At(a) => c.lc_emit(.CopySlot(a, src, n))
+        .AtD(a, d) => c.lc_emit(.SlotPutD(a, d, src, n))
+        .Upvar(levels, l, rel) => c.lc_emit(.UpvarPut(levels, l, rel.trunc(u32), NO_REG, n, src, node))
+        .UpvarD(levels, l, rel, d) => c.lc_emit(.UpvarPut(levels, l, rel.trunc(u32), d, n, src, node))
+        .Mem(b, off) => c.lc_emit(.MemPut(b, off.trunc(u32), src, n, w.align.trunc(u32), node))
+        .Local(_) => {
+            b := c.lc_base(w.where, span, &scratch)
+            c.lc_emit(.MemPut(b, 0, src, n, w.align.trunc(u32), node))
+        }
     }
     for x in scratch.items { c.lc_give(x) }
 }
 
 lc_addr :: fn(c: ^Lc, r: u32, pl: lir.Place, span: source.Span) needs Alloc {
     scratch := list(u32)
-    w := c.lc_place(pl, span, &scratch)
+    w := c.lc_place(pl, span, &scratch, false)
     match w.where {
         .Mem(b, off) => {
             if b is not r { c.lc_emit(.Mov(r, b)) }
@@ -1157,7 +2373,11 @@ lc_addr :: fn(c: ^Lc, r: u32, pl: lir.Place, span: source.Span) needs Alloc {
             c.lc_emit(.LocalAddr(r, l, c.lc_node(c.m.s.tys.usize_ty(), span)))
             if off is not 0 { c.lc_emit(.AddK(r, off)) }
         }
-        _ => @unreachable()
+        .Upvar(levels, l, rel) => {
+            c.lc_emit(.UpvarAddr(r, levels, l, c.lc_node(c.m.s.tys.usize_ty(), span)))
+            if rel is not 0 { c.lc_emit(.AddK(r, rel)) }
+        }
+        _ => c.lc_gen(.Fail("internal error: the address of a local without memory"), empty_slice(Arg), .None, c.m.s.tys.unit(), span, false)
     }
     for x in scratch.items { c.lc_give(x) }
 }
@@ -1190,4 +2410,15 @@ lir_ancestor :: fn(m: ^const Machine, f: u32, levels: u32) -> ?u32 {
         at = m.s.defs.items[usize(at)].parent else return null
     }
     return at
+}
+
+/// The bits of LIR's constant word `bits` of type `t` as a register holds them: its bytes as
+/// `rd_word` reads them (a signed integer is not sign-extended).
+word_bits :: fn(m: ^Machine, t: Ty, bits: u64) -> u64 needs Alloc => bits & mask64((8 * m.size(t)).min(64).trunc(u32))
+
+/// The bits of an unspecified word of type `t` (`---`): `0xAA` bytes in Debug builds, else
+/// zero.
+uninit_word :: fn(m: ^Machine, t: Ty) -> u64 needs Alloc {
+    if m.mode is not .Debug { return 0 }
+    return 0xAAAA_AAAA_AAAA_AAAA & mask64((8 * m.size(t)).min(64).trunc(u32))
 }

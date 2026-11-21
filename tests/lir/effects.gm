@@ -1,0 +1,35 @@
+// The instructions of effects, jumps between frames and the builtins lowering writes out:
+// `with` and its installs, `Exit`, assertions, `get`/`first`/`last`, `#bits` fields, `in`
+// and 128-bit constants.
+Ask :: effect { ask: fn() -> i64 }
+
+Flags :: #bits(u8) struct { a: bool, n: u7 }
+
+answer :: fn() -> i64 => with (handler Ask { ask() => 42 }) { Ask.ask() }
+
+// The body of a `for` over an iterator is a function: its `break` to the outer loop
+// leaves that function's frame (`exit`).
+upto :: fn(n: u32) needs Yield(u32) {
+    for i in 0..n { yield(i) }
+}
+
+below :: fn(limit: u32) -> u32 {
+    n: u32 = 0
+    outer: for _ in 0..2 {
+        for i in upto(10) {
+            if i >= limit { break outer }
+            n += 1
+        }
+    }
+    return n
+}
+
+checks :: fn(xs: [4]u8, f: Flags) -> u128 {
+    assert(xs[0] < 200, "small")
+    g := f
+    g.n = 5
+    k: u128 = 1 << 100
+    if 3 in xs and g.a { return k }
+    v := xs.get(9) else 0
+    return u128(v) + u128((xs.first() else 0))
+}

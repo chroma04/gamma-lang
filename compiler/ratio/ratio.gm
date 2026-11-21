@@ -264,6 +264,41 @@ pub to_f16 :: fn(r: Rat) -> f64 needs Alloc {
     return if neg { -v } else { v }
 }
 
+/// The bits of the binary16 number nearest `x` (ties to even).
+pub f16_bits :: fn(x: f64) -> u16 {
+    bits := x.bits(u64)
+    sign := (bits >> 63).trunc(u16) << 15
+    exp := ((bits >> 52) & 0x7ff).bits(i64)
+    man := bits & 0xF_FFFF_FFFF_FFFF
+    if exp is 0x7ff {
+        // A NaN keeps its sign and the top of its payload, and is quiet.
+        if man is 0 { return sign | 0x7c00 }
+        return sign | 0x7e00 | (man >> 42).trunc(u16)
+    }
+    if exp is 0 { return sign }
+    e := exp - 1023
+    he := e + 15
+    if he >= 1 {
+        if he >= 0x1f { return sign | 0x7c00 }
+        keep := (man >> 42).trunc(u32)
+        rem := man & ((u64(1) << 42) - 1)
+        half := u64(1) << 41
+        r := (he.trunc(u32) << 10) | keep
+        if rem > half or (rem is half and keep & 1 is 1) { r += 1 }
+        return sign | r.trunc(u16)
+    }
+    mm := (u128(1) << 52) | u128(man)
+    shift := 28 - e
+    if shift >= 120 { return sign }
+    s := u128(shift.trunc(u32))
+    q := mm >> s
+    rem := mm & ((u128(1) << s) - 1)
+    half := u128(1) << (s - 1)
+    r := q.trunc(u32)
+    if rem > half or (rem is half and r & 1 is 1) { r += 1 }
+    return sign | r.trunc(u16)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -1,0 +1,119 @@
+// What the register machine's instructions know of the values they work on (`Node`), the
+// kinds of words they compute with, and the deferred statements of a frame.
+
+/// What an instruction knows of the value it works on: its type, size and place in the
+/// source (for its traps), and for some instructions the operation (`Op`).
+Node :: struct {
+    op: Op
+    ty: Ty
+    size: u64
+    span: source.Span
+}
+
+/// The operation an instruction (`Builtin`, `Perform`, `StrSlot`) carries out: its nodes
+/// stand for its operands' types.
+Op :: union {
+    /// Nothing more than the value.
+    Leftover
+    Builtin: (op: tir.Builtin, args: []^Node)
+    Perform: (effect_: types.EffectRef, op: u32, args: []^Node)
+    Str: []const u8
+    CStr: []const u8
+}
+
+/// How a word comparison compares: as unsigned or signed integers of `bits` bits (pointers
+/// and booleans are unsigned), or as floats.
+WordCmp :: union {
+    Unsigned
+    Signed: u32
+    F32
+    F64
+    /// Booleans: any nonzero byte is true.
+    Bool
+}
+
+/// An integer type of 8, 16, 32 or 64 bits whose values are held in words.
+IntW :: struct {
+    signed: bool
+    bits: u32
+}
+
+/// The word integer type `t`, if it is one.
+int_w :: fn(m: ^Machine, t: Ty) -> ?IntW needs Alloc {
+    info := m.int_info(t) else return null
+    if info.bits not in (8, 16, 32, 64) or u64(info.bits) is not 8 * m.size(t) { return null }
+    return IntW(signed: info.signed, bits: info.bits)
+}
+
+/// How words of type `t` compare, if they do.
+word_cmp :: fn(m: ^Machine, t: Ty) -> ?WordCmp needs Alloc {
+    if w := int_w(m, t) { return if w.signed { .Signed(w.bits) } else { .Unsigned } }
+    match m.kind(t) {
+        .Float(w) => return if w is 32 { .F32 } else if w is 64 { .F64 } else { null }
+        .Bool => return .Bool
+        .Ptr(_, _), .ManyPtr(_, _), .Rawptr, .FnPtr(_) => return .Unsigned
+        _ => return null
+    }
+}
+
+/// Whether `op` is an operator the machine computes on `f32` and `f64` words.
+is_float_op :: fn(op: tir.BinOp) -> bool => match op {
+    .Add(_), .Sub(_), .Mul(_), .Div => true
+    _ => false
+}
+
+/// The operator and flavor of `+`, `-` or `*`, checked or wrapping, for `Arith64` and
+/// `Arith32`.
+arith_kind :: fn(op: tir.BinOp) -> ?(op: u8, wrap: bool) => match op {
+    .Add(fl) => if fl in (ast.Flavor.Checked, .Wrap) { (op: 0, wrap: fl is .Wrap) } else { null }
+    .Sub(fl) => if fl in (ast.Flavor.Checked, .Wrap) { (op: 1, wrap: fl is .Wrap) } else { null }
+    .Mul(fl) => if fl in (ast.Flavor.Checked, .Wrap) { (op: 2, wrap: fl is .Wrap) } else { null }
+    _ => null
+}
+
+/// The operator `Arith64` or `Arith32` stands for.
+arith_op :: fn(op: u8, wrap: bool) -> tir.BinOp {
+    fl: ast.Flavor = if wrap { .Wrap } else { .Checked }
+    return match op {
+        0 => .Add(fl)
+        1 => .Sub(fl)
+        _ => .Mul(fl)
+    }
+}
+
+/// A `defer` or `errdefer` statement whose block is running: its body's code, which runs
+/// in the frame (`Code.sub`), and the handler context it runs in.
+Deferred :: struct {
+    is_err: bool
+    code: ^Code
+    cx: u32
+}
+
+/// Whether `target` is the frame of the function that lexically contains the code
+/// running in `fr`.
+lexically_same :: fn(fr: ^Frame, target: u64) -> bool {
+    cur := fr
+    while true {
+        if cur.id is target { return true }
+        if not cur.is_clause_lit { return false }
+        cur = cur.env else return false
+    }
+}
+
+/// Whether `errdefer` statements run when `flow` leaves a block of frame `fr` (§8.8).
+errdefers_run :: fn(fr: ^Frame, flow: Flow) -> bool => match flow {
+    .Trap(_), .Resume(_) => false
+    .Return(frame, is_err) => if lexically_same(fr, frame) { is_err } else { true }
+    .Break(frame, _), .Continue(frame, _) => not lexically_same(fr, frame)
+    .Exit(_), .Cancel => true
+}
+
+/// The bytes of the string (a `[]const u8` slice) `b`.
+read_string :: fn(m: ^Machine, span: source.Span, b: []const u8) -> Flow!string needs Alloc {
+    sp := m.slice_parts(b)
+    if sp.len is 0 { return "" }
+    data := m.mem.read(sp.ptr, sp.len, 1) else e => return !m.mem_trap(span, e)
+    out := make(u8, data.len)!
+    out.copy_from(data)
+    return out
+}

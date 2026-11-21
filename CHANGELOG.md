@@ -8,14 +8,15 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
-- **The interpreter compiles the functions it can from LIR**: those on words (integers,
-  floats, booleans, pointers) with places, arithmetic, calls, loops and bounds checks, about
-  one in eight so far; it runs them as fast as before, and loops over slices about 15%
-  faster. `GAMMA_INTERP_LIR=0` compiles everything the old way.
+- **The interpreter runs every function from LIR**: each body is lowered to LIR and
+  compiled from it for the register machine, including `with` (and `with … on`), jumps out
+  of function literals and clauses, `defer`, continuations, 128-bit integers and values of
+  any size. Its tree-walking evaluator and the old compiler of bodies are gone. The
+  benchmarks run 5–13% fewer instructions.
 - **`gamma lir`** prints a program's functions in LIR, the lowered form that the
-  interpreter and the C back end are to share: instructions on numbered temporaries,
-  with the order of evaluation, bounds checks and the tests of patterns written out. No
-  back end uses it yet; the format is not stable.
+  interpreter compiles from and that the C back end is to share: instructions on
+  numbered temporaries, with the order of evaluation, bounds checks, the tests of
+  patterns, handlers and jumps between frames written out. The format is not stable.
 - **Optimized builds use Clang when it is installed.** Without `CC`, Checked and Fast
   builds now compile with `clang` if it is on `PATH`, except on Windows; Debug builds keep `cc`. The compiler built this way is 19% smaller and checks
   programs 15% faster. Set `CC` to choose the compiler yourself.

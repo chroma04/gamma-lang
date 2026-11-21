@@ -17,13 +17,15 @@
   measured); s78 shared template bodies (073, check/share.gm); s79 LLVM back end and
   LLVM JIT re-evaluated with measurements (074): stay on C, wins listed in next.md §2;
   cheap C wins done (clang for optimized builds, ThinLTO, union switch hint); lowered IR
-  (075) P0 done: compiler/lir + `gamma lir` + suite `lir`; s80 P1a: interp compiles
-  word-only bodies from LIR (interp/vm_lir.gm, default on); rest of P1 next.
+  (075) P0 done: compiler/lir + `gamma lir` + suite `lir`; s80 P1a; s81 P1+P2: the
+  interp compiles every body from LIR (vm_lir.gm + vm_gen.gm), tree evaluator, code.gm
+  and vm_compile deleted; interp 5–13% fewer Ir on the benches.
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
 ## Next steps
-0. LIR P1 (decisions/075 "State after P1a"): the user asked for this plan; do it first.
+0. LIR plan (decisions/075 "State after P1 + P2"): P3 passes, then P4 cgen on LIR, when
+   the user asks to continue it (they asked for P1+P2 in s81).
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
    gaps), testing, language. Performance §2 now lists only structural changes.
 2. roadmap/bugs.md: small open bugs, good for a short session.
@@ -41,7 +43,7 @@
                   platforms.md (clang, aarch64, s390x, Windows, WASI, Fil-C) ·
                   codegen.md (generated C, runtime, host stack) ·
                   parallel-agents.md (worktree workers: stale bases, limits)
-- history.md      compact project history, s1–s78
+- history.md      compact project history, s1–s81
 
 ## Conventions in Gamma code (quick reminders; the guide is the reference)
 - Effects: `fn() -> T needs Alloc + Out`; effect-set args `Sched(Out + Clock)`; pure
