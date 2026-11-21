@@ -14,6 +14,13 @@ Before flagging, check "Settled" below: those are decided.
   language change: a checked template VALUE (type checked at the call site against the
   args, passed at run time as pieces + specs), so wrappers instantiate per arg types only.
   Not urgent; flagged to the user.
+  s77 measured (compiler's emit-c, Debug; scratch tmpl.py groups instances by the C type of
+  the `args` local + the type descriptors the body uses): str.format 1,422 instances =
+  8.84 MB with their sink closures (18% of 49.2 MB function text) fall in 69 type groups
+  (largest: `(string,)` 590, `(string, string)` 277); one body per group = 0.47 MB, saves
+  ~8.4 MB. List.write 279 → 40 groups (−0.95 MB), cgen linef 175 → 24 (−0.66 MB).
+  Recommended to the user: implementation-only sharing (template passed as a static
+  piece table to one body per arg types; no spec change), not the language change.
 
 ## Settled — do not re-flag (reason)
 Done: function value as a format value / inferred type argument is an error (s75, §16.2), stale-element-pointer through struct pointers (060), dangling-address lint + errors (044/045), pub(package) (044), composite keys

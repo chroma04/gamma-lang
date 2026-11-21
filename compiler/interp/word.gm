@@ -97,11 +97,17 @@ int_conv :: fn(op: tir.Builtin, from: IntW, to: IntW, v: u64) -> u64 {
     return x & mask64(to.bits)
 }
 
-/// `@rotl` and `@rotr` of the word `v` by `k`, and `@clz`, `@ctz`, `@popcount`, `@bswap`
-/// and `@bitreverse` of `v`, the word of an integer of type `t`.
+/// `@rotl` and `@rotr` of the word `v` by `k`, `@clz`, `@ctz`, `@popcount`, `@bswap`
+/// and `@bitreverse` of `v`, the word of an integer of type `t`, and `@hash` of `v` with
+/// the seed `k` (as `apply_builtin` computes it).
 #noinline
 bit_word :: fn(op: tir.Builtin, t: IntW, v, k: u64) -> u64 {
     n := t.bits
+    if op is .Hash {
+        h := 0xcbf29ce484222325 ~ k
+        hash_u64(&h, if t.signed { sext(v, n).bits(u64) } else { v & mask64(n) })
+        return h
+    }
     x := v & mask64(n)
     match op {
         .Rotl, .Rotr => {

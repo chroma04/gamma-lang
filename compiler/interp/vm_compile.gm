@@ -797,6 +797,13 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
                     al := c.m.ptr_align(n.ty)
                     if al > 1 and c.m.ptr_align(args[0].ty) < al { c.vc_emit(.AlignCheck(save, al, n)) }
                 }
+            } else if op is .Trunc and args.len is 1 and c.vc_low_word(args[0], n) {
+                // The low bytes of a 128-bit integer, read from its slot.
+                slots := c.slot_top
+                at := c.vc_slot_at(c.vc_alloc_slot(args[0].size))
+                c.vc_to_slot(args[0], at)
+                c.vc_emit(.SlotW(c.vc_alloc(), at, n.size.trunc(u32)))
+                c.slot_top = slots
             } else if vc_builtin_ok(op, args) {
                 c.vc_builtin(args, .Reg(save), n)
             } else if vc_assert_ok(op, args) {
@@ -826,6 +833,14 @@ vc_word :: fn(c: ^Vc, n: ^Node) needs Alloc {
         _ => c.vc_word_via_slot(n)
     }
     c.vc_set_top(save + 1)
+}
+
+/// Whether the word integer `n` is `x`, a 128-bit integer, truncated: its first bytes in
+/// memory, where integers are little-endian (`word_locals`).
+vc_low_word :: fn(c: ^Vc, x: ^const Node, n: ^const Node) -> bool needs Alloc {
+    if not c.m.word_locals or x.size is not 16 or int_w(c.m, n.ty) is null { return false }
+    t := c.m.int_info(x.ty) else return false
+    return t.bits is 128
 }
 
 /// The word `n` into the first free register: built in a slot if the machine builds its
@@ -1117,8 +1132,16 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             c.vc_emit(.ConstSlot(at, b))
             return ()
         }
-        .Str(_) => {
-            c.vc_emit(.StrSlot(at, n))
+        // The literal's storage is made now, once: its slice is a constant.
+        .Str(bytes) => {
+            m := c.m
+            addr := m.string_literal(n.span, bytes, false) else {
+                c.vc_emit(.StrSlot(at, n))
+                return ()
+            }
+            b := make(u8, 2 * us(m.ptr_bytes))!
+            m.put_slice(b, addr, u64(bytes.len))
+            c.vc_emit(.ConstSlot(at, b))
             return ()
         }
         .Upvar(levels, l) => if n.size is c.m.size(n.ty) and levels > 0 {
@@ -1136,8 +1159,13 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
             lb := c.vc_slot_at(c.vc_alloc_slot(r.size))
             c.vc_to_slot(r, lb)
             wide: u8 = 0
-            if c.m.word_locals and n.size is 16 {
-                if t := c.m.int_info(n.ty) and t.bits is 128 and c.m.int_info(l.ty) is t and c.m.int_info(r.ty) is t { wide = if t.signed { 2 } else { 1 } }
+            if c.m.word_locals and l.size is 16 and t := c.m.int_info(l.ty) and t.bits is 128 {
+                w: u8 = if t.signed { 2 } else { 1 }
+                match op {
+                    .Shl(_), .Shr => if a := int_w(c.m, r.ty) and not a.signed { wide = w }
+                    .Lt, .Le, .Gt, .Ge => if c.m.int_info(r.ty) is t { wide = w }
+                    _ => if n.size is 16 and c.m.int_info(n.ty) is t and c.m.int_info(r.ty) is t { wide = w }
+                }
             }
             c.vc_emit(.BinSlot(op, wide, at, la, lb, n, l, r))
             c.slot_top = slots
@@ -1152,7 +1180,11 @@ vc_to_slot :: fn(c: ^Vc, n: ^Node, at: u32) needs Alloc {
         }
         .Coerce(kind, x) => if kind is .IntWiden and is_word(x) and n.size > 8 {
             r := c.vc_operand(x, true)
-            c.vc_emit(.WidenSlot(at, r, x, n))
+            ext: u8 = 0
+            if c.m.word_locals and n.size is 16 and from := int_w(c.m, x.ty) and t := c.m.int_info(n.ty) and t.bits is 128 {
+                ext = from.bits.trunc(u8) | (if from.signed { 128 } else { 0 })
+            }
+            c.vc_emit(.WidenSlot(at, r, ext, x, n))
             c.vc_set_top(save)
             return ()
         } else if c.vc_coerce_builds(kind, n) {

@@ -78,24 +78,44 @@ insert_new :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :
 }
 
 /// Doubles the table (or creates it) and drops tombstones; a table at most half full of live
-/// entries is rehashed at the same size instead, so memory follows the live entries.
+/// entries is rehashed at the same size instead, so memory follows the live entries. The
+/// work depends on the types only through the size and alignment of a slot and the hash of
+/// its key, so one function, `grow_raw`, does it for every map type.
 grow :: fn(K, V: type, hash :: ?^fn(key: ^const K, seed: u64) -> u64, eq :: ?^fn(a, b: ^const K) -> bool,
            m: ^HashMap(K, V, hash, eq)) -> AllocError!() {
+    return grow_raw(m.cast(^RawMap), @size_of(Slot(K, V)), @align_of(Slot(K, V)), fn(slot: [^]const u8, seed: u64) -> u64 => key_hash(hash, &slot.cast(^const Slot(K, V)).key, seed))
+}
+
+// The layout of every `HashMap`, with the slots seen as bytes: `slots.len` is still the
+// number of slots. A slot's `state` is its first byte.
+RawMap :: struct {
+    slots: []u8
+    count: usize
+    used: usize
+    seed: u64
+    alloc: Allocator
+}
+
+// `grow` for slots of `size` bytes aligned to `align`, whose keys `hash_slot` hashes.
+grow_raw :: fn(m: ^RawMap, size, align: usize, hash_slot: ^fn(slot: [^]const u8, seed: u64) -> u64) -> AllocError!() {
     old := m.slots
     n := if old.len is 0 { 8 } else if m.count * 2 <= old.len { old.len } else { old.len * 2 }
-    size := @size_of(Slot(K, V))
-    align := @align_of(Slot(K, V))
     raw := m.alloc.vt.alloc(m.alloc.data, size * n, align) else return !.OutOfMemory
-    slots := raw.cast([^]Slot(K, V))[0..n]
-    for i in 0..n { slots[i].state = EMPTY }
-    m.slots = slots
-    m.count = 0
-    m.used = 0
+    for i in 0..n { raw[i * size] = EMPTY }
+    count: usize = 0
     for i in 0..old.len {
-        if old[i].state is FULL { m.insert_new(&old[i].key, &old[i].value) }
+        s := old.ptr[i * size..(i + 1) * size]
+        if s[0] is not FULL { continue }
+        j := hash_slot(s.ptr, m.seed).trunc(usize) & (n - 1)
+        while raw[j * size] is FULL { j = (j + 1) & (n - 1) }
+        @copy_elems(raw[j * size..(j + 1) * size], s)
+        count += 1
     }
+    m.slots = raw[0..n]
+    m.count = count
+    m.used = count
     if old.len > 0 {
-        m.alloc.vt.free(m.alloc.data, old.ptr.cast([^]u8), size * old.len, align)
+        m.alloc.vt.free(m.alloc.data, old.ptr, size * old.len, align)
     }
     return ()
 }

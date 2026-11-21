@@ -1,8 +1,8 @@
 # Gamma: agent memory INDEX (read first)
 
-## State (2026-11-20)
-- `main` = PRs #1–#130 merged; PR #131 (s75) open. Released: 0.1.0, 0.2.0; 0.3.0 prepared in s76 (PR, then tag v0.3.0 on the merge commit;
-  no `## Unreleased` until the next change adds one).
+## State (2026-11-21)
+- `main` = PRs #1–#132 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
+  commit). `## Unreleased` in CHANGELOG.md started in s77.
   Tag `rust-reference-final` marks the last Rust implementation.
 - The compiler is self-hosted: `compiler/` (Gamma) builds `gamma` from the C seed in
   `bootstrap/seed/` (= the build's C units; refresh with `tools/refresh-seed.sh` after
@@ -13,13 +13,14 @@
   bootstrap/build.sh then tools/test.sh (subsets for the Safe, s390x, aarch64, WASI
   lanes; Windows via cross-built gamma.exe + harness.exe), plus fuzz smoke, difftest,
   benchmarks, editors.
-- Last sessions: s74 tooling (070); s75 roadmap sweep (history.md s75; decision 071 struct
-  errors rejected). Windows CI test step 22 min -> 2.6 min in s75 (Windows headers were in
-  every Debug unit; gotchas/platforms.md "Windows CI time").
+- Last sessions: s75 roadmap sweep (071 struct errors rejected); s76 0.3.0 prep; s77
+  perf round 10 (072: every remaining perf item measured; kept/dropped/closed).
+- Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
+  068/069/072 are of that build (Fast is ~15% fewer Ir).
 
 ## Next steps
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
-   gaps), then performance (interp and compiler candidate lists), testing, language.
+   gaps), testing, language. Performance §2 now lists only structural changes.
 2. roadmap/bugs.md: small open bugs, good for a short session.
 3. spec-notes/pain-points.md "Open": flag to the user before acting on the big one.
 
@@ -35,7 +36,7 @@
                   platforms.md (clang, aarch64, s390x, Windows, WASI, Fil-C) ·
                   codegen.md (generated C, runtime, host stack) ·
                   parallel-agents.md (worktree workers: stale bases, limits)
-- history.md      compact project history, s1–s73
+- history.md      compact project history, s1–s77
 
 ## Conventions in Gamma code (quick reminders; the guide is the reference)
 - Effects: `fn() -> T needs Alloc + Out`; effect-set args `Sched(Out + Clock)`; pure

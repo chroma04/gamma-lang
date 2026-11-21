@@ -464,8 +464,13 @@ every checked operation checked.
   - *Values that are not words* are built in slots by the machine when it can: the
     operands of a binary operator on 128-bit integers or vectors go to slots and one
     instruction applies the operator (on 128-bit integers, in little-endian words, the
-    common cases are computed directly), and a closure value, a captured local copied
-    out, or an integer widened to 128 bits is an instruction of its own.
+    common cases of arithmetic, comparisons and shifts by a word are computed directly),
+    and a closure value, a captured local copied out, or an integer widened to 128 bits is
+    an instruction of its own. A word truncated from a 128-bit integer is read from the
+    first bytes of its slot, and `@hash` of a word integer is computed like the other
+    operators on words.
+  - *String literals* get their storage when the body is compiled: the slice is then a
+    constant that an instruction copies to its slot.
   - *Size.* The loop's C must stay below the size at which the C back end has Clang
     compile a function without optimization (`GM_LONG_FN`): its arms are a few
     operations each, and the loop keeps only the registers, the code and a pointer to the

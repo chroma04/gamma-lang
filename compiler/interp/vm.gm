@@ -119,7 +119,9 @@ Ins :: union {
     BinSlot: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node)
     /// The integer word in register `r` (the value of `x`) widened to `n`, a value that
     /// is not a word (a 128-bit integer), in the slot at `at`.
-    WidenSlot: (at: u32, r: u32, x: ^Node, n: ^Node)
+    /// `ext` is the bits of the word, plus 128 if it is signed, when the wider integer
+    /// is 128-bit and little-endian (`word_locals`); otherwise 0.
+    WidenSlot: (at: u32, r: u32, ext: u8, x: ^Node, n: ^Node)
     /// A word at the address in register `base` plus `off`.
     Load: (r: u32, base: u32, off: u32, size: u32, align: u32, n: ^Node)
     Store: (base: u32, off: u32, size: u32, align: u32, v: u32, n: ^Node)
@@ -1323,12 +1325,26 @@ vm_free_other :: fn(m: ^Machine, cx: u32, code: ^Code, regs: [^]u64, pc: usize, 
         .SetUpvarAt(x) => try m.vm_set_upvar_at(us(regs[usize(code.env_reg)]).to_ptr(^Frame), x.levels, x.local, x.rel, x.size, x.align, regs[usize(x.v)], x.n)
         .BinSlot(x) => if v := wide_op(x, regs) {
             d := fat(regs, usize(x.at))
-            st8(d, v.trunc(u64))
-            st8(fat(regs, usize(x.at) + 8), (v >> 64).trunc(u64))
+            if x.n.size is 16 {
+                st8(d, v.trunc(u64))
+                st8(fat(regs, usize(x.at) + 8), (v >> 64).trunc(u64))
+            } else {
+                d[0] = v.trunc(u8)
+            }
         } else {
             try m.binop(x.n.span, x.op, x.l.ty, x.r.ty, x.n.ty, fat(regs, usize(x.la))[0..us(x.l.size)], fat(regs, usize(x.lb))[0..us(x.r.size)], fat(regs, usize(x.at))[0..us(x.n.size)])
         }
-        .WidenSlot(x) => {
+        .WidenSlot(x) => if x.ext is not 0 {
+            bits := u32(x.ext & 127)
+            v := regs[usize(x.r)]
+            hi: u64 = 0
+            if x.ext >= 128 {
+                v = sext(v, bits).bits(u64)
+                if (v >> 63) is 1 { hi = ~u64(0) }
+            }
+            st8(fat(regs, usize(x.at)), v)
+            st8(fat(regs, usize(x.at) + 8), hi)
+        } else {
             b: [8]u8 = ---
             w := b[0..us(x.x.size)]
             m.wr_word(w, regs[usize(x.r)])
@@ -1884,12 +1900,47 @@ vm_invoke :: fn(m: ^Machine, caller: ^const Code, f: u32, env: ?^Frame, cx: u32,
 
 /// The result of the `BinSlot` `x` on 128-bit integers, computed directly: `null` if it
 /// is not such an operation or its common case does not apply (an overflow, a division
-/// by zero), which `binop` then reports.
+/// by zero, a shift too far), which `binop` then reports. A comparison gives 0 or 1, and
+/// a shift's amount is an unsigned word.
 wide_op :: fn(x: (op: tir.BinOp, wide: u8, at: u32, la: u32, lb: u32, n: ^Node, l: ^Node, r: ^Node), regs: [^]u64) -> ?u128 {
     if x.wide is 0 { return null }
     p := u128(ld8(fat(regs, usize(x.la)))) | (u128(ld8(fat(regs, usize(x.la) + 8))) << 64)
-    q := u128(ld8(fat(regs, usize(x.lb)))) | (u128(ld8(fat(regs, usize(x.lb) + 8))) << 64)
     signed := x.wide is 2
+    if x.op is .Shl(_) or x.op is .Shr {
+        b := fat(regs, usize(x.lb))
+        k: u64 = 0
+        for i in 0..us(x.r.size) { k |= u64(b[i]) << u64(8 * i) }
+        if k >= 128 { return null }
+        match x.op {
+            .Shr => return if signed { (p.bits(i128) >> k.trunc(u32)).bits(u128) } else { p >> u128(k) }
+            .Shl(f) => {
+                r := int_shl(signed, 128, p, k.trunc(u32))
+                if f is .Wrap or (f is .Checked and not r.over) { return r.low }
+            }
+            _ => {}
+        }
+        return null
+    }
+    q := u128(ld8(fat(regs, usize(x.lb)))) | (u128(ld8(fat(regs, usize(x.lb) + 8))) << 64)
+    match x.op {
+        .Lt, .Le, .Gt, .Ge => {
+            c := int_cmp(signed, p, q)
+            yes := match x.op {
+                .Lt => c < 0
+                .Le => c <= 0
+                .Gt => c > 0
+                _ => c >= 0
+            }
+            return if yes { 1 } else { 0 }
+        }
+        // The one quotient that overflows is left to `binop`.
+        .Div, .Rem => if signed and q is not 0 and not (q.bits(i128) is -1 and p is u128(1) << 127) {
+            a := p.bits(i128)
+            b := q.bits(i128)
+            return (if x.op is .Div { a / b } else { a % b }).bits(u128)
+        }
+        _ => {}
+    }
     match x.op {
         .Add(f) => {
             if f is .Wrap { return p +% q }

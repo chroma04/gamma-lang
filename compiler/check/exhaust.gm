@@ -388,14 +388,10 @@ useful :: fn(s: ^Sema, rows: []const Row, q: []const DPat) -> ?[]DPat needs Allo
         }
         .Wild(_) => {
             ctors := all_ctors(s, ty, column.items)
-            complete := false
-            if cs := ctors {
-                complete = true
-                for c in cs {
-                    if not column_covers(column.items, &c) { complete = false }
-                }
-            }
-            if complete {
+            // The first constructor that no row's head covers.
+            missing: ?usize = null
+            if cs := ctors { missing = first_uncovered(column.items, cs) }
+            if ctors is not null and missing is null {
                 for c in ctors else empty_slice(Ctor) {
                     tys := sub_types(s, ty, &c)
                     spec_rows := list(Row)
@@ -414,13 +410,11 @@ useful :: fn(s: ^Sema, rows: []const Row, q: []const DPat) -> ?[]DPat needs Allo
             w := useful(s, default.items, q[1..]) else return null
             // Name a constructor that no row covers, if there is one to name.
             first: DPat = .Wild(ty)
-            for c in ctors else empty_slice(Ctor) {
-                if not column_covers(column.items, &c) {
-                    subs := list(DPat)
-                    for t in sub_types(s, ty, &c) { subs.push(.Wild(t))! }
-                    first = .Ctor(ty, c, subs.items)
-                    break
-                }
+            if cs := ctors and i := missing {
+                c := cs[i]
+                subs := list(DPat)
+                for t in sub_types(s, ty, &c) { subs.push(.Wild(t))! }
+                first = .Ctor(ty, c, subs.items)
             }
             out := list(DPat)
             out.push(first)!
@@ -428,6 +422,27 @@ useful :: fn(s: ^Sema, rows: []const Row, q: []const DPat) -> ?[]DPat needs Allo
             return out.items
         }
     }
+}
+
+/// The index of the first constructor of `cs` that no head of `column` covers. Variants,
+/// the constructors of the largest matches, are looked up by index rather than against
+/// every head.
+first_uncovered :: fn(column: []const DPat, cs: []const Ctor) -> ?usize needs Alloc {
+    n: usize = 0
+    for c in cs {
+        if .Variant(v) := c { n = n.max(usize(v) + 1) }
+    }
+    seen := list(bool)
+    defer seen.deinit()
+    for _ in 0..n { seen.push(false)! }
+    for d in column {
+        if .Ctor(_, .Variant(v), _) := d and usize(v) < n { seen.items[usize(v)] = true }
+    }
+    for i, c in enumerate(cs) {
+        covered := if .Variant(v) := c { seen.items[usize(v)] } else { column_covers(column, &c) }
+        if not covered { return i }
+    }
+    return null
 }
 
 column_covers :: fn(column: []const DPat, c: ^const Ctor) -> bool {

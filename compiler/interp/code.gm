@@ -92,7 +92,8 @@ Op :: union {
     IntUn: (op: tir.UnOp, t: IntW, x: ^Node)
     /// A word integer converted to another (`Convert`, `Trunc`, `Sat` or a widening).
     IntConv: (op: tir.Builtin, from: IntW, to: IntW, x: ^Node)
-    /// `@rotl` and `@rotr` of a word integer of type `t` (by a `u32`).
+    /// `@rotl` and `@rotr` of a word integer of type `t` (by a `u32`), and `@hash` of one
+    /// (with a `u64` seed).
     IntRot: (op: tir.Builtin, t: IntW, x: ^Node, k: ^Node)
     /// `@clz`, `@ctz`, `@popcount`, `@bswap` and `@bitreverse` of a word integer.
     IntBits: (op: tir.Builtin, t: IntW, x: ^Node)
@@ -468,6 +469,10 @@ low_builtin :: fn(lw: ^Lower, op: tir.Builtin, args: []Expr, e: ^Expr) -> Op nee
     }
     if op in (tir.Builtin.Rotl, .Rotr) and args.len is 2 {
         if t := int_w(m, args[0].ty) { return .IntRot(op, t, ns[0], ns[1]) }
+    }
+    // `@hash` of a word integer: the seed is a `u64` (§16.8).
+    if op is .Hash and args.len is 2 {
+        if t := int_w(m, args[0].ty) and s := int_w(m, args[1].ty) and not s.signed { return .IntRot(op, t, ns[0], ns[1]) }
     }
     if op in (tir.Builtin.Clz, .Ctz, .Popcount, .Bswap, .Bitreverse) and args.len is 1 {
         if t := int_w(m, args[0].ty) { return .IntBits(op, t, ns[0]) }
