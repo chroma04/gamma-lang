@@ -601,7 +601,7 @@ lc_segments :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load
 /// reads each temporary, `live` how many temporaries are live before each instruction.
 lc_segment :: fn(c: ^LirC, insts: []const lir.Inst, a: usize, b: usize, last: ^hash_map.HashMap(u32, usize), live: []const i64, split: bool, w: u32) -> Unsup!() needs sema.Load {
     fg := c.fg
-    if split and live[a] is 0 and live[b] is 0 and w >= LIR_MIN_RUN and not reads_outer_temp(insts[a..b]) {
+    if split and live[a] is 0 and live[b] is 0 and w >= LIR_MIN_RUN and not reads_outer_temp(insts[a..b]) and not c.has_rung_target(insts[a..b]) {
         return c.lc_outline(insts, a, b)
     }
     // The temporaries read past the segment, declared before it.
@@ -625,6 +625,21 @@ lc_segment :: fn(c: ^LirC, insts: []const lir.Inst, a: usize, b: usize, last: ^h
     fg.indent -= 1
     fg.line("}")
     try r
+}
+
+/// Whether `insts` hold the block a loop's `continue` goes to, in a function with nested
+/// functions: the loop's rung, outside them, jumps to its label (`loop_scope`).
+has_rung_target :: fn(c: ^LirC, insts: []const lir.Inst) -> bool needs Alloc {
+    if not c.nested_fns { return false }
+    found := false
+    visit_insts(insts, fn(i: ^const lir.Inst) {
+        if .Block(l, _) := i.op {
+            for x in c.f.loops {
+                if x.cont is l and x.brk is not l { found = true }
+            }
+        }
+    })
+    return found
 }
 
 /// Moves instructions `a..b` of `insts`, which read no temporary from outside them and

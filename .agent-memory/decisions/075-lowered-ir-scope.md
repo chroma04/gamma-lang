@@ -24,7 +24,9 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   split_runs functions (long_body + all locals in frame), clean runs (no live temp at
   either end, no outer temp read) of ≥ LIR_MIN_RUN 60 move to helpers via outline_code
   (LIR_RUN_WEIGHT 600); an instruction heavier than a run stays inline (its lists split);
-  no nested helpers (jump(label, null) can't express LIR labels). `outlines` = long_body
+  no nested helpers (jump(label, null) can't express LIR labels); a run holding a loop's
+  `continue` block in a function with nested functions stays inline (has_rung_target:
+  the loop_scope rung outside jumps to it; difftest seed 14741). `outlines` = long_body
   and has_long_list(LIR). lir_of memoizes the last function (gen_fn + gen_body).
 - -g: lc_line emits #line per instruction when the line changes (reset around helpers).
 - Large by_ref args: whole-local Load of by_ref is lazy; Call/Write args read in place
