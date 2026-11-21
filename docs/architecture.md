@@ -440,8 +440,11 @@ the others and why), sharing the expression helpers with the TIR path (operators
 coercions, calls, formatted output take C values, not TIR nodes). Each temporary becomes a C
 temporary; a large value loaded from a place, or a union variant, is computed only where it is
 needed, so `x is .V(p)` compares the tag and payload in place and a copy is a `memmove`; a
-call whose large result is returned or stored in a local writes it there. Bodies with nested
-functions, `defer`, `with` or exits between frames still take the TIR path.
+call whose large result is returned or stored in a local writes it there. `defer` and the
+loops of a function with nested functions use the same ladder as the TIR path: a block with a
+`defer` is a block scope whose deferred bodies are LIR lists, and a branch out of it to a
+block's end is an exit to a rung for that block. Bodies with `with` or exits between frames
+still take the TIR path.
 `gamma lir` prints it, and the `lir` suite checks that every conformance program and
 example lowers to well-formed LIR with nothing left to TIR.
 

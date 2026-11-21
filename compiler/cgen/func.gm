@@ -703,7 +703,7 @@ end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
                 d := s.defers.items[k - 1]
                 guard: ?string = null
                 if d.is_err { guard = "gm_errdefer_runs(&F.h)" }
-                fg.defer_body(guard, d.body, true)
+                fg.defer_body(guard, d, true)
                 k -= 1
             }
         }
@@ -727,13 +727,13 @@ end_scope :: fn(fg: ^FnGen, s: Scope, fallthrough: bool) needs sema.Load {
 /// `guard` (a C condition) holds when there is one. `unwinding` is true when it runs during
 /// a non-local exit: the exit in progress is set aside while it runs, so the calls it makes
 /// return normally.
-defer_body :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
+defer_body :: fn(fg: ^FnGen, guard: ?string, d: Defer, unwinding: bool) needs sema.Load {
     saved := fg.set_aside_scopes()
-    fg.defer_body_inner(guard, body, unwinding)
+    fg.defer_body_inner(guard, d, unwinding)
     fg.restore_scopes(saved)
 }
 
-defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool) needs sema.Load {
+defer_body_inner :: fn(fg: ^FnGen, guard: ?string, d: Defer, unwinding: bool) needs sema.Load {
     saved_check := fg.no_check
     fg.no_check = true
     if g := guard {
@@ -745,7 +745,11 @@ defer_body_inner :: fn(fg: ^FnGen, guard: ?string, body: ^Expr, unwinding: bool)
     if unwinding { fg.line("gm_unwind gm_saved = gm_unw; gm_unw.kind = GM_NONE;") }
     // A defer body cannot fail to translate here if it translated before; errors are
     // reported where the defer statement is first seen.
-    _ = fg.expr(body)
+    if body := d.body {
+        _ = fg.expr(body)
+    } else if c := fg.lirc {
+        _ = c.lc_defer_list(d.lir)
+    }
     if unwinding { fg.line("gm_unw = gm_saved;") }
     fg.indent -= 1
     fg.line("}")
@@ -1092,7 +1096,7 @@ block :: fn(fg: ^FnGen, b: ^tir.Block) -> Unsup!string needs sema.Load {
     while k > 0 {
         k -= 1
         d := popped.defers.items[k]
-        if not d.is_err { fg.defer_body(null, d.body, false) }
+        if not d.is_err { fg.defer_body(null, d, false) }
     }
     fg.end_scope(popped, true)
     if r := result { return r }

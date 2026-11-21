@@ -31,7 +31,12 @@ has_nested :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
 /// Why the body of `f` (whose LIR is `func`) is not generated from LIR, or `null` if it is.
 lir_unsupported :: fn(g: ^Gen, f: u32, func: ^const lir.Func) -> ?string needs sema.Load {
     if func.escapes > 0 { return "an escape to TIR" }
-    if has_nested(g, f) { return "nested functions" }
+    // A nested function may leave a loop of this one with a value (into `result`).
+    if has_nested(g, f) {
+        for l in func.loops {
+            if l.result is not null { return "a loop with a value, in a function with nested functions" }
+        }
+    }
     for l in func.locals {
         if g.ty.is_vector(l.ty) { return "a vector local" }
     }
@@ -61,14 +66,10 @@ lir_inst_unsupported :: fn(g: ^Gen, func: ^const lir.Func, i: ^const lir.Inst) -
             .Int(_, _, _), .Float(_), .Bool, .Ptr => null
             _ => "a comparison of aggregates"
         }
-        .Call(_, callee, _) => {
-            if .Fn(c) := callee and g.prog.func(c).parent is not null { return "a call of a nested function" }
-            return null
-        }
+        .Call(_) => return null
         .Check(_), .Coerce(_), .Variant(_), .Wrap(_), .MakeSlice(_), .IsPresent(_) => return null
-        .Block(_, body), .Loop(_, body), .DebugOnly(body) => return lir_list_unsupported(g, func, body)
+        .Block(_, body), .Loop(_, body), .DebugOnly(body), .Defer(_, body) => return lir_list_unsupported(g, func, body)
         .If(_, a, b) => return lir_list_unsupported(g, func, a) else lir_list_unsupported(g, func, b)
-        .Defer(_) => return "defer"
         .Aggregate(d, _), .Fill(d, _) => {
             t := func.temps[usize(d)]
             if g.ty.bits_layout(t) is not null { return "a #bits value" }
@@ -78,8 +79,8 @@ lir_inst_unsupported :: fn(g: ^Gen, func: ^const lir.Func, i: ^const lir.Inst) -
         .TagIs(_) => return null
         .In(_), .BitsGet(_), .BitsSet(_) => return "a test of a value's parts"
         .Builtin(_, op, _) => return if lir_builtin(op) { null } else { "a builtin" }
-        .Write(_), .FnRef(_), .Template(_) => return null
-        .Closure(_), .HandlerRef(_) => return "a function or handler value"
+        .Write(_), .FnRef(_), .Template(_), .Closure(_) => return null
+        .HandlerRef(_) => return "a handler value"
         .With(_), .Install(_), .Exit(_), .Resume(_), .Cancel(_), .Tir(_) => return "effects or exits"
     }
 }
@@ -104,7 +105,8 @@ lir_value_unsupported :: fn(g: ^Gen, v: lir.Value) -> ?string needs sema.Load {
 }
 
 /// The state of translating one body.
-LirC :: struct {
+#allow("needless-pub")
+pub LirC :: struct {
     fg: ^FnGen
     f: ^const lir.Func
     /// The C expression of each temporary.
@@ -118,6 +120,10 @@ LirC :: struct {
     pending: List(u32)
     /// Whether the call just emitted wrote its result to `FnGen.dest_call_lir`.
     dest_taken: bool = false
+    /// Whether functions are nested in this one.
+    nested_fns: bool = false
+    /// The blocks being translated, innermost last.
+    open: List(OpenBlock)
 }
 
 /// A temporary not computed yet.
@@ -141,8 +147,102 @@ lir_body :: fn(fg: ^FnGen, func: ^const lir.Func) -> Unsup!() needs sema.Load {
     temps := make_fill(func.temps.len, "")!
     labels := list(string)
     for _ in 0..func.labels { labels.push(str.format("gm_lb{}", fg.fresh())!)! }
-    c := LirC(fg: fg, f: func, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, pending: list(u32))
-    try c.lc_list(func.body)
+    c := LirC(fg: fg, f: func, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock))
+    fg.lirc = &c
+    // The function's body is a block: its defers run when it returns.
+    fg.scopes.push(fg.block_scope())!
+    r := c.lc_list(func.body)
+    popped := fg.scopes.pop()?
+    try r
+    fg.end_scope(popped, true)
+    fg.lirc = null
+}
+
+/// A block being translated: its label and how many scopes enclosed it.
+OpenBlock :: struct {
+    label: u32
+    depth: usize
+}
+
+/// The label in `gm_unw` of an exit to the end of LIR block `l` (`Br` across a `defer`),
+/// apart from the labels of TIR's loops and `with`s.
+exit_label :: fn(l: u32) -> u32 => 0x4000_0000 + l
+
+/// Whether `insts` (at any depth) has a `Defer` and a `Br` to `l`: a branch to the end of
+/// block `l` that may cross a deferred statement, which needs a rung of the ladder.
+crosses_defer :: fn(insts: []const lir.Inst, l: u32) -> bool {
+    found := (defer_: false, br: false)
+    scan_defer_br(insts, l, &found)
+    return found.defer_ and found.br
+}
+
+scan_defer_br :: fn(xs: []const lir.Inst, l: u32, found: ^(defer_: bool, br: bool)) {
+    for x in xs {
+        match x.op {
+            .Defer(_) => { found.defer_ = true }
+            .Br(t), .BrIf(_, _, t) => if t is l { found.br = true }
+            .Block(_, b), .Loop(_, b), .DebugOnly(b) => scan_defer_br(b, l, found)
+            .If(_, a, b) => {
+                scan_defer_br(a, l, found)
+                scan_defer_br(b, l, found)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Translates the body of a deferred statement, which is emitted once per way out of its
+/// block: the labels it defines get new C names each time.
+lc_defer_list :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load {
+    c.lc_relabel(insts)
+    try c.lc_list(insts)
+}
+
+lc_relabel :: fn(c: ^LirC, xs: []const lir.Inst) needs Alloc {
+    for x in xs {
+        match x.op {
+            .Block(l, b), .Loop(l, b) => {
+                c.labels[usize(l)] = str.format("gm_lb{}", c.fg.fresh())!
+                c.lc_relabel(b)
+            }
+            .DebugOnly(b), .Defer(_, b) => c.lc_relabel(b)
+            .If(_, a, b) => {
+                c.lc_relabel(a)
+                c.lc_relabel(b)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether `insts` has a `Defer` directly in it.
+has_defer :: fn(insts: []const lir.Inst) -> bool {
+    for x in insts {
+        if x.op is .Defer(_) { return true }
+    }
+    return false
+}
+
+/// A jump to the end of LIR block `l`: through the ladder if it crosses deferred statements.
+lc_br :: fn(c: ^LirC, l: u32) needs sema.Load {
+    fg := c.fg
+    i := c.open.items.len
+    while i > 0 {
+        i -= 1
+        o := c.open.items[i]
+        if o.label is not l { continue }
+        crossing := false
+        for j in o.depth..fg.scopes.items.len {
+            s := &fg.scopes.items[j]
+            if s.kind is .Block and s.defers.items.len > 0 { crossing = true }
+        }
+        if crossing {
+            fg.start_exit(.Break, "(&F.h)", str.format("{}", exit_label(l))!, "0")
+            return ()
+        }
+        break
+    }
+    fg.linef("goto {};", c.labels[usize(l)])
 }
 
 lc_list :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load {
@@ -186,7 +286,7 @@ lc_call_dest :: fn(c: ^LirC, a: ^const lir.Inst, b: ^const lir.Inst) -> ?string 
     match b.op {
         .Return(?v) => {
             x := v else return null
-            if x is not .Temp(d) or not fg.g.ty.by_ref(fg.def.ret) or fg.def.ret is not t { return null }
+            if x is not .Temp(d) or not fg.g.ty.by_ref(fg.def.ret) or fg.def.ret is not t or not fg.no_defers() { return null }
             return str.format("(*({} *)gm_out)", fg.g.ty.cty(t))!
         }
         .Store(p, x) => {
@@ -643,6 +743,10 @@ lc_inst :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
                 c.temps[usize(d)] = code
             }
         }
+        .Closure(d, f) => {
+            fg.g.queue(f)
+            c.lc_set(d, str.format("((gm_closure){{(void *){}, (void *)&F.h, {}}})", fg.g.fn_name(f), fg.cx)!)
+        }
         .Template(d, tb) => { c.temps[usize(d)] = str.format("((void *)&{})", fg.g.template_table(tb))! }
         .Str(d, bytes, cstr) => {
             a := fg.g.static_bytes(bytes)
@@ -681,10 +785,52 @@ lc_inst :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
             }
         }
         .Block(l, body) => {
+            // The block a TIR loop's `break` leaves: in a function with nested functions,
+            // whose exits may target the loop, it has a rung of the ladder (`end_scope`).
+            scoped := false
+            if c.nested_fns {
+                for x in c.f.loops {
+                    if x.brk is l and x.cont is not l {
+                        fg.scopes.push(fg.loop_scope(x.label, c.labels[usize(x.brk)], c.labels[usize(x.cont)]))!
+                        scoped = true
+                    }
+                }
+            }
+            c.open.push(OpenBlock(label: l, depth: fg.scopes.items.len))!
+            // A branch to its end across a `defer` exits through the ladder to its rung.
+            target := crosses_defer(body, l)
+            if target { fg.scopes.push(fg.with_scope(exit_label(l), c.labels[usize(l)]))! }
+            defers := has_defer(body)
+            if defers { fg.scopes.push(fg.block_scope())! }
             fg.line("{")
-            try c.lc_nested(body)
+            r := c.lc_nested(body)
             fg.line("}")
+            if defers {
+                popped := fg.scopes.pop()?
+                // Leaving normally runs the plain defers (not the errdefers), last first.
+                k := popped.defers.items.len
+                while k > 0 {
+                    k -= 1
+                    d := popped.defers.items[k]
+                    if not d.is_err { fg.defer_body(null, d, false) }
+                }
+                fg.end_scope(popped, true)
+            }
+            if target {
+                popped := fg.scopes.pop()?
+                fg.end_scope(popped, true)
+            }
+            _ = c.open.pop()
+            try r
+            if scoped {
+                popped := fg.scopes.pop()?
+                fg.end_scope(popped, true)
+            }
             fg.label(c.labels[usize(l)])
+        }
+        .Defer(is_err, body) => {
+            top := &fg.scopes.items[fg.scopes.items.len - 1]
+            top.defers.push(Defer(is_err: is_err, body: null, lir: body))!
         }
         .Loop(_, body) => {
             fg.line("for (;;) {")
@@ -700,9 +846,30 @@ lc_inst :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
             }
             fg.line("}")
         }
-        .Br(l) => fg.linef("goto {};", c.labels[usize(l)])
-        .BrIf(cond, negated, l) => fg.linef("if ({}{}) goto {};", if negated { "!" } else { "" }, c.lc_val(cond), c.labels[usize(l)])
+        .Br(l) => c.lc_br(l)
+        .BrIf(cond, negated, l) => {
+            fg.linef("if ({}{}) {{", if negated { "!" } else { "" }, c.lc_val(cond))
+            fg.indent += 1
+            c.lc_br(l)
+            fg.indent -= 1
+            fg.line("}")
+        }
         .Return(?v) => {
+            if not fg.no_defers() {
+                // Through the ladder, which runs the deferred statements (the errdefers if
+                // the result is an error) and then returns `F.ret`.
+                if x := v {
+                    if fg.g.ty.by_ref(fg.def.ret) {
+                        fg.linef("memmove(&F.ret, {}, {});", c.lc_addr_of(x), fg.g.ty.size(fg.def.ret))
+                    } else {
+                        fg.linef("F.ret = {};", c.lc_val(x))
+                    }
+                }
+                is_err := "0"
+                if fg.g.ty.kind(fg.def.ret) is .Result(_) { is_err = fg.res_is_err(fg.def.ret, "((uint8_t *)&F.ret)") }
+                fg.start_exit(.Return, "(&F.h)", "0", is_err)
+                return ()
+            }
             if x := v and fg.g.ty.by_ref(fg.def.ret) {
                 // A large result is written to the caller's destination itself.
                 from := c.lc_addr_of(x)
