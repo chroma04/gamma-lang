@@ -1,62 +1,52 @@
-# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); CURRENT, P0–P3a + P4a done
+# 075 — A lowered IR under TIR ("LIR"): scope and plan (s79); DONE s83 (P0–P4; P5 off)
 
 User asks (after 074): "scope out the lowered IR", then "start on the plan with P0 …
 we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 first.
 
-## State after P4a (s82, user: "go ahead with the rest of P3 and P4")
-- cgen/lirc.gm: bodies from LIR when `Options.lir` (driver: env GAMMA_CGEN_LIR=1|report)
-  and `lir_unsupported` is null; else TIR, per function (gen_body in func.gm picks; extends
-  in_frame with false for synthetic locals; spec clones, split_runs (long bodies), -g and
-  Clause defs stay TIR). CI ubuntu job runs conformance/ examples/ selfhost/ with the flag.
-- Coverage (s82 end): conformance run + examples 11852/12108 bodies (clauses included now);
-  compiler self-build 9039/9284. Left (tests): with-on 68, vectors 34, atomics ~67 (atomic()
-  still takes TIR args), @fiber 24, In/Bits 34, f16 consts 5. Self-build left: In/Bits
-  233 (patterns.gm in_expr, bits.gm take TIR), builtins ~80.
-- with (no `on`): install list emits gm_node chain (Installing stack; Lit = env &F.h, hctx
-  outer cx; Value = hval env/cx; Decl as decl_table); body under with_scope(tir label, weN)
-  + block scope if defers; result: `F.wN = r` at the normal-end label, `r = F.wN` after weN
-  (clauses write F.wN). A Br out of the body across a defer gets its own with_scope rung
-  (exit_label) OUTSIDE the with scope; rungs emitted inner first (order bug fixed).
-  Exit/Resume/Cancel = lc_exit/fiber.gm logic with values. Clause defs now go through LIR.
-- Sys builtins: sys_values(t, sop, tys, vals); alloc_tag_values. 128-bit consts emitted;
-  Bin `<` on blobs via less_fn/eq_fn.
-- Measured again (s82 end): LIR-built compiler `check compiler` 2.0127e9 vs 1.9979e9 Ir
-  (+0.74%), C text −0.3%. Fast (clang) executables, LIR vs TIR Ir: nbody +0.01%,
-  mandelbrot −0.07, life +1.07, julia −4.2, sha256sum −1.8, wordfreq −0.7 (short runs).
-- atomics now value-based inside builtin_values (atomic(span, t, op, tys, vals)).
-- Nested-fn parents: the brk Block of each TIR loop gets fg.loop_scope (rung tests the TIR
-  label → goto brk/cont C labels); Closure op = gm_closure with &F.h.
-- defer: function body and each Block with a direct Defer get fg.block_scope; Defer pushes
-  fngen Defer(body: null, lir: insts) (Defer.body is now ?^Expr; defer_body runs LIR
-  bodies through fg.lirc.lc_defer_list, which gives inner labels fresh C names per copy);
-  normal block end runs plain defers; Br(l) across a defer = start_exit(.Break, label
-  0x4000_0000+l) to a with_scope rung pushed on blocks where crosses_defer; Return with
-  defers pending = F.ret + start_exit(.Return, is_err from res_is_err).
-- Gates passed: full tools/test.sh with the flag; LIR-built compiler emits byte-identical
-  C to the TIR-built one; default-path C unchanged vs main (refactors are pure).
-- Shared helpers now take values not ^Expr: int_binary(span,t,..), unary_value,
-  coerce_value, builtin_values (atomics stay in `builtin`), call_fn(rt, e?, f, vals),
-  perform(span,..), write_values/write_table_values + WriteTo sink, global_addr,
-  convert/from_tag/bit_count/pow(span,t,..), rotate/black_box(t,..).
-- lirc design: temps → C temps; labels → gm_lbN + goto; Loop = for(;;); lazies (Lazy.Load
-  of by_ref types, Lazy.Variant) computed on first value use, flushed before any
-  non-`reads_only` op (except the value a Store/Return reads) and before nested lists,
-  dropped at list end; Eq with a lazy variant = tag (+payload) compare in place; Store of
-  a lazy load = memmove; Return of large = memmove to gm_out + goto gm_fdone; Call(d) then
-  Return(d)/Store(local,d) = call writes the destination (fg.dest_call_lir → call_dest;
-  foreign calls don't take it: `dest_taken`). Store(p, Uninit) = memset in place (a 20 KB
-  `---` array copied through a temp overflowed a fiber stack).
-- Measured (callgrind `check compiler`, Debug builds of the compiler by the same
-  builder): LIR-built 2.002e9 vs TIR-built 1.988e9 Ir (+0.7%; was +11.8% before lazies,
-  +3.75% before result destinations); the rest is mostly gcc inlining shifts (`inline`
-  hint at ≤64 names; LIR bodies use more names). C text −0.5%. Fast/clang not measured.
-- Next for P4: with-on (with_on outlines the body: needs an LIR sub-function), @fiber,
-  In/Bits, vectors; outline/chain on LIR statement runs (long bodies); spec clones
-  (P3c); -g line directives; measure Fast/clang; then default on, delete TIR body code,
-  refresh seed. P3b (borrow/purity) is still computed on TIR for the prologue — port
-  when the TIR path goes.
-- Lowering wart seen in C: `for i in` binds through a match block with a `no-arm` trap
-  after it (block{block{…;br}; no-arm}); harmless, could lower irrefutable bindings flat.
+## State after P4 (s83, user: "finish up P3 and P4"): PLAN DONE
+- cgen translates EVERY body from LIR (cgen/lirc.gm); TIR body translation deleted
+  (−2,500 lines: expr/stmt/pattern/chain walkers, chain.gm, GAMMA_CGEN_LIR, Defer.body,
+  Observed/DestCall/SpecCall/Spine, read_during_build). `lir_check` turns a leftover
+  `Tir` (generic leftovers only) into an Unsup error. Seed refreshed (2f4e4f7).
+- Added in s83: In/BitsGet/BitsSet/#bits Aggregate (bits_get/bits_set/bits_pack,
+  in_values); vectors (vector_*_value, vector_builtin_values; shuffle lanes from Word bits);
+  f16 consts (ratio.f16_value, shared with interp); @fiber (fiber_values); @asm (Str bytes
+  kept per temp: LirC.str_bytes); `with … on` (lc_with_on + lc_outline_body: detached C fn,
+  `#define F (*gm_Fp)`, outline_level on OpenBlock; Br out of it = start_exit to
+  exit_label rung, crosses_defer also counts Br inside an `on` body; Return in it via
+  ladder; reads_outer_temp check). Synthetic locals live in the frame when `lir_framed`
+  (fiber with, outlines, debug, -g); gen_fn adds them to the frame struct.
+- Spec clones from LIR; LIR With picks the clone like TIR's specializable: single_handler,
+  spec_candidate (last top-level Call(.Fn) followed only by Store/Br/Move/Load/Return),
+  FnGen.spec_next; nested_spec_of for Install(.Lit) tables.
+- Long lists (> LONG_LIST 256 insts incl. nested): lc_segments: SEG_WEIGHT 64 C blocks,
+  temps read past a segment hoisted (`gm_hN` declared before, copied after def); in
+  split_runs functions (long_body + all locals in frame), clean runs (no live temp at
+  either end, no outer temp read) of ≥ LIR_MIN_RUN 60 move to helpers via outline_code
+  (LIR_RUN_WEIGHT 600); an instruction heavier than a run stays inline (its lists split);
+  no nested helpers (jump(label, null) can't express LIR labels). `outlines` = long_body
+  and has_long_list(LIR). lir_of memoizes the last function (gen_fn + gen_body).
+- -g: lc_line emits #line per instruction when the line changes (reset around helpers).
+- Large by_ref args: whole-local Load of by_ref is lazy; Call/Write args read in place
+  (lc_arg) when the temp is read once (temp_uses); kept lazies dropped after. Without it a
+  2 KiB-record recursion used 6217 temp bytes vs TIR 83 (fiber overflow test); now 73.
+- Constant args from static storage ported (fold_const_args/lir_const_into/
+  site_const_storage); test native_build constant_large_arguments_come_from_static_storage.
+- Measured s83 (callgrind, Fast clang, TIR vs LIR before deletion): sha256sum −7.2%,
+  perform −5.6, julia −4.2, safe_map_insert −4.0, wordfreq −1.2, others ±0.4. Compiler
+  built by LIR: `check compiler` +0.84% Ir (Debug -Og). emit-c compiler: lowering = 5.3%
+  of 6.1e9 Ir, lir_body 35%.
+- P3 closed: (a) done s82. (b) borrow/purity/steady and (d) may-exit/call-depth/captured
+  STAY ON TIR (decided): they are whole-program; LIR is lowered per function as emitted,
+  so porting = lowering everything twice (+~5% build) or holding all LIR (memory), with
+  no change to the C. Revisit only if TIR bodies are dropped after checking. (c) cgen spec
+  ported (above); VM spec DROPPED with numbers: perform costs a call + ~41 Ir (perform.gm
+  118.9M vs call.gm 110.7M Ir incl. 31.9M startup, 200k ops); iterate ~613 Ir/element,
+  mostly vm_push; specialization keeps the clause call, so ≤ ~7%; per-site cache
+  (vm_perform_site) already skips the lookup.
+- Possible follow-ups (not planned): statement-level C blocks for stack reuse in short
+  lists; build aggregates in place (cgen "build results in place" in next.md); nested
+  helpers in split functions; lower irrefutable `for` bindings flat.
 
 ## State after P3a (s82)
 - compiler/lir/checks.gm `elide_checks` (called at the end of `lower`, only when
@@ -77,11 +67,8 @@ we're probably not going to do P5". P5 (LLVM emitter) is OFF the plan. Read 074 
   with −1.6, nbody −3.0, julia −0.9, `for x in xs` micro −2.75, indexed loop micro −0.5;
   life/mandelbrot/sha256sum ±0.1; compile-heavy wordfreq +0.1, json_query +0.4 (pass cost:
   ~26k Ir per function with checks; most is the 224-byte Inst walk).
-- P3 left: (b) borrow/purity/steady and (d) may-exit only matter for cgen → do with P4;
-  (c) handler specialization for the VM (`for` over an iterator calls the clause directly)
-  is the remaining VM win, bigger work. Range checks (`xs[i..j]`) not elided yet. The
-  irrefutable `for` binding lowers as `block{block{…; br}; no-arm}` (a jump per iteration
-  in the VM?) — check the selector before changing lowering.
+- Range checks (`xs[i..j]`) not elided yet. The irrefutable `for` binding lowers as
+  `block{block{…; br}; no-arm}`; check the selector before changing lowering.
 
 ## Earlier states (details in git log of s79–s81)
 - P1+P2 (s81): interp compiles every body from LIR (interp/vm_lir.gm + vm_gen.gm); tree

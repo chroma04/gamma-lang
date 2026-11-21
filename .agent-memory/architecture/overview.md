@@ -15,7 +15,8 @@ The full, maintained map is docs/architecture.md (a test requires it to name eve
   fiber.gm host coroutines (decisions/051, 064, 067, 075).
 - cgen/: names.gm stable C names (`gm_f_<name>_<hash>`), units.gm split by owning file
   (+ the n-way split for `--emit-c`), shared inline small fns (SHARED_SMALL_BYTES),
-  outline.gm/chain.gm for huge functions (decisions/048, 065, 068, 069).
+  bodies from LIR in lirc.gm (long lists: lc_segments C blocks + outline.gm helpers;
+  decisions/048, 065, 068, 069, 075).
 - Tools: pkg/ testing/ fmt/ doc/ lint/ linting/ fix/ repl/ ide/ lsp/.
   - `gamma lsp` = lsp/supervisor.gm, which spawns `gamma lsp --worker` (the real server,
     lsp.command) and restarts it after a trap; test hook GAMMA_LSP_DEBUG_TRAP +

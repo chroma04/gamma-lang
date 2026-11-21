@@ -1,32 +1,28 @@
 # Gamma: agent memory INDEX (read first)
 
 ## State (2026-11-21)
-- `main` = PRs #1–#132 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
+- `main` = PRs #1–#139 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
   commit). `## Unreleased` in CHANGELOG.md started in s77.
   Tag `rust-reference-final` marks the last Rust implementation.
 - The compiler is self-hosted: `compiler/` (Gamma) builds `gamma` from the C seed in
   `bootstrap/seed/` (= the build's C units; refresh with `tools/refresh-seed.sh` after
-  cgen changes or new core intrinsics). Back ends: interpreter (`--backend=interp`,
-  register VM + tree fallback) and C (gcc/clang, MinGW, Fil-C Safe, wasm32-wasi,
-  freestanding). `run` defaults to C.
+  cgen changes or new core intrinsics). Back ends, both translating function bodies from
+  LIR (compiler/lir): interpreter (`--backend=interp`, register VM, interp/vm_lir.gm) and
+  C (cgen/lirc.gm; gcc/clang, MinGW, Fil-C Safe, wasm32-wasi, freestanding). `run`
+  defaults to C. Debug a lowering problem with `gamma lir FILE`.
 - Tests: `tools/test.sh` → `tests/harness/` suites. CI (ci.yml): every job runs
   bootstrap/build.sh then tools/test.sh (subsets for the Safe, s390x, aarch64, WASI
   lanes; Windows via cross-built gamma.exe + harness.exe), plus fuzz smoke, difftest,
   benchmarks, editors.
-- Last sessions: s76 0.3.0 prep; s77 perf round 10 (072: every remaining perf item
-  measured); s78 shared template bodies (073, check/share.gm); s79 LLVM back end and
-  LLVM JIT re-evaluated with measurements (074): stay on C, wins listed in next.md §2;
-  cheap C wins done (clang for optimized builds, ThinLTO, union switch hint); lowered IR
-  (075) P0 done: compiler/lir + `gamma lir` + suite `lir`; s80 P1a; s81 P1+P2: the
-  interp compiles every body from LIR (vm_lir.gm + vm_gen.gm), tree evaluator, code.gm
-  and vm_compile deleted; interp 5–13% fewer Ir on the benches. s82 P3a: lir/checks.gm
-  removes proven bounds checks; VM StepLd/StepSt; P4a cgen/lirc.gm (GAMMA_CGEN_LIR=1).
+- Last sessions: s77 perf round 10 (072); s78 shared template bodies (073); s79 LLVM
+  re-evaluated (074): stay on C; s79–s83 lowered IR (075), plan DONE: s81 interp from
+  LIR (tree evaluator deleted), s82 bounds-check elimination, s83 cgen from LIR for every
+  body, TIR body translation deleted, seed refreshed; cgen's whole-program analyses
+  (borrow.gm, may-exit, call depth) deliberately stay on TIR (075).
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
 ## Next steps
-0. LIR plan (decisions/075 "State after P4a"): grow lirc.gm coverage (nested-fn parents,
-   defer, with/exits, long bodies, spec clones), then default on + delete TIR body code.
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
    gaps), testing, language. Performance §2 now lists only structural changes.
 2. roadmap/bugs.md: small open bugs, good for a short session.
@@ -44,7 +40,7 @@
                   platforms.md (clang, aarch64, s390x, Windows, WASI, Fil-C) ·
                   codegen.md (generated C, runtime, host stack) ·
                   parallel-agents.md (worktree workers: stale bases, limits)
-- history.md      compact project history, s1–s82
+- history.md      compact project history, s1–s83
 
 ## Conventions in Gamma code (quick reminders; the guide is the reference)
 - Effects: `fn() -> T needs Alloc + Out`; effect-set args `Sched(Out + Clock)`; pure

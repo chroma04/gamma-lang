@@ -12,7 +12,7 @@
 - Newer clang: `apt-get install clang-19 clang-20`. Clang ≥19 (Apple ≥17) is ~cubic on long
   op chains: functions with > 2,000 names get `optnone,noinline` (GM_LONG_FN).
 - C compilers are superlinear in the size of ONE function: keep generated functions small
-  (cgen outlines statement runs and chains; decisions/031).
+  (lirc.gm segments long LIR lists into C blocks and, in long functions, helpers; 075).
 - macOS: `qsort_r` argument order and qsort comparison order differ from glibc; tests must
   not depend on either. gcc may CSE pure recursive calls (fib is no benchmark).
 - gcc `-fstack-clash-protection` probes fault before GM_STACK_CHECK → SIGSEGV handler.

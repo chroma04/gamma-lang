@@ -47,3 +47,8 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
 - s82: dead Machine.temps removed; LIR P3a: lir/checks.gm bounds-check elimination +
   VM StepLd/StepSt (benches −0.2..−3%); P4a: cgen/lirc.gm, C bodies from LIR behind
   GAMMA_CGEN_LIR (90% of bodies, self-build identical, +0.7% Ir).
+- s83: LIR P4 done: cgen translates every body from LIR (in/#bits, vectors, f16, @fiber,
+  @asm, with-on as detached C fn, spec clones, long lists in segments/helpers, -g lines,
+  large args in place, const args static); TIR body code deleted (−2.5k lines); seed
+  refreshed. Fast benches equal or −1..−7%. P3 closed: analyses stay on TIR, VM handler
+  specialization measured (≤7% on iterate) and dropped.

@@ -37,6 +37,11 @@
 - Find which gcc pass breaks generated C: `-fno-<pass>` one by one, then bisect functions
   with `__attribute__((optimize("no-…")))`.
 
+## Seed refresh
+- `tools/refresh-seed.sh` needs compiler/lib/runtime committed. To check the result,
+  run `bootstrap/build.sh` FIRST (gamma0 must come from the new seed), then
+  `bootstrap/verify.sh`; with the old gamma0 it reports every unit as different.
+
 ## Git / GitHub
 - No `gh` CLI for PRs: use the GitHub MCP tools. CI job logs: `get_job_logs` with
   `tail_lines` (the download-URL form is 403 here).

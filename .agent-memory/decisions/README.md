@@ -20,13 +20,13 @@ Status words: CURRENT (holds today), PARTLY (read with the later one), HISTORY (
 ## Compiler architecture
 - 002 pipeline · 074 LLVM back end / LLVM JIT revisited with measurements: stay on C;
   cheap C-path wins; shared lowered IR is the structural option · 075 lowered IR (LIR)
-  under TIR: design, phases, state after P3a (CURRENT) · 043 self-hosting plan (HISTORY) · 046 compile-time
+  under TIR: design, phases; DONE s83 (both back ends from LIR; analyses left on TIR) · 043 self-hosting plan (HISTORY) · 046 compile-time
   evaluator (structured values) · 052 retiring Rust, C seed bootstrap · 066 fast bootstrap
   (seed = the build's units)
 - C back end: 008 design · 009 FFI/#global/callconv · 010 fibers · 011 @stack_size ·
   012 handler specialization + local exits · 013 debug info (`-g`) · 014 cached runtime
   object · 015 toolchain from the environment, cross targets · 016 exits/big values ·
-  017 Safe mode via Fil-C · 031 statement-run outlining · 034 wasm32-wasi ·
+  017 Safe mode via Fil-C · 031 statement-run outlining (now LIR runs, 075) · 034 wasm32-wasi ·
   048 gammac C back end · 050 coverage · 065 incremental C units (stable names, cache)
 - Interpreter: 051 gammac interpreter (PARTLY: memory model, fibers, threads still hold) ·
   056 lowered code + register machine (SUPERSEDED s81: code.gm/vm_compile/tree evaluator
