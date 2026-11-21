@@ -19,18 +19,14 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
   gm_fs_open_dir) are exercised only by Windows CI.
 
 ## 2. Performance (measure first; callgrind recipe in docs/contributing.md)
-- Compiler: decisions/069 "Not done" (regrow_raw tail, small memcpy in extend, lexer
-  ~430 Ir/token) and 068 (parser levels copy `Abort!ast.Expr` 4–5x; a cgen pass building
-  results in place would help all generated code). Release binaries: single-unit
-  (`GAMMA_C_UNITS=1`) `--mode=fast` build not adopted (cannot test the macOS lane here).
-- Interpreter: decisions/064 "Not done" + 067 "Open candidates": push cost (~190 Ir),
-  dispatch (~19 Ir/instr; ip pointer, superinstructions), generic builtins (hash, heap),
-  stack arena for addressed locals, lazy frames for defer/with bodies; `with … on` and
-  value loops still run on the tree evaluator.
-- Generated C size: map growth per (K,V), sort per T (decisions/058); smaller Debug C
-  (overflow traps and backtrace sites ~8% each of gcc time).
-- Safe mode new/destroy ≈ 3.6x Checked (Fil-C malloc/free 3.7x glibc; indirect clause
-  calls; decisions/032).
+s77 (decisions/072) measured every item of the old list: kept the cheap wins, closed the
+rest with numbers. What is left needs a structural change; do it only if asked:
+- Interp: push without copying constants (consts as immediates in Bc) and without the
+  frame memset (needs proof registers are written before read); `with … on` and value
+  loops still run on the tree evaluator; `with` re-resolves its perform site per ctx.
+- cgen: build results in place (068: `Abort!ast.Expr` copied 2–3x per parser level).
+- Generated C: `str.format` instances are 14% of the compiler's C (pain point "template
+  code size", §4 below).
 
 ## 3. Testing and robustness
 - Fuzzing: more differential coverage (tools/difftest); tree-sitter as a second parser.

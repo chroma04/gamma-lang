@@ -4,6 +4,23 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
+## Unreleased
+
+### Tooling
+
+- **The interpreter is faster on hash maps, allocation and 128-bit integers**: `@hash` of
+  an integer, comparisons and shifts of 128-bit integers, signed 128-bit division,
+  widening to and truncating from 128 bits, and string literals no longer leave the
+  register machine's fast path, and a Debug run no longer formats the call site of every
+  allocation (it does so only to report a mismatched `free`). Measured in instructions:
+  inserts and lookups in a `HashMap` about 20% fewer, `new` and `destroy` 30% fewer, a
+  number-theory program on `u128` 31% fewer.
+- **The compiler checks large `match`es faster**: the exhaustiveness check finds the
+  variants that no arm covers by index instead of comparing every pair.
+- **Smaller generated C**: every hash map type shares one growth function (the compiler's
+  own C is 0.9% smaller), and Debug builds name the file of each call site through the
+  static string trap reports already use instead of repeating its path.
+
 ## 0.3.0 - 2026-11-21
 
 This release makes builds, the compiler and the interpreter much faster (incremental

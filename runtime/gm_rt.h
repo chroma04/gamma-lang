@@ -335,6 +335,8 @@ typedef struct gm_bt {
     const char *file;
     uint32_t line, col;
 } gm_bt;
+/* Records in the gm_bt `b` the location of the call about to be made. */
+#define GM_BT_AT(b, f, l, c) ((b).file = (f), (b).line = (l), (b).col = (c))
 GM_API_VAR GM_TLS gm_bt *gm_bt_top;
 
 /* Stops the program: flushes stdout, writes "trap: <msg>\n  at <file>:<line>:<col>\n" to

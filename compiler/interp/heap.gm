@@ -51,15 +51,20 @@ memory_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, args: []^N
             p := m.ptr_of(v[0])
             owner := m.ptr_of(v[1])
             vt := m.ptr_of(v[2])
-            file := try m.read_string(span, v[3])
-            site := str.format("{}:{}:{}", file, m.get_u64(v[4]), m.get_u64(v[5]))!
+            file := m.slice_parts(v[3])
+            line := m.get_u64(v[4])
+            column := m.get_u64(v[5])
             if op is .AllocTag {
-                m.alloc_tags.put(p, AllocTag(owner: owner, vt: vt, site: site))!
+                m.alloc_tags.put(p, AllocTag(owner: owner, vt: vt, file: (ptr: file.ptr, len: file.len), line: line, column: column))!
                 return ()
             }
             tag := m.alloc_tags.get(p) else return ()
             _ = m.alloc_tags.remove(p)
-            if tag.owner is not owner or tag.vt is not vt { return !m.trap(span, str.format("memory allocated at {} is freed at {} through a different allocator", tag.site, site)!) }
+            if tag.owner is not owner or tag.vt is not vt {
+                at := try m.tag_site(span, tag.file, tag.line, tag.column)
+                here := try m.tag_site(span, (ptr: file.ptr, len: file.len), line, column)
+                return !m.trap(span, str.format("memory allocated at {} is freed at {} through a different allocator", at, here)!)
+            }
         }
         .AtomicLoad, .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileLoad, .VolatileStore => {
             addr := m.ptr_of(v[0])
@@ -139,4 +144,10 @@ memory_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, args: []^N
         }
         _ => return !m.trap(span, "internal error: not a memory builtin")
     }
+}
+
+/// `file:line:column` of an allocation tag, the file name read from the program's memory.
+tag_site :: fn(m: ^Machine, span: source.Span, file: (ptr: u64, len: u64), line: u64, column: u64) -> Flow!string needs Alloc {
+    name := if file.len is 0 { "" } else { m.mem.read(file.ptr, file.len, 1) else e => return !m.mem_trap(span, e) }
+    return str.format("{}:{}:{}", name, line, column)!
 }

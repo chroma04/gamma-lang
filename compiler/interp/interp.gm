@@ -301,10 +301,14 @@ host_write :: fn(m: ^Machine, fd: u32, data: []const u8) needs Alloc + Err + Out
     if fd is 2 { Err.write(shown) } else { Out.write(shown) }
 }
 
+/// The allocator of a live heap block in a Debug run, and the call site that allocated
+/// it: the file name stays in the program's memory (a string literal) until a trap shows it.
 AllocTag :: struct {
     owner: u64
     vt: u64
-    site: string
+    file: (ptr: u64, len: u64)
+    line: u64
+    column: u64
 }
 
 machine :: fn(p: ^Prog, mode: Mode, args: []const string) -> Machine needs Alloc {

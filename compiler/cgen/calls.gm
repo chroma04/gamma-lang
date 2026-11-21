@@ -143,12 +143,7 @@ arg_may_overlap :: fn(a: ^Expr, obs: Observed, borrows: bool) -> bool {
 /// In Debug builds, records `span` as the location of the call about to be made, for
 /// backtraces.
 call_site :: fn(fg: ^FnGen, span: source.Span) needs sema.Load {
-    if fg.g.opts.debug and span is not source.DUMMY {
-        f := fg.g.prog.s.l.sm.file(span.file)
-        lc := f.line_col(span.lo)
-        file := c_string(f.path)
-        fg.linef("B.file = {}; B.line = {}; B.col = {};", file, lc.line, lc.col)
-    }
+    if fg.g.opts.debug and span is not source.DUMMY { fg.linef("GM_BT_AT(B, {});", fg.g.src_loc(span)) }
 }
 
 /// The C function pointer type of a Gamma function returning `ret`.
