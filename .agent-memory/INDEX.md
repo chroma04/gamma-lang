@@ -14,7 +14,8 @@
   lanes; Windows via cross-built gamma.exe + harness.exe), plus fuzz smoke, difftest,
   benchmarks, editors.
 - Last sessions: s76 0.3.0 prep; s77 perf round 10 (072: every remaining perf item
-  measured); s78 shared template bodies (073, check/share.gm).
+  measured); s78 shared template bodies (073, check/share.gm); s79 LLVM back end and
+  LLVM JIT re-evaluated with measurements (074): stay on C, wins listed in next.md §2.
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 

@@ -51,6 +51,21 @@ passing* and *exit flags* (spec Appendix D), which are plain C. C is also what m
 bootstrap seed possible: the compiler's own generated C, compiled by any C compiler, is the
 compiler.
 
+Emitting LLVM IR directly was measured against this and not adopted. With Clang, the C
+already becomes the IR a direct emitter would write: checked arithmetic becomes
+`llvm.*.with.overflow` and a branch to a cold trap, loops over `0..a.len` lose their bounds
+checks, values held as byte structs are split into registers, and Fast builds vectorize.
+Checked loops do not vectorize, but that follows from traps being precise (§18.5) and holds
+in any back end. What direct IR would save is Clang's front end: about a third of the time
+of compiling the compiler's largest units at `-O2` at most, and 18–45% at `-O0`. For most of
+the facts the back end knows and could pass to the optimizer (pointers are never null, a
+result destination does not overlap what the callee reads, pure functions), GNU C has
+attributes too. One fact IR could carry and C cannot, `dereferenceable`, would be unsound,
+since a `^T` may dangle as long as it is not accessed (§18.4). Optimizing all of a program
+as one module, as a direct emitter would, gave 8% fewer instructions on the compiler (measured
+with ThinLTO over its C units). Against these gains stands a second native code generator,
+since the C back end stays for the seed, gcc, MinGW and Fil-C.
+
 ### Demand-driven semantic analysis
 
 Type checking and compile-time evaluation depend on each other: checking `buf: [BLOCK * 2]u8`
