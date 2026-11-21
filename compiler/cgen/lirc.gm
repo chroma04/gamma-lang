@@ -89,6 +89,35 @@ lir_builtin :: fn(op: tir.Builtin) -> bool => match op {
     _ => false
 }
 
+/// For each temporary of `func`: the lvalue in static storage of a large constant argument
+/// of a direct call (`constarg.gm`), `""` for a part of one, or `null`.
+fold_const_args :: fn(fg: ^FnGen, func: ^const lir.Func) -> []?string needs sema.Load {
+    g := fg.g
+    out := make_fill(T: ?string, func.temps.len, null)!
+    defs := make_fill(T: ?^const lir.Inst, func.temps.len, null)!
+    calls := list(^const lir.Inst)
+    visit_insts(func.body, fn(i: ^const lir.Inst) {
+        if d := lir.dst_of(&i.op) { defs[usize(d)] = i }
+        if i.op is .Call(_, .Fn(_), _) { calls.push(i)! }
+    })
+    uses := temp_uses(func)
+    for i in calls.items {
+        .Call(_, _, args) := i.op else continue
+        for a in args {
+            .Temp(t) := a else continue
+            ty := func.temps[usize(t)]
+            if not g.ty.by_ref(ty) or out[usize(t)] is not null { continue }
+            if defs[usize(t)] is null or not (defs[usize(t)]?.op is .Aggregate(_)) { continue }
+            sc := new_site_const(g, ty)
+            parts := list(u32)
+            if not g.lir_const_into(func, defs, uses, a, 0, &sc, &parts) { continue }
+            for p in parts.items { out[usize(p)] = "" }
+            out[usize(t)] = str.format("(*({} *){})", g.ty.cty(ty), g.site_const_storage(sc))!
+        }
+    }
+    return out
+}
+
 /// How many times each temporary of `func` is read.
 temp_uses :: fn(func: ^const lir.Func) -> []u32 needs Alloc {
     uses := make_fill(func.temps.len, u32(0))!
@@ -191,6 +220,10 @@ pub LirC :: struct {
     last_line: string = ""
     /// How many times each temporary is read.
     uses: []u32
+    /// The temporaries that are large constant arguments of calls, passed from static
+    /// storage (`constarg.gm`): the lvalue there, or `""` for a part of such an argument.
+    /// Neither is built.
+    folded: []?string
 }
 
 /// A call of a `with`'s body that runs a clone specialized for the `with`'s handler.
@@ -233,7 +266,8 @@ lir_body :: fn(fg: ^FnGen, func: ^const lir.Func) -> Unsup!() needs sema.Load {
     temps := make_fill(func.temps.len, "")!
     labels := list(string)
     for _ in 0..func.labels { labels.push(str.format("gm_lb{}", fg.fresh())!)! }
-    c := LirC(fg: fg, f: func, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, str_bytes: make_fill(T: ?[]const u8, func.temps.len, null)!, uses: temp_uses(func), pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock), installing: list(Installing))
+    folded := fold_const_args(fg, func)
+    c := LirC(fg: fg, f: func, folded: folded, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, str_bytes: make_fill(T: ?[]const u8, func.temps.len, null)!, uses: temp_uses(func), pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock), installing: list(Installing))
     fg.lirc = &c
     // The function's body is a block: its defers run when it returns.
     fg.scopes.push(fg.block_scope())!
@@ -910,6 +944,12 @@ lc_inst :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
 lc_op :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
     fg := c.fg
     span := i.span
+    if d := lir.dst_of(&i.op) {
+        if lv := c.folded[usize(d)] {
+            c.temps[usize(d)] = lv
+            return ()
+        }
+    }
     match i.op {
         .Move(d, v) => c.lc_set(d, c.lc_val(v))
         .Load(d, p) => {
