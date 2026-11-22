@@ -27,6 +27,11 @@ them only with a profile that shows them.
   examples/conformance programs pass through it), manifest, archive.) Tree-sitter as a
   second parser: done s84 (CI editors job parses 300 difftest programs per run; 2,200 seeds
   checked locally, all clean).
+- ASan lane (weekly schedule): first annotate fiber switches in runtime/gm_rt.c
+  (`__sanitizer_start_switch_fiber`/`__sanitizer_finish_switch_fiber` under
+  `__has_feature(address_sanitizer)`/`__SANITIZE_ADDRESS__`), else heap blocks used as fiber
+  stacks give false reports (s86: example2_heap_fibers). Stack-overflow and huge-alloc tests
+  need `//! ubsan: skip`-like skips or allocator_may_return_null=1. UBSan lane: done s86.
 - Editors (need a desktop, the user's): Zed extension untried in real Zed; Emacs mode
   tested in batch only (CI).
 

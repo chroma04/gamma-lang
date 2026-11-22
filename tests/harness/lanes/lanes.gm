@@ -1,7 +1,8 @@
 //! The conformance `run` tests built by the compiler under test in a lane other than the
 //! host's own: `GAMMA_TEST_LANE` names it, `safe` (Safe builds with Fil-C), `s390x`
 //! (big-endian) or `aarch64` (cross-compiled for Linux and run under qemu-user), or `wasi`
-//! (WebAssembly, run under Wasmtime). Each program must give the expected output and exit
+//! (WebAssembly, run under Wasmtime), or `ubsan` (the host's C compiler with the undefined
+//! behavior sanitizer, which stops the program at the first report). Each program must give the expected output and exit
 //! status. CI runs this where the lane's tools are installed; without `GAMMA_TEST_LANE` the
 //! suite has no tests.
 
@@ -73,9 +74,21 @@ lane :: fn(t: ^kit.T, host_arch: string) -> ?Lane needs Alloc + Env + Fs {
             arch: "wasm32", endian: "little", os: "wasi", ptr_bits: 32,
             lacks: dupe([_]string("f16", "threads", "sockets"))!,
         )
+        // The C the compiler generates, and the runtime, must have no undefined behavior in
+        // any build mode: Fast builds leave overflow unspecified, not undefined.
+        "ubsan" => Lane(
+            name: name,
+            args: empty_slice(string),
+            env: dupe([_]string(str.format("CFLAGS={}", UBSAN)!, str.format("LDFLAGS={}", UBSAN)!))!,
+            arch: host_arch, endian: "little", os: "unix", ptr_bits: 64,
+            lacks: empty_slice(string),
+        )
         _ => null
     }
 }
+
+/// The C compiler options of the `ubsan` lane.
+UBSAN :: "-fsanitize=undefined -fno-sanitize-recover=undefined"
 
 wasi_tmp :: fn(t: ^kit.T) -> string needs Alloc + Fs {
     dir := kit.join(t.cfg.tmp, "lanes-wasi-tmp")
@@ -85,7 +98,7 @@ wasi_tmp :: fn(t: ^kit.T) -> string needs Alloc + Fs {
 
 lane_finds_tests :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     name := Env.var("GAMMA_TEST_LANE") else ""
-    _ = lane(t, t.cfg.arch) else return !t.fail("unknown GAMMA_TEST_LANE `{}` (safe, s390x, aarch64 or wasi)", name)
+    _ = lane(t, t.cfg.arch) else return !t.fail("unknown GAMMA_TEST_LANE `{}` (safe, s390x, aarch64, wasi or ubsan)", name)
     n := str.parse_int(usize, t.param) else 0
     try t.check(n > 300, "only {} run tests found", n)
     return ()
@@ -126,6 +139,7 @@ run_in_lane :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     } else if mode is "safe" {
         return !t.skip("Safe mode")
     }
+    if ln.name is "ubsan" and exp.ubsan_skip { return !t.skip("ubsan: skip") }
     root := p
     if is_dir and fs.exists(kit.join(p, "main")) { root = kit.join(p, "main") }
     base := p[0..p.len - path.extension(p).len - 1]

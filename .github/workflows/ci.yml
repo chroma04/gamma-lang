@@ -290,7 +290,28 @@ jobs:
           GAMMA_TEST_SAFE=1 tools/test.sh conformance/ native_build/
           GAMMA_TEST_LANE=safe tools/test.sh lanes/
 
-  s390x:
+  ubsan:
+    # The undefined behavior sanitizer over the generated C and the runtime: every run
+    # test in every build mode, with gcc and with Clang (which also checks the types of
+    # calls through function pointers), and the runtime's own tests. A report stops the
+    # program, so the test fails.
+    name: Undefined behavior sanitizer (gcc, clang)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GAMMA_TEST_COMPILER: ${{ github.workspace }}/target/bootstrap/gamma
+      UBSAN: -fsanitize=undefined -fno-sanitize-recover=undefined
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
+      - name: Run tests with gcc
+        run: GAMMA_TEST_LANE=ubsan CC=gcc tools/test.sh lanes/
+      - name: Run tests with Clang
+        run: GAMMA_TEST_LANE=ubsan CC=clang tools/test.sh lanes/
+      - name: Runtime tests
+        run: CFLAGS="$UBSAN" LDFLAGS="$UBSAN" tools/test.sh runtime/
+
     # s390x is 64-bit big-endian: the run tests, cross-compiled, run under qemu-user, as do
     # the runtime's own tests.
     name: Big-endian cross build (s390x)
