@@ -398,6 +398,18 @@ jobs:
         run: |
           bootstrap/build.sh
           cd editors/tree-sitter-gamma && STRICT=1 ./scripts/parse-corpus.sh
+      - name: Tree-sitter grammar on generated programs
+        # A second parser: the programs difftest generates are valid Gamma, so the grammar
+        # must parse each of them cleanly too.
+        env:
+          GAMMA_STD: ${{ github.workspace }}/lib/std
+          GAMMA_RUNTIME: ${{ github.workspace }}/runtime
+        run: |
+          target/bootstrap/gamma build tools/difftest -o target/difftest
+          dir=$(mktemp -d)
+          start=$(( (GITHUB_RUN_NUMBER % 100) * 300 ))
+          for seed in $(seq "$start" $((start + 299))); do target/difftest --save "$seed" "$dir/seed$seed.gm"; done
+          cd editors/tree-sitter-gamma && STRICT=1 ./scripts/parse-corpus.sh "$dir"
       - name: Emacs mode
         # Ubuntu's Emacs links tree-sitter 0.20, which loads parsers of ABI 14 only, so
         # the tests use a copy of the grammar generated for it.

@@ -27,9 +27,11 @@ rest with numbers. What is left needs a structural change; do it only if asked:
   generic's unused locals.
 
 ## 3. Testing and robustness
-- Fuzzing: more differential coverage (tools/difftest); tree-sitter as a second parser.
+- Fuzzing: more differential coverage (tools/difftest: new constructs in its generator).
   (Targets: parse, fmt, check = front end, lower = + prepare_codegen + cgen (s75; the 961
-  examples/conformance programs pass through it), manifest, archive.)
+  examples/conformance programs pass through it), manifest, archive.) Tree-sitter as a
+  second parser: done s84 (CI editors job parses 300 difftest programs per run; 2,200 seeds
+  checked locally, all clean).
 - Editors: Zed extension untried in real Zed; Emacs mode tested in batch only.
 
 ## 4. Language and library (only with evidence; check spec §22 for std additions)
