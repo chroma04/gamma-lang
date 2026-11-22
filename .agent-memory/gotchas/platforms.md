@@ -39,8 +39,20 @@
   `CC=clang gamma check --target=x86_64-w64-mingw32 f.gm` (no mingw needed).
   `when … { return a }` then `return b` is "unreachable code" on Windows only: use `else`.
 - Local run: `apt-get update; apt-get install gcc-mingw-w64-x86-64 wine64`;
+  `mkdir -p /run/user/0` FIRST (no XDG runtime dir here: wine aborts with
+  `free(): invalid pointer`, leaving a stray `$WINEPREFIX/wineserver` file: rm the prefix);
   `gamma build compiler --target=x86_64-w64-mingw32 -o x.exe`;
-  `WINEDEBUG=-all wine x.exe run --backend=interp f.gm`.
+  `WINEDEBUG=-all wine x.exe run --backend=interp f.gm`. Harness under wine: wrapper script
+  `exec wine harness.exe "$@"`, `GAMMA_TEST_C=0 GAMMA_TEST_COMPILER='Z:\...\gamma.exe'`
+  (s84: conformance 815 pass; the 55 failures all "cannot run the C compiler").
+- No C compiler inside wine: Windows zig.exe runs but its cache fails (`manifest_create
+  Unexpected`), so the Windows C back end is CI-only.
+- ARM64 Windows (s84): cross-build with `CC=tools/zig-cc-windows-arm64.sh` (pip ziglang
+  0.17.1; it makes libsynchronization.a with `zig dlltool`, which zig's MinGW lacks).
+  GitHub release downloads (llvm-mingw) are blocked from this box; PyPI works. ARM64 PE
+  cannot run here (wine is x86-only): CI job `windows-arm64` (windows-11-arm, MSYS2
+  CLANGARM64) is the only test. Runtime: gm_veh reads `ContextRecord->Sp`; fiber switch
+  `__aarch64__ && _WIN32` saves TEB StackBase/Limit/DeallocationStack via x18.
 - Windows cannot rename over a file another process has open: cache writes treat
   "rename failed but destination exists" as success (content-keyed). Never open a cached
   executable for writing (parallel cases run it; macOS gave SIGKILL).

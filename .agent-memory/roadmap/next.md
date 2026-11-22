@@ -10,7 +10,8 @@ Linguist/nvim-treesitter submissions. (Private vulnerability reporting: enabled.
 - Regenerate `docs/std` after std changes: `gamma doc lib/std --all -o docs/std`.
 
 ## 1. Tooling gaps
-- Windows: Safe, `gamma debug`, gdb printers are Linux-only; ARM64 Windows. (Quoting is
+- Windows: Safe (Fil-C is Linux-only), `gamma debug`, gdb printers are Linux-only. ARM64
+  Windows: builds, CI job added s84 (gotchas/platforms.md). (Quoting is
   done: runtime gm_win_cmdline + rt_test.c; cache root made 0700 on POSIX only, Windows
   relies on %LOCALAPPDATA%'s ACL.) Windows-only code paths (spawn, install.ps1,
   gm_fs_open_dir) are exercised only by Windows CI.

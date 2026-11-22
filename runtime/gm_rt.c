@@ -5412,6 +5412,74 @@ static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
     sp[6] = (void *)gm_rt_fiber_tramp;  /* return address */
     return sp;
 }
+#elif defined(__aarch64__) && defined(_WIN32)
+/* AArch64 Windows: the AAPCS64 callee-saved registers as on other systems (x18 is the
+ * platform register, which holds the thread information block and is left alone), and, as
+ * on x86-64 Windows, the running stack's bounds in that block (StackBase, StackLimit,
+ * DeallocationStack at x18 + 0x08, 0x10, 0x1478), which exception dispatch consults. The
+ * saved context is 192 bytes: x19-x30 at 0, d8-d15 at 96, the three bounds at 160. */
+extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
+extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_switch") "\n"
+    GM_SYM("gm_rt_switch") ":\n"
+    "    sub sp, sp, #192\n"
+    "    stp x19, x20, [sp, #0]\n"
+    "    stp x21, x22, [sp, #16]\n"
+    "    stp x23, x24, [sp, #32]\n"
+    "    stp x25, x26, [sp, #48]\n"
+    "    stp x27, x28, [sp, #64]\n"
+    "    stp x29, x30, [sp, #80]\n"
+    "    stp d8, d9, [sp, #96]\n"
+    "    stp d10, d11, [sp, #112]\n"
+    "    stp d12, d13, [sp, #128]\n"
+    "    stp d14, d15, [sp, #144]\n"
+    "    ldr x9, [x18, #0x08]\n"
+    "    ldr x10, [x18, #0x10]\n"
+    "    ldr x11, [x18, #0x1478]\n"
+    "    stp x9, x10, [sp, #160]\n"
+    "    str x11, [sp, #176]\n"
+    "    mov x9, sp\n"
+    "    str x9, [x0]\n"
+    "    mov sp, x1\n"
+    "    ldp x9, x10, [sp, #160]\n"
+    "    ldr x11, [sp, #176]\n"
+    "    str x9, [x18, #0x08]\n"
+    "    str x10, [x18, #0x10]\n"
+    "    str x11, [x18, #0x1478]\n"
+    "    ldp x19, x20, [sp, #0]\n"
+    "    ldp x21, x22, [sp, #16]\n"
+    "    ldp x23, x24, [sp, #32]\n"
+    "    ldp x25, x26, [sp, #48]\n"
+    "    ldp x27, x28, [sp, #64]\n"
+    "    ldp x29, x30, [sp, #80]\n"
+    "    ldp d8, d9, [sp, #96]\n"
+    "    ldp d10, d11, [sp, #112]\n"
+    "    ldp d12, d13, [sp, #128]\n"
+    "    ldp d14, d15, [sp, #144]\n"
+    "    add sp, sp, #192\n"
+    "    mov x0, x2\n"
+    "    ret\n"
+    ".p2align 4\n"
+    GM_ASM_GLOBL GM_SYM("gm_rt_fiber_tramp") "\n"
+    GM_SYM("gm_rt_fiber_tramp") ":\n"
+    "    mov x0, x19\n"
+    "    blr x20\n"
+    "    brk #0\n");
+
+static void *gm_ctx_init(uintptr_t top, size_t len, gm_fiber *fb) {
+    void **sp = (void **)(top - 192);
+    memset(sp, 0, 192);
+    sp[0] = fb;                         /* x19 */
+    sp[1] = (void *)gm_fiber_entry;     /* x20 */
+    sp[11] = (void *)gm_rt_fiber_tramp; /* x30 */
+    sp[20] = (void *)top;               /* StackBase */
+    sp[21] = (void *)(top - len);       /* StackLimit */
+    sp[22] = (void *)(top - len);       /* DeallocationStack */
+    return sp;
+}
 #elif defined(__aarch64__)
 extern void *gm_rt_switch(void **save, void *to, void *arg) __asm__(GM_SYM("gm_rt_switch"));
 extern void gm_rt_fiber_tramp(void) __asm__(GM_SYM("gm_rt_fiber_tramp"));
@@ -5566,7 +5634,11 @@ static LONG CALLBACK gm_veh(PEXCEPTION_POINTERS ep) {
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
         uintptr_t a = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
         uintptr_t limit = gm_thread_stack_limit;
+#if defined(__aarch64__) || defined(_M_ARM64)
+        uintptr_t sp = (uintptr_t)ep->ContextRecord->Sp;
+#else
         uintptr_t sp = (uintptr_t)ep->ContextRecord->Rsp;
+#endif
         if (limit != 0 && a < limit && a + GM_THREAD_STACK_RESERVE + ((uintptr_t)1 << 20) >= limit)
             gm_stack_overflow();
         if (gm_stack_limit != 0 && sp < gm_stack_limit) gm_stack_overflow();

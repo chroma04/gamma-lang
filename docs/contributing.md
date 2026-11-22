@@ -24,7 +24,7 @@ GAMMA_STD=$PWD/lib/std GAMMA_RUNTIME=$PWD/runtime target/bootstrap/gamma build c
 
 Everything builds and tests with a C compiler alone. Continuous integration builds `gamma`
 from the seed in every job and runs, on Linux and macOS (and the conformance tests and
-examples on Windows with MinGW-w64 gcc):
+examples on x86-64 Windows with MinGW-w64 gcc and on ARM64 Windows with MSYS2's clang):
 
 ```sh
 tools/test.sh                   # all the suites, with target/bootstrap/gamma
@@ -293,6 +293,32 @@ one also runs the C runtime tests, the WASI one the `wasi` suite).
 The `cross` suite checks the toolchain variables and target detection; most of it needs
 `clang`. `CC` and `CFLAGS` select the C compiler the suites use, and `GAMMA_RUNNER` names an
 emulator that starts executables built for another platform.
+
+### Windows
+
+The Windows jobs cross-build `gamma.exe` and `harness.exe` on Linux and run the harness on a
+Windows runner (`GAMMA_TEST_COMPILER` and `GAMMA_TEST_HARNESS`). x86-64 uses MinGW-w64 gcc
+(`gcc-mingw-w64-x86-64`); ARM64 uses Zig's Clang through `tools/zig-cc-windows-arm64.sh`
+(`pip install ziglang`), since MinGW-w64 gcc does not target ARM64:
+
+```sh
+gamma build compiler --target=x86_64-w64-mingw32 -o gamma.exe
+CC=tools/zig-cc-windows-arm64.sh gamma build compiler --target=aarch64-w64-mingw32 -o gamma-arm64.exe
+```
+
+Without a Windows machine, the x86-64 executables run under Wine (`apt-get install wine64`)
+with the interpreter, which covers the Windows system calls of the runtime and the library
+but not the C back end (no C compiler runs inside Wine): wrap `wine harness.exe` in a script
+and run
+
+```sh
+GAMMA_TEST_C=0 GAMMA_TEST_COMPILER='Z:\path\to\gamma.exe' GAMMA_TEST_HARNESS=./wine-harness \
+    tools/test.sh conformance/
+```
+
+The tests that need a C compiler (foreign code, `stage: test`) then fail with "cannot run the
+C compiler". Wine needs `$XDG_RUNTIME_DIR` (or `/run/user/<uid>`) to exist; without it, it
+aborts at start with `free(): invalid pointer`.
 
 ### Examples
 
