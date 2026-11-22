@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "gamma-zed"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "zed_extension_api",
 ]

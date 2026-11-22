@@ -28,7 +28,7 @@ asset=$1
 binary=$2
 out=$3
 root=$(cd "$(dirname "$0")/.." && pwd)
-version=$("$root/scripts/version.sh")
+version=$("$root/tools/version.sh")
 name="gamma-$version-$asset"
 
 work=$(mktemp -d)

@@ -127,7 +127,7 @@ unit :: fn(lw: ^Lw) -> Value needs Alloc => zero(lw.s.tys.unit())
 /// Whether `e` never completes: its type is `never`.
 diverges :: fn(lw: ^Lw, e: ^const Expr) -> bool => lw.s.tys.kind(e.ty) is .Never
 
-/// `e` evaluated whole by the TIR evaluator.
+/// `e`, which lowering cannot translate, kept whole as a `Tir` instruction.
 escape :: fn(lw: ^Lw, e: ^Expr) -> Value needs Alloc {
     lw.escapes += 1
     // The locals whose address it takes live in memory.

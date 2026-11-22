@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-gamma",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Tree-sitter grammar for the Gamma programming language",
   "license": "MIT",
   "private": true,

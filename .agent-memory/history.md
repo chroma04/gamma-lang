@@ -66,3 +66,7 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
   temp-array local), misleading "declare it with `::`" note, LSP hover `{error}`,
   difftest `--opt=value`, `(a, b) := t` error. Clean: 600 + 300 (checked) difftest seeds,
   ASan+UBSan over tests/conformance/run, libFuzzer parse/fmt/check/lower, fmt round trips.
+- s87: 0.4.0 release prep: Unreleased regrouped into 0.4.0 (Language, Tooling, Speed with
+  the perf entries folded per area, Documentation, Fixed; no Breaking), versions bumped,
+  `scripts/*.sh` moved to `tools/`, stale "tree walker" wording fixed (README, interp/word.gm,
+  lir.gm `Tir` = internal error in both back ends), architecture.md rows for tools/, bench/.

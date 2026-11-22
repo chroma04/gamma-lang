@@ -38,7 +38,7 @@ jobs:
           esac
           tools/package-release.sh "$asset" target/bootstrap/gamma "$RUNNER_TEMP/dist"
           GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/prefix" sh tools/install.sh
-          scripts/smoke-hello.sh "$RUNNER_TEMP/prefix/bin/gamma"
+          tools/smoke-hello.sh "$RUNNER_TEMP/prefix/bin/gamma"
           # A checksum that does not match stops the installation.
           echo "0000000000000000000000000000000000000000000000000000000000000000  x" > "$RUNNER_TEMP/dist/gamma-$asset.tar.gz.sha256"
           if GAMMA_DOWNLOAD="file://$RUNNER_TEMP/dist" GAMMA_INSTALL="$RUNNER_TEMP/p2" sh tools/install.sh; then exit 1; fi
@@ -82,7 +82,7 @@ jobs:
           GAMMA_STD: lib/std
           GAMMA_RUNTIME: runtime
         run: |
-          scripts/smoke-hello.sh target/bootstrap/gamma
+          tools/smoke-hello.sh target/bootstrap/gamma
           target/bootstrap/gamma test compiler
       - name: The seed is what its sources compile to
         if: matrix.os == 'ubuntu-latest'
@@ -451,7 +451,7 @@ jobs:
             base=$RUNNER_TEMP/base-gamma
             wrap "$(cd ../base && pwd)" "$(cd ../base && pwd)/target/bootstrap/gamma" "$base"
           fi
-          ./scripts/bench-compare.sh "$RUNNER_TEMP/head-gamma" "$base" bench
+          ./tools/bench-compare.sh "$RUNNER_TEMP/head-gamma" "$base" bench
 
   editors:
     # The TextMate grammar's scope tests, and the tree-sitter grammar: its generated

@@ -20,8 +20,9 @@
 //! a `defer` (the block it is in). Integer arithmetic traps as its TIR operator does, on
 //! the instruction's span.
 //!
-//! Lowering is total: a construct it does not lower yet becomes `Tir`, which evaluates the
-//! TIR expression whole, as a back end's tree evaluator would. `Func.escapes` counts them.
+//! Lowering is total: an expression it cannot lower (one left over from generic checking)
+//! becomes `Tir`, which both back ends report as an internal error. `Func.escapes` counts
+//! them.
 
 arena :: import "std/arena"
 bigint :: import "../bigint"
@@ -296,7 +297,8 @@ pub Op :: union {
     /// Not reached: what follows an instruction that does not complete (a call of a
     /// function returning `never`).
     Unreachable
-    /// A TIR expression evaluated whole, its value to `dst` if it is used.
+    /// A TIR expression that lowering could not translate, its value to `dst` if it is
+    /// used. No back end runs it.
     Tir: (dst: ?u32, expr: ^Expr)
 }
 
