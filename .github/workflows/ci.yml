@@ -312,6 +312,7 @@ jobs:
       - name: Runtime tests
         run: CFLAGS="$UBSAN" LDFLAGS="$UBSAN" tools/test.sh runtime/
 
+  s390x:
     # s390x is 64-bit big-endian: the run tests, cross-compiled, run under qemu-user, as do
     # the runtime's own tests.
     name: Big-endian cross build (s390x)
