@@ -31,6 +31,17 @@ Versions and what each kind of change means are described in
   Zig's Clang (`tools/zig-cc-windows-arm64.sh`) and runs the conformance tests and examples
   on an ARM64 Windows runner.
 
+- **Less copying and smaller frames in generated C.** A struct, array, optional, result
+  or union value that is returned or stored in a local is built where it goes instead of
+  in a temporary that is then copied (a call's result already was), also when deferred
+  statements run before the function returns; `x := if …`/`match`/`else` leaves its value
+  in `x` directly; and statements that use large temporaries get C blocks of their own, so
+  the C compiler reuses their stack slots. Half of the copies in the compiler's C go, and
+  its stack frames are 3–7% smaller.
+- **A function that passes its template on shares one body too** (`log.info` to
+  `log.log`): its instances call the shared body of the function it passes the template
+  to, which then has no instance per template.
+
 - **Slicing checks that a comparison proves are removed**, as bounds checks already were:
   `xs[i..]` after `if i > xs.len { return }`, `xs[..n]` inside `if n <= xs.len`, `xs[..]`
   and constant slices of arrays no longer check their range. A third of the slicings in

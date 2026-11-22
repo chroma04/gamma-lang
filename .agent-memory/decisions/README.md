@@ -47,3 +47,5 @@ Status words: CURRENT (holds today), PARTLY (read with the later one), HISTORY (
   bodies for `@write` template parameters (compiler C −13%)
 - 076 s84 roadmap sweep: done items, interp push/with measured (kept: single-decl
   perform site, −3% with.gm; dropped: frame memset, consts as immediates)
+- 077 s85 perf follow-ups: results built in place, `let` result hint, statement-run C
+  blocks, template forwarding; nested helpers dropped (numbers)

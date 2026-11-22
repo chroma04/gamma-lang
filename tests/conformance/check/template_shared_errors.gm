@@ -9,6 +9,9 @@ log :: fn(A: type, template :: string, args: ..A) needs Out {
     print("({} bytes)\n", template.len)
 }
 
+/// Passes its template on: each template is checked against the writes of `log`.
+note :: fn(A: type, template :: string, args: ..A) needs Out => log(template, ..args)
+
 main :: fn() needs Out + Alloc {
     log("{}\n", 1)
     log("{} {}\n", 2)             //~ ERROR the template has 2 placeholders, but 1 value is given (in an instantiation used here)
@@ -17,4 +20,6 @@ main :: fn() needs Out + Alloc {
     log("{:x}\n", 4)
     s := str.format("{} and {}", 5)! //~ ERROR the template has 2 placeholders, but 1 value is given (in an instantiation used here)
     free(s)
+    note("{}\n", 6)
+    note("{} {}\n", 7)            //~ ERROR the template has 2 placeholders, but 1 value is given (in an instantiation used here)
 }

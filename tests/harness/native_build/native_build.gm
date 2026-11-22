@@ -21,6 +21,8 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "run_reuses_cached_executables", run: run_reuses_cached_executables))!
     out.push(kit.Test(name: "prints_and_black_boxes_do_not_grow_the_c_per_site", run: prints_do_not_grow_the_c))!
     out.push(kit.Test(name: "constant_large_arguments_come_from_static_storage", run: constant_arguments_are_static))!
+    out.push(kit.Test(name: "large_results_are_built_where_they_go", run: results_built_in_place))!
+    out.push(kit.Test(name: "forwarded_templates_share_one_body", run: forwarded_templates_share))!
     out.push(kit.Test(name: "builds_never_overwrite_files_they_did_not_generate", run: never_overwrite_own_files))!
     out.push(kit.Test(name: "split_builds_compile_only_the_units_an_edit_changes", run: split_builds_reuse_units))!
     when target.os is not .Windows {
@@ -236,6 +238,64 @@ constant_arguments_are_static :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
         if str.contains(line, "gm_f_f_") and str.contains(line, "(uint8_t *)gm_k") { n += 1 }
     }
     try t.check(n > 0, "the call does not pass its constant arguments from static storage")
+    return ()
+}
+
+/// Builds the program `text` as one C file in a scratch directory named after `name`,
+/// checks that it prints `want` and returns the generated C.
+build_one_unit :: fn(t: ^kit.T, name, text, want: string) -> kit.Fail!string needs kit.Run {
+    s := try setup(t, name)
+    src := kit.join(s.dir, "p.gm")
+    try t.write(src, text)
+    exe := kit.join(s.dir, "p")
+    c := t.gamma([_]string("build", "-o", exe, src))
+    c.set("GAMMA_CACHE_DIR", kit.join(s.dir, "cache"))
+    c.set("GAMMA_C_UNITS", "1")
+    _ = try t.run_ok(c)
+    run := try t.run(kit.command(exe))
+    try t.expect_text("the output", want, run.out)
+    return t.read(c_of(exe))
+}
+
+/// The C definition of the function whose name starts with `gm_f_<name>_` in `gen`.
+c_function :: fn(gen: string, name: string) -> ?string needs Alloc {
+    head := str.format("gm_f_{}_", name)!
+    start: ?usize = null
+    at: usize = 0
+    for line in str.lines(gen) {
+        if start is null and str.contains(line, head) and line.ends_with(") {") and not line.starts_with(" ") { start = at }
+        if s := start and line is "}" { return gen[s..at + line.len] }
+        at += line.len + 1
+    }
+    return null
+}
+
+PLACE_PROGRAM :: "Big :: struct { a: i64, b: i64, c: i64, d: i64, e: i64 }\nmk_big :: fn(n: i64) -> ?Big {\n    if n < 0 { return null }\n    return Big(a: n, b: n + 1, c: n + 2, d: n + 3, e: n + 4)\n}\npass_big :: fn(n: i64) -> ?Big needs Out {\n    defer print(\"pass\\n\")\n    return mk_big(n)\n}\nmain :: fn() needs Out {\n    b := pass_big(3) else return\n    x := if b.a > 1 { mk_big(b.e) } else { mk_big(0) }\n    print(\"{} {}\\n\", b.e, x?.a)\n}\n"
+
+results_built_in_place :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    gen := try build_one_unit(t, "in-place", PLACE_PROGRAM, "pass\n7 7\n")
+    // `mk_big` builds its optional in the caller's destination, `pass_big` has the call write
+    // the frame's result, which its deferred statement runs after: neither copies it.
+    for name in [_]string("mk_big", "pass_big") {
+        body := c_function(gen, name) else return !t.fail("no C function for `{}`", name)
+        try t.check(not str.contains(body, "memmove(gm_out") and not str.contains(body, "memmove(&F.ret"), "`{}` copies its result:\n{}", name, body)
+    }
+    return ()
+}
+
+FORWARD_PROGRAM :: "say :: fn(A: type, template :: string, args: ..A) needs Out => print(template, ..args)\nshout :: fn(A: type, template :: string, args: ..A) needs Out => say(template, ..args)\nmain :: fn() needs Out {\n    shout(\"a {}\\n\", 1)\n    shout(\"b {}\\n\", 2)\n    shout(\"c {}!\\n\", 3)\n}\n"
+
+forwarded_templates_share :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    gen := try build_one_unit(t, "forward", FORWARD_PROGRAM, "a 1\nb 2\nc 3!\n")
+    // `shout` passes its template on: the body `shout`'s instances share calls the one
+    // `say`'s share, and `say` has no instance per template.
+    n: usize = 0
+    for line in str.lines(gen) {
+        if not line.starts_with(" ") and str.contains(line, "gm_f_say_") and line.ends_with(") {") { n += 1 }
+    }
+    try t.check(n is 1, "`say` has {} C functions, not 1", n)
     return ()
 }
 

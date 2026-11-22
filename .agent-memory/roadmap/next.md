@@ -17,15 +17,9 @@ Linguist/nvim-treesitter submissions. (Private vulnerability reporting: enabled.
   gm_fs_open_dir) are exercised only by Windows CI.
 
 ## 2. Performance (measure first; callgrind recipe in docs/contributing.md)
-s77 (decisions/072) measured every item of the old list: kept the cheap wins, closed the
-rest with numbers. What is left needs a structural change; do it only if asked:
-- LIR follow-ups (decisions/075 "State after P4", plan done s83): C blocks per statement
-  run in short lists (stack reuse); nested helpers in split long functions. (Range-check
-  elision done s84: 346 of 1,090 slicing checks in the compiler removed.)
-- cgen: build results in place (068: `Abort!ast.Expr` copied 2–3x per parser level).
-- Template sharing follow-ups (decisions/073): forward a template to another template
-  parameter (kit.check → str.format, cgen linef → str.format); thunks without the
-  generic's unused locals.
+Empty: s85 (decisions/077) did or dropped every follow-up. Leftovers noted there (payload
+copy for `return Some(local)`, aggregate straight into a wrapping optional) are small; do
+them only with a profile that shows them.
 
 ## 3. Testing and robustness
 - Fuzzing: more differential coverage (tools/difftest: new constructs in its generator).

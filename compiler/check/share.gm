@@ -10,11 +10,15 @@
 // that asks for it, and is kept as a function of its own whose body calls the shared one.
 
 /// The compile-time `string` parameters of generic function `f` that it uses as `@write`
-/// templates in its own body, and otherwise only as run-time values there (not in the
-/// functions written in it, not in a type, not passed on to another generic function, and
-/// not in a static assertion).
+/// templates in its own body, or passes on as the only template of a generic function
+/// whose instances share a body (`forwards`), and otherwise only as run-time values there
+/// (not in the functions written in it, not in a type, not passed on to another generic
+/// function in another way, and not in a static assertion).
 template_params :: fn(s: ^Sema, f: u32) -> []const u32 needs Load {
     if r := s.template_params.get(f) { return r }
+    // None while they are worked out: a function that forwards to itself through others
+    // keeps an instance per template.
+    s.template_params.put(f, empty_slice(u32))!
     out := list(u32)
     def := s.defs.items[usize(f)]
     if def.kind is .Named and b := def.body {
@@ -74,11 +78,15 @@ scan_uses :: fn(u: ^TemplateUses, e: ^Expr, top: bool) needs Load {
             if mentions_value(&args[i], u.g) { u.other = true }
         }
         .Call(.Fn(c), _), .FnRef(c), .Closure(c) => {
-            // A call of `f` itself, or of an instance given `g`.
+            // A call of `f` itself, or of an instance given `g` (unless it forwards `g`).
             if c is u.f { u.other = true }
             if inst := s.fns.items[usize(c)].instance {
-                for a in inst.args {
-                    if s.subst(a, u.sub) is not a { u.other = true }
+                if top and e.kind is .Call(_) and forwards(s, u.f, inst, u.sub) {
+                    u.writes += 1
+                } else {
+                    for a in inst.args {
+                        if s.subst(a, u.sub) is not a { u.other = true }
+                    }
                 }
             }
             // The functions written in the body: `g` must not be used there.
@@ -91,6 +99,78 @@ scan_uses :: fn(u: ^TemplateUses, e: ^Expr, top: bool) needs Load {
         _ => {}
     }
     tir.for_each_child(e, fn(x: ^Expr) { scan_uses(u, x, top) })
+}
+
+/// Whether the instance `inst` of a generic function, called in the body of `f`, is given
+/// the parameter that `sub` replaces as each of its template parameters and in no other
+/// argument: the shared body of `f` then calls the shared body of that function with its
+/// own template (`forward_call`).
+forwards :: fn(s: ^Sema, f: u32, inst: sema.FnInstance, sub: []const sema.Subst) -> bool needs Load {
+    t := inst.template
+    if t is f { return false }
+    tps := template_params(s, t)
+    if tps.len is 0 { return false }
+    generics := s.fns.items[usize(t)].generics
+    marker := sema.template_marker(s)
+    for i, a in enumerate(inst.args) {
+        m := s.subst(a, sub)
+        if generics[i] in tps {
+            if m is not marker { return false }
+        } else if m is not a {
+            return false
+        }
+    }
+    return true
+}
+
+/// In a shared body, the call of instance `c` (with arguments `args`) that passes the
+/// body's templates on (`forwards`): a call of the body the instances of `c`'s generic
+/// share, given the hidden parameters that hold them. Its writes become this body's, to
+/// check each template against.
+forward_call :: fn(s: ^Sema, mc: ^MonoCx, c: u32, args: []Expr) -> ?tir.ExprKind needs Load {
+    if mc.erased.len is 0 { return null }
+    inst := s.fns.items[usize(c)].instance else return null
+    t := inst.template
+    tps := template_params(s, t)
+    if tps.len is 0 { return null }
+    generics := s.fns.items[usize(t)].generics
+    marker := sema.template_marker(s)
+    hidden := list((param: u32, table: u32, text: u32))
+    erased := list(Ty)
+    for i, a in enumerate(inst.args) {
+        if generics[i] not in tps {
+            erased.push(s.subst(a, mc.map))!
+            continue
+        }
+        found: ?(param: u32, table: u32, text: u32) = null
+        for x in mc.erased {
+            sub := [1]sema.Subst(sema.Subst(param: x.param, ty: marker))
+            if s.subst(a, sub[..]) is marker { found = x }
+        }
+        hidden.push(found else return null)!
+        erased.push(marker)!
+    }
+    shared := s.shared_writes.get((t, erased.items)) else {
+        req := sema.MonoRequest(generic: t, instance: c, args: erased.items, span: mc.span, depth: s.mono_depth + 1)
+        make_shared(s, req, tps, erased.items)
+    }
+    if sites := mc.sites {
+        for k, h in enumerate(tps) {
+            for site in shared.sites {
+                if site.param is h { sites.push((param: hidden.items[k].param, args: site.args))! }
+            }
+        }
+    }
+    span := mc.span
+    if args.len > 0 { span = args[0].span }
+    all := list(Expr)
+    all.extend(args)!
+    raw := s.tys.intern(.Rawptr)
+    for x in hidden.items {
+        all.push(tir.mk(raw, .Local(x.table), span)^)!
+        all.push(tir.mk(s.tys.string_ty(), .Local(x.text), span)^)!
+    }
+    return .Call(.Fn(shared.id), all.items)
 }
 
 /// Produces the instance `req` of a function with template parameters `tps` as a call of
@@ -136,8 +216,11 @@ share_instance :: fn(s: ^Sema, req: sema.MonoRequest, tps: []const u32) -> bool 
     // The instance's body passes its parameters on, then the templates.
     def := s.defs.items[usize(f)]
     sig := s.fns.items[usize(req.instance)]
+    // Only the parameters: the body's other locals are the shared body's.
+    used: usize = 0
+    for p in def.params { used = used.max(usize(p) + 1) }
     locals := list(tir.LocalDecl)
-    for l in def.locals {
+    for l in def.locals[..used] {
         x := l
         x.ty = s.subst(l.ty, map.items)
         locals.push(x)!

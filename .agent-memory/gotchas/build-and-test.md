@@ -60,3 +60,11 @@
   `gamma build tools/difftest -o X; GAMMA_TEST_C=1 X --gamma <gamma> --start S --count 1
   --cc gcc` (program kept in /tmp/difftest/seed-S/main.gm). s78: seed 10550 = local
   constant calling core code (check_bodies parked core bodies) + const string `>`.
+- Measuring generated C (stack sizes etc.): do NOT set `CFLAGS` or wrap `CC` for
+  `gamma build`: either changes the flags (a CC wrapper loses gcc detection, so no
+  GCC_DEBUG_PASSES; Ir of `check compiler` went +10..24%). Instead `gamma build --emit-c
+  compiler -o X` and compile X.c by hand with BASE_CFLAGS (native.gm) + `-pthread -Og
+  -finline-functions-called-once -ftree-bit-ccp -fif-conversion -fstack-usage -c`
+  (one 50 MB unit: ~3 min at -Og, more at -O2). Sum: `awk '{s+=$(NF-1)} END{print s}' X.su`.
+- callgrind/the built compiler need ABSOLUTE `GAMMA_STD`/`GAMMA_RUNTIME` when run from
+  another directory (relative ones fail silently: 0.75M Ir runs).

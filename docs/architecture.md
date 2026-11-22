@@ -706,7 +706,11 @@ a temporary read past its segment is copied to a variable declared before the bl
 the live temporaries of any scope stay bounded, as in a chain of tens of thousands of
 operations, and order, traps and early exits are unchanged. In a long function
 (`outline.gm`), a run of instructions that no temporary crosses into or out of moves to a
-helper function instead. A generated function of more than 20,000 temporaries
+helper function instead. In a shorter list, each run of instructions that writes large
+temporaries (blobs) and shares no temporary with the rest is a C block of its own
+(`lc_runs`): gcc and Clang give a variable whose address is taken a stack slot for the
+whole of its block, so disjoint blocks let them reuse the slots (the compiler's frames are
+6.6% smaller at `-Og`, 3.3% at `-O2`). A generated function of more than 20,000 temporaries
 is marked `GM_HUGE_FN`, which turns off those two gcc passes for it, and `-w` is
 accompanied by `-Wno-free-nonheap-object` because gcc otherwise still runs its
 access-warning pass over such functions. Clang from LLVM 19 on (Apple clang 17 on)
@@ -976,9 +980,10 @@ without allocating.
 **Shared template bodies.** A template is a compile-time parameter, so such functions
 would have an instance per template; in the compiler those instances were 18% of its C.
 Instead, a generic function that uses a `template :: string` parameter as the template of
-`@write`s in its own body, and otherwise only as a run-time `string` (not in the functions
-written in it, in a type, in a static assertion, or passed on to another generic function),
-has one body per set of other arguments (`check/share.gm`). That body takes two hidden
+`@write`s in its own body, or passes it on as the only template of another such function,
+and otherwise only as a run-time `string` (not in the functions written in it, in a type,
+in a static assertion, or passed on to a generic function in another way), has one body
+per set of other arguments (`check/share.gm`). That body takes two hidden
 parameters per template: a table of the template's pieces, specs and the value each
 placeholder writes (`tir.Template`; a static `gm_tmpl` in C, a numbered entry of the
 machine in the interpreter), and the template's text, which stands for its other uses
@@ -986,7 +991,11 @@ machine in the interpreter), and the template's text, which stands for its other
 through the same helpers as a write of a known template. Each instance remains a function
 of its own whose body calls the shared one, and each template is checked against every
 write of the shared body at the call that instantiates it, so diagnostics are what they
-would be with an instance per template. The compiler's C is 13% smaller, it builds 8%
+would be with an instance per template. A body that passes its template on
+(`log.info` to `log.log`) calls the shared body of the function it passes it to with its
+own table and text (`forward_call`), so neither has an instance per template beyond the
+outer one's, and that function's writes are checked as the body's own. An instance's body
+has only the parameters as locals. The compiler's C is 13% smaller, it builds 8%
 faster from scratch, and formatting in a program is no slower (a loop over a table costs
 about what the unrolled pieces did).
 
@@ -1187,14 +1196,16 @@ while direct calls use the internal one.
 
 A large result is returned through a first parameter `gm_out`, the address of
 the caller's destination, and the function returns `void`. The callee writes it
-only when it returns, copying a value it built in a temporary (or passing its
-own `gm_out` on to a call whose result it returns), so a call whose large result is
-stored in a local or returned writes it there directly (`lc_call_dest` in `lirc.gm`):
-the assignment still happens after the whole call, and an exit out of the call leaves
-the destination as it was. Struct and array constructions are built in a temporary and
-copied. A function body with no pending deferred statement copies its result straight
-into `gm_out`; otherwise the result goes to the frame's result slot first, and the
-deferred statements run before it is copied out.
+only when it returns, so a call whose large result is stored in a local or returned
+writes it there directly (`lc_dest` in `lirc.gm`): the assignment still happens after the
+whole call, and an exit out of the call leaves the destination as it was. A struct, array,
+optional, result or union value that is only stored in a local or returned is built there
+too, after its operands are read (`LirC.build_dest`, which `blob` and `blob_over` take).
+A function body with no pending deferred statement returns into `gm_out` itself;
+otherwise the result goes to the frame's result slot (a call or construction writes
+`F.ret` directly), and the deferred statements run before it is copied out. Lowering
+does its part: an `if`, `match` or `else` whose value a `let` stores leaves it in that
+local rather than in a result local of its own (`Lw.into` in `lir/lower.gm`).
 
 A large parameter is read in place, without the copy, when no difference can be
 observed (Appendix D.5; `cgen/borrow.gm`): the function never stores into

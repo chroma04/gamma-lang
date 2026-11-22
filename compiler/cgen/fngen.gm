@@ -58,8 +58,11 @@ pub FnGen :: struct {
     /// The destination of the large result of the call being emitted (`call_fn` clears it
     /// when the call writes there).
     pub call_dest: ?string = null
-    /// The destination `lc_list` chose for the next call (`lc_call_dest`).
+    /// The destination `lc_list` chose for the next call (`lc_dest`).
     pub dest_call_lir: ?string = null
+    /// Where the next blob (`blob`, `blob_over`) is built instead of a new temporary: the
+    /// destination `lc_list` chose for a value it puts there whole (`lc_dest`).
+    pub blob_dest: ?string = null
     pub def: ^const Func
     pub out: List(u8)
     pub indent: usize = 1

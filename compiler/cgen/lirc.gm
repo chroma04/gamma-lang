@@ -198,8 +198,18 @@ pub LirC :: struct {
     /// list: until then it can be read in place.
     lazy: []?Lazy
     pending: List(u32)
-    /// Whether the call just emitted wrote its result to `FnGen.dest_call_lir`.
+    /// Whether the call just emitted wrote its result to `FnGen.dest_call_lir`, or the value
+    /// just built went to `build_dest`.
     dest_taken: bool = false
+    /// Where the value of the instruction being translated is built (`lc_dest`).
+    build_dest: ?string = null
+    /// For `lc_runs`, per temporary: the list (a number from `gen`) whose top level writes
+    /// it, and the last instruction of that list that reads it.
+    run_gen: []u32
+    run_last: []usize
+    gen: u32 = 0
+    /// Whether each temporary is a blob in C (`is_blob`): 0 not known yet, 1 no, 2 yes.
+    blob: []u8
     /// Whether functions are nested in this one.
     nested_fns: bool = false
     /// The blocks being translated, innermost last.
@@ -267,7 +277,7 @@ lir_body :: fn(fg: ^FnGen, func: ^const lir.Func) -> Unsup!() needs sema.Load {
     labels := list(string)
     for _ in 0..func.labels { labels.push(str.format("gm_lb{}", fg.fresh())!)! }
     folded := fold_const_args(fg, func)
-    c := LirC(fg: fg, f: func, folded: folded, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, str_bytes: make_fill(T: ?[]const u8, func.temps.len, null)!, uses: temp_uses(func), pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock), installing: list(Installing))
+    c := LirC(fg: fg, f: func, folded: folded, temps: temps, labels: labels.items, lazy: make_fill(func.temps.len, ?Lazy(null))!, str_bytes: make_fill(T: ?[]const u8, func.temps.len, null)!, uses: temp_uses(func), run_gen: make_fill(func.temps.len, u32(0))!, run_last: make_fill(func.temps.len, usize(0))!, blob: make_fill(func.temps.len, u8(0))!, pending: list(u32), nested_fns: has_nested(fg.g, fg.fid), open: list(OpenBlock), installing: list(Installing))
     fg.lirc = &c
     // The function's body is a block: its defers run when it returns.
     fg.scopes.push(fg.block_scope())!
@@ -444,6 +454,8 @@ lc_list :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load {
     mark := c.pending.items.len
     if insts.len > 1 and list_weight(insts, LONG_LIST + 1) > LONG_LIST {
         try c.lc_segments(insts)
+    } else if insts.len > 1 {
+        try c.lc_runs(insts, mark)
     } else {
         try c.lc_range(insts, 0, insts.len, null)
     }
@@ -460,18 +472,24 @@ lc_range :: fn(c: ^LirC, insts: []const lir.Inst, a: usize, b: usize, hoist: ?^h
         c.lc_line(insts[i].span)
         // A large result goes straight to where the next instruction puts it.
         if i + 1 < insts.len {
-            if dest := c.lc_call_dest(&insts[i], &insts[i + 1]) {
+            if dest := c.lc_dest(&insts[i], &insts[i + 1]) {
                 c.lc_flush()
-                c.fg.dest_call_lir = dest
                 c.dest_taken = false
-                try c.lc_inst(&insts[i])
-                c.fg.dest_call_lir = null
+                if insts[i].op is .Call(_) {
+                    c.fg.dest_call_lir = dest
+                    try c.lc_inst(&insts[i])
+                    c.fg.dest_call_lir = null
+                } else {
+                    c.build_dest = dest
+                    try c.lc_inst(&insts[i])
+                    c.build_dest = null
+                }
                 // A call that cannot write there (of a foreign function) left it.
                 if not c.dest_taken {
                     i += 1
                     continue
                 }
-                if insts[i + 1].op is .Return(_) { c.fg.jump("gm_fdone", null) }
+                if insts[i + 1].op is .Return(_) { c.lc_return_built(dest) }
                 if h := hoist { c.lc_hoisted(h, &insts[i + 1]) }
                 i += 2
                 continue
@@ -545,29 +563,8 @@ LIR_MIN_RUN: u32 : 60
 lc_segments :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load {
     fg := c.fg
     n := insts.len
-    // The last instruction that reads each temporary written at the top of this list.
-    defined := list((t: u32, at: usize))
     last := hash_map.hash_map(u32, usize)
-    for k in 0..n {
-        visit_insts(insts[k..k + 1], fn(x: ^const lir.Inst) {
-            lir.for_each_value(&x.op, fn(v: lir.Value) {
-                if .Temp(t) := v { last.put(t, k)! }
-            })
-            lir.for_each_place(&x.op, fn(p: ^const lir.Place) {
-                if .Deref(t) := p.base { last.put(t, k)! }
-            })
-        })
-        if d := lir.dst_of(&insts[k].op) { defined.push((t: d, at: k))! }
-    }
-    // How many of them are live across the point before each instruction.
-    live := make_fill(n + 1, i64(0))!
-    for x in defined.items {
-        u := last.get(x.t) else continue
-        if u <= x.at { continue }
-        live[x.at + 1] += 1
-        if u + 1 <= n { live[u + 1] -= 1 }
-    }
-    for k in 1..n + 1 { live[k] += live[k - 1] }
+    live := list_liveness(insts, &last)
     // A helper reaches the locals through the frame: all of them must live there.
     split := fg.split_runs and fg.runs.items.len is 0 and false not in fg.in_frame
     target := if split { LIR_RUN_WEIGHT } else { SEG_WEIGHT }
@@ -586,7 +583,7 @@ lc_segments :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load
         acc += w
         end := k + 1
         cut := end is n
-        if not cut and acc >= target and c.lc_call_dest(&insts[k], &insts[end]) is null {
+        if not cut and acc >= target and c.lc_dest(&insts[k], &insts[end]) is null {
             cut = live[end] is 0 or acc >= target * 4
         }
         if not cut { continue }
@@ -594,6 +591,123 @@ lc_segments :: fn(c: ^LirC, insts: []const lir.Inst) -> Unsup!() needs sema.Load
         start = end
         acc = 0
     }
+}
+
+/// For each temporary written at the top of `insts`, the last instruction that reads it (in
+/// `last`); and how many of them are live across the point before each instruction.
+list_liveness :: fn(insts: []const lir.Inst, last: ^hash_map.HashMap(u32, usize)) -> []i64 needs Alloc {
+    n := insts.len
+    defined := list((t: u32, at: usize))
+    for k in 0..n {
+        visit_insts(insts[k..k + 1], fn(x: ^const lir.Inst) {
+            lir.for_each_value(&x.op, fn(v: lir.Value) {
+                if .Temp(t) := v { last.put(t, k)! }
+            })
+            lir.for_each_place(&x.op, fn(p: ^const lir.Place) {
+                if .Deref(t) := p.base { last.put(t, k)! }
+            })
+        })
+        if d := lir.dst_of(&insts[k].op) { defined.push((t: d, at: k))! }
+    }
+    live := make_fill(n + 1, i64(0))!
+    for x in defined.items {
+        u := last.get(x.t) else continue
+        if u <= x.at { continue }
+        live[x.at + 1] += 1
+        if u + 1 <= n { live[u + 1] -= 1 }
+    }
+    for k in 1..n + 1 { live[k] += live[k - 1] }
+    return live
+}
+
+/// A short list, with each run of instructions that holds large temporaries and shares
+/// none with the rest in a C block of its own: the C compilers give the variables of
+/// disjoint blocks the same stack slots (a variable whose address is taken, as every
+/// blob's is, lives to the end of its block for them). `mark` is where the list's lazy
+/// temporaries begin in `LirC.pending`.
+lc_runs :: fn(c: ^LirC, insts: []const lir.Inst, mark: usize) -> Unsup!() needs sema.Load {
+    n := insts.len
+    // A single blob has no other to share its slot with here.
+    blobs := 0
+    if n >= 3 {
+        for x in insts {
+            if d := lir.dst_of(&x.op) and c.is_blob(d) {
+                blobs += 1
+                if blobs is 2 { break }
+            }
+        }
+    }
+    if blobs < 2 { return c.lc_range(insts, 0, n, null) }
+    // For each temporary written at the top of the list (marked `run_gen`), the last
+    // instruction that reads it; then how many are live before each instruction.
+    c.gen += 1
+    g := c.gen
+    for k in 0..n {
+        d := lir.dst_of(&insts[k].op) else continue
+        c.run_gen[usize(d)] = g
+        c.run_last[usize(d)] = k
+    }
+    for k in 0..n {
+        visit_insts(insts[k..k + 1], fn(x: ^const lir.Inst) {
+            lir.for_each_value(&x.op, fn(v: lir.Value) {
+                if .Temp(t) := v and c.run_gen[usize(t)] is g { c.run_last[usize(t)] = k }
+            })
+            lir.for_each_place(&x.op, fn(p: ^const lir.Place) {
+                if .Deref(t) := p.base and c.run_gen[usize(t)] is g { c.run_last[usize(t)] = k }
+            })
+        })
+    }
+    live := make_fill(n + 1, i64(0))!
+    for k in 0..n {
+        d := lir.dst_of(&insts[k].op) else continue
+        u := c.run_last[usize(d)]
+        if u <= k { continue }
+        live[k + 1] += 1
+        if u + 1 <= n { live[u + 1] -= 1 }
+    }
+    for k in 1..n + 1 { live[k] += live[k - 1] }
+    start: usize = 0
+    for k in 0..n {
+        end := k + 1
+        if end < n and (live[end] is not 0 or c.lc_dest(&insts[k], &insts[end]) is not null) { continue }
+        if (start is 0 and end is n) or not c.holds_blobs(insts[start..end]) {
+            try c.lc_range(insts, start, end, null)
+        } else {
+            // The list's own lazy temporaries are dead here; those of the lists around it
+            // are computed before the block, which must not declare them.
+            outer := list(u32)
+            outer.extend(c.pending.items[..mark.min(c.pending.items.len)])!
+            c.pending.clear()
+            for t in outer.items { c.lc_compute(t) }
+            fg := c.fg
+            fg.line("{")
+            fg.indent += 1
+            r := c.lc_range(insts, start, end, null)
+            c.pending.clear()
+            fg.indent -= 1
+            fg.line("}")
+            try r
+        }
+        start = end
+    }
+}
+
+/// Whether temporary `t` is a blob in C (`CTypes.by_ref`).
+is_blob :: fn(c: ^LirC, t: u32) -> bool needs Alloc {
+    k := c.blob[usize(t)]
+    if k is 0 {
+        k = if c.fg.g.ty.by_ref(c.f.temps[usize(t)]) { 2 } else { 1 }
+        c.blob[usize(t)] = k
+    }
+    return k is 2
+}
+
+/// Whether the top level of `insts` writes a temporary that is a blob in C.
+holds_blobs :: fn(c: ^LirC, insts: []const lir.Inst) -> bool needs Alloc {
+    for x in insts {
+        if d := lir.dst_of(&x.op) and c.is_blob(d) { return true }
+    }
+    return false
 }
 
 /// Segment `a..b` of a long list (`lc_segments`) of weight `w`: a helper if `split` allows
@@ -658,19 +772,26 @@ lc_outline :: fn(c: ^LirC, insts: []const lir.Inst, a: usize, b: usize) -> Unsup
     try r
 }
 
-/// Where the large result of the call `a` goes when `b` only returns it or stores it in a
-/// local: the caller's destination (`gm_out`) or the local, which the call cannot see.
-lc_call_dest :: fn(c: ^LirC, a: ^const lir.Inst, b: ^const lir.Inst) -> ?string needs sema.Load {
-    .Call(?dst, callee, _) := a.op else return null
-    d := dst else return null
-    if callee is not .Fn(_) { return null }
+/// Where the large value instruction `a` makes goes when `b` only returns it or stores it in
+/// a local: the caller's destination (`gm_out`), the frame's result (`F.ret`, which the
+/// deferred statements run after) or the local. A call cannot see it (its callee writes
+/// its destination last); a value built there reads its operands first.
+lc_dest :: fn(c: ^LirC, a: ^const lir.Inst, b: ^const lir.Inst) -> ?string needs sema.Load {
+    d := lir.dst_of(&a.op) else return null
+    match a.op {
+        .Call(_, callee, _) => if callee is not .Fn(_) { return null }
+        .Aggregate(_), .Wrap(_), .Variant(_) => if c.uses[usize(d)] is not 1 { return null }
+        .Coerce(_, kind, _) => if c.uses[usize(d)] is not 1 or kind not in (tir.Coercion.WrapOptional, tir.Coercion.WrapOk) { return null }
+        _ => return null
+    }
     t := c.f.temps[usize(d)]
     fg := c.fg
     if not fg.g.ty.by_ref(t) { return null }
     match b.op {
         .Return(?v) => {
             x := v else return null
-            if x is not .Temp(d) or not fg.g.ty.by_ref(fg.def.ret) or fg.def.ret is not t or not fg.no_defers() or fg.outlined { return null }
+            if x is not .Temp(d) or not fg.g.ty.by_ref(fg.def.ret) or fg.def.ret is not t or fg.outlined { return null }
+            if not fg.no_defers() { return "F.ret" }
             return str.format("(*({} *)gm_out)", fg.g.ty.cty(t))!
         }
         .Store(p, x) => {
@@ -683,6 +804,30 @@ lc_call_dest :: fn(c: ^LirC, a: ^const lir.Inst, b: ^const lir.Inst) -> ?string 
         }
         _ => return null
     }
+}
+
+/// Returns the value just built in `dest` (`lc_dest`): `gm_out` is the caller's already;
+/// `F.ret` is returned through the ladder, which runs the deferred statements first.
+lc_return_built :: fn(c: ^LirC, dest: string) needs sema.Load {
+    fg := c.fg
+    if dest is not "F.ret" {
+        fg.jump("gm_fdone", null)
+        return ()
+    }
+    is_err := "0"
+    if fg.g.ty.kind(fg.def.ret) is .Result(_) { is_err = fg.res_is_err(fg.def.ret, "((uint8_t *)&F.ret)") }
+    fg.start_exit(.Return, "(&F.h)", "0", is_err)
+}
+
+/// Builds the blob of the instruction being translated in `LirC.build_dest` if it has one
+/// (`lc_dest`): `make` builds it with `blob`/`blob_over`, after reading its operands.
+lc_build :: fn(c: ^LirC, make: fn() -> string needs sema.Load) -> string needs sema.Load {
+    fg := c.fg
+    fg.blob_dest = c.build_dest
+    r := make()
+    c.dest_taken = c.build_dest is not null and fg.blob_dest is null
+    fg.blob_dest = null
+    return r
 }
 
 /// A nested list, as a C block.
@@ -1123,7 +1268,12 @@ lc_op :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
             if x := d { c.temps[usize(x)] = r }
         }
         .Coerce(d, kind, v) => {
-            c.temps[usize(d)] = try fg.coerce_value(span, c.f.temps[usize(d)], kind, lir.value_type(c.f, v), c.lc_val(v))
+            x := c.lc_val(v)
+            if c.build_dest is not null {
+                c.temps[usize(d)] = c.lc_build(fn() -> string needs sema.Load => fg.coerce_value(span, c.f.temps[usize(d)], kind, lir.value_type(c.f, v), x) else @unreachable())
+            } else {
+                c.temps[usize(d)] = try fg.coerce_value(span, c.f.temps[usize(d)], kind, lir.value_type(c.f, v), x)
+            }
         }
         .Builtin(?d, op, args) => {
             t := fg.g.ty.unit_ty()
@@ -1154,7 +1304,7 @@ lc_op :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
                     parts.push(BlobPart(off: off, len: fg.g.ty.size(lir.value_type(c.f, x))))!
                     vals.push(c.lc_val(x))!
                 }
-                b := fg.blob_over(t, parts.items)
+                b := c.lc_build(fn() -> string needs sema.Load => fg.blob_over(t, parts.items))
                 for k, x in enumerate(items) {
                     fg.store(lir.value_type(c.f, x), str.format("((uint8_t *)&{} + {})", b, parts.items[k].off)!, vals.items[k])
                 }
@@ -1186,17 +1336,24 @@ lc_op :: fn(c: ^LirC, i: ^const lir.Inst) -> Unsup!() needs sema.Load {
         .Variant(d, variant, ?payload) => {
             p: ?string = null
             if x := payload { p = c.lc_val(x) }
+            if c.build_dest is not null {
+                t := c.f.temps[usize(d)]
+                c.temps[usize(d)] = c.lc_build(fn() -> string needs sema.Load => fg.make_variant(t, usize(variant), p))
+                return ()
+            }
             c.lazy[usize(d)] = .Variant(variant, p, c.f.temps[usize(d)])
             c.pending.push(d)!
         }
         .Wrap(d, kind, ?v) => {
             t := c.f.temps[usize(d)]
-            c.temps[usize(d)] = match kind {
+            x: ?string = null
+            if y := v { x = c.lc_val(y) }
+            c.temps[usize(d)] = c.lc_build(fn() -> string needs sema.Load => match kind {
                 .None => fg.make_none(t)
-                .Some => fg.make_some(t, c.lc_val(v?))
-                .Ok => fg.make_res(t, false, lir.value_type(c.f, v?), c.lc_val(v?))
-                .Err => fg.make_res(t, true, lir.value_type(c.f, v?), c.lc_val(v?))
-            }
+                .Some => fg.make_some(t, x?)
+                .Ok => fg.make_res(t, false, lir.value_type(c.f, v?), x?)
+                .Err => fg.make_res(t, true, lir.value_type(c.f, v?), x?)
+            })
         }
         .MakeSlice(d, ptr, lo, hi, inclusive, size) => {
             l := c.lc_val(lo)
