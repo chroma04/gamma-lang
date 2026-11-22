@@ -37,6 +37,12 @@
 - Find which gcc pass breaks generated C: `-fno-<pass>` one by one, then bisect functions
   with `__attribute__((optimize("no-…")))`.
 
+## Run cache race (fixed s83)
+- `gamma run` cache (`<cache>/run/prog-*`): prune spares programs used in the last 10 min,
+  but could delete one another process had just found (stat before its `touch`). Suites
+  over 10 min that rerun programs (Safe job: conformance/ then lanes/) hit it as
+  "cannot run …/prog-…: No such file". driver/native.gm `run` now rebuilds privately.
+
 ## Seed refresh
 - `tools/refresh-seed.sh` needs compiler/lib/runtime committed. To check the result,
   run `bootstrap/build.sh` FIRST (gamma0 must come from the new seed), then

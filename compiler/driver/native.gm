@@ -638,21 +638,35 @@ pub run :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -> u8 ne
     // The executable comes from the cache when the same program was built before.
     exe := ""
     dir := ""
-    match cached_program(&b, opts) {
-        .Exe(path) => { exe = path }
-        .Failed => return 1
-        .Uncached => {
-            buf: [4096]u8 = ---
-            dir = fs.make_temp_dir(fs.temp_dir(), "gamma-run-", buf[..]) else {
-                eprint("gamma: cannot create a temporary directory in `{}`\n", fs.temp_dir())
-                return 1
-            }
-            exe = load.join(dir, native_exe_name(&opts, "prog"))
-            if not compile_built(&b, exe, opts) {
-                _ = fs.remove_all(dir)
-                return 1
-            }
+    // Builds the program into a new temporary directory (`dir`), reporting why it cannot.
+    build_private :: fn() -> bool {
+        buf: [4096]u8 = ---
+        dir = fs.make_temp_dir(fs.temp_dir(), "gamma-run-", buf[..]) else {
+            eprint("gamma: cannot create a temporary directory in `{}`\n", fs.temp_dir())
+            return false
         }
+        exe = load.join(dir, native_exe_name(&opts, "prog"))
+        if not compile_built(&b, exe, opts) {
+            _ = fs.remove_all(dir)
+            dir = ""
+            return false
+        }
+        return true
+    }
+    cached := false
+    match cached_program(&b, opts) {
+        .Exe(path) => {
+            exe = path
+            cached = true
+        }
+        .Failed => return 1
+        .Uncached => if not build_private() { return 1 }
+    }
+    // Another `gamma` pruning the cache (`prune`) may remove a cached executable that it saw
+    // as unused just before this one marked it used: the program is then built again here.
+    if cached and not load.is_file(exe) {
+        if not build_private() { return 1 }
+        cached = false
     }
     defer if dir.len > 0 { _ = fs.remove_all(dir) }
     runner := runner_for(exe) else e => {
@@ -670,6 +684,11 @@ pub run :: fn(s: ^sema.Sema, root: usize, input: string, opts: Options) -> u8 ne
     }
     argv.extend(opts.program_args)!
     status := process.status(argv.items, spawn) else e => {
+        // Pruned between the check above and the start: built again, run once more.
+        if cached and not load.is_file(exe) and build_private() {
+            if runner.items.len is 0 { spawn.program = exe } else { argv.items[runner.items.len] = exe }
+            if again := process.status(argv.items, spawn) { return exit_code(again) }
+        }
         eprint("gamma: cannot run {}: {}\n", exe, pkg.io_message(e))
         return 1
     }
