@@ -31,10 +31,10 @@ Versions and what each kind of change means are described in
   and constant slices of arrays no longer check their range. A third of the slicings in
   the compiler lose their check.
 
-- **`gamma test --backend=interp` checks the program once.** On POSIX systems each test
+- **`gamma test --backend=interp` checks the program once.** On Linux each test
   runs in a copy of `gamma` made by `fork`, in which the program is checked already,
   instead of in a new `gamma` that checked it again: the compiler's own 179 tests take 7 s
-  instead of 112 s (4 s instead of 30 s with `-j 4`). Windows keeps starting `gamma`.
+  instead of 112 s (4 s instead of 30 s with `-j 4`). Other systems keep starting `gamma`.
 
 - **The interpreter runs every function from LIR**: each body is lowered to LIR and
   compiled from it for the register machine, including `with` (and `with … on`), jumps out

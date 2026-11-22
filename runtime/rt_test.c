@@ -712,31 +712,33 @@ static void test_stale_handles(void) {
     int64_t p4 = gm_proc_launch(named, 1, NULL, 0, "", 0, "true", 4, null_streams | GM_PROC_PROGRAM);
     CHECK(p4 > 0 && gm_proc_wait(p4) == 0);
 
-    /* A forked copy: its output reaches us through the pipes, and it ends with the status it
-     * gives gm_proc_fork_exit; kill ends it. */
+    /* A forked copy (where there are copies): its output reaches us through the pipes, and it
+     * ends with the status it gives gm_proc_fork_exit; kill ends it. */
     int64_t f1 = gm_proc_fork();
-    if (f1 == 0) {
-        gm_write_out((const uint8_t *)"out", 3);
-        gm_write_err((const uint8_t *)"err", 3);
-        gm_proc_fork_exit(7);
+    if (f1 != gm_io_error(ENOTSUP)) {
+        if (f1 == 0) {
+            gm_write_out((const uint8_t *)"out", 3);
+            gm_write_err((const uint8_t *)"err", 3);
+            gm_proc_fork_exit(7);
+        }
+        CHECK(f1 > 0);
+        char fbuf[16];
+        size_t outn = 0, errn = 0;
+        int64_t r;
+        while ((r = gm_proc_read_out(f1, fbuf, sizeof fbuf)) > 0) {
+            if (r >= ((int64_t)1 << 32)) errn += (size_t)(r - ((int64_t)1 << 32));
+            else outn += (size_t)r;
+        }
+        CHECK(r == 0 && outn == 3 && errn == 3);
+        CHECK(gm_proc_wait(f1) == 7);
+        int64_t f2 = gm_proc_fork();
+        if (f2 == 0) {
+            for (;;) pause();
+        }
+        CHECK(f2 > 0);
+        CHECK(gm_proc_kill(f2) == 0);
+        CHECK(gm_proc_wait(f2) == 9 + ((int64_t)1 << 32));
     }
-    CHECK(f1 > 0);
-    char fbuf[16];
-    size_t outn = 0, errn = 0;
-    int64_t r;
-    while ((r = gm_proc_read_out(f1, fbuf, sizeof fbuf)) > 0) {
-        if (r >= ((int64_t)1 << 32)) errn += (size_t)(r - ((int64_t)1 << 32));
-        else outn += (size_t)r;
-    }
-    CHECK(r == 0 && outn == 3 && errn == 3);
-    CHECK(gm_proc_wait(f1) == 7);
-    int64_t f2 = gm_proc_fork();
-    if (f2 == 0) {
-        for (;;) pause();
-    }
-    CHECK(f2 > 0);
-    CHECK(gm_proc_kill(f2) == 0);
-    CHECK(gm_proc_wait(f2) == 9 + ((int64_t)1 << 32));
 
     char link_buf[16];
     CHECK(gm_fs_canonical("/", 1, link_buf, sizeof link_buf) == 1 && link_buf[0] == '/');

@@ -3022,13 +3022,15 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
     return h;
 }
 
-/* Forks this process, to run work in a copy of it whose state is already built. The child's
+/* Forks this process (Linux with glibc, which resets the stdio locks in the copy), to run
+ * work in a copy of it whose state is already built. The child's
  * standard input is the null device and its output streams are pipes to us; it leads a
  * process group of its own. Returns 0 in the child, a handle as gm_proc_launch does in the
  * parent, or an IoError. Holding the runtime's lock and the standard streams across the fork
  * leaves the child no lock held by a thread it does not have and none of our buffered
  * output; holding gm_spawn_lock keeps it from inheriting the pipe ends of a child that
  * another thread is starting. The child ends with gm_proc_fork_exit. */
+#if defined(__linux__) && defined(__GLIBC__) && !defined(__FILC__)
 GM_API int64_t gm_proc_fork(void) {
     gm_flush();
     fflush(stderr);
@@ -3094,6 +3096,13 @@ GM_API int64_t gm_proc_fork(void) {
 /* Ends the child of gm_proc_fork with `status` once what it buffered is written, without
  * running the exit handlers of the process it is a copy of. */
 GM_API void gm_proc_fork_exit(int32_t status) { _exit(gm_finish_main(status)); }
+#else
+/* Elsewhere a forked copy of a threaded process may find the standard streams and our locks
+ * held by a thread it does not have (macOS: a mutex records its owner's thread id, which the
+ * copy's thread does not share), so callers start a process instead. */
+GM_API int64_t gm_proc_fork(void) { return gm_io_error(ENOTSUP); }
+GM_API void gm_proc_fork_exit(int32_t status) { _exit(gm_finish_main(status)); }
+#endif
 
 /* The child of handle h, with a reference that gm_proc_put drops; NULL if h is not live. */
 static gm_proc *gm_proc_get(int64_t h) {

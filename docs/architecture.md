@@ -1387,13 +1387,14 @@ tests (the modules of the root's package that it imports; all of them with `--al
 the chosen tests into one executable whose `main` runs the test given by its first argument,
 and run it once per test with captured output. With `--backend=interp` there is no
 executable: each test is interpreted (`driver.run_interp_entry`) in a process of its own, so
-traps, exits and `--timeout` work as for an executable. On POSIX systems that process is a
+traps, exits and `--timeout` work as for an executable. On Linux (glibc) that process is a
 copy of `gamma` made by `fork` (the runtime's `gm_proc_fork`), in which the program is
 checked and lowered already; the copy runs the test and ends with its status. Worker threads
 have small stacks, so they ask the main thread to fork, and the test runs on its stack.
-Elsewhere (Windows) each test runs in a `gamma` started with the same command line plus the
-hidden option `--run-test=j`, which checks the program again and interprets the `j`th
-selected test. The tests that reach foreign code or assembly (`driver.needs_native`) are
+Elsewhere (macOS, where a forked copy of a threaded process can find its locks held by a
+thread it lacks, and Windows) each test runs in a `gamma` started with the same command
+line plus the hidden option `--run-test=j`, which checks the program again and interprets
+the `j`th selected test. The tests that reach foreign code or assembly (`driver.needs_native`) are
 compiled into one executable of their own and run natively, in their place in the report. `run.gm`
 selects the cases (`--filter`), runs them, on `--jobs` threads that only start processes, and
 prints the results in order; a test passes if its exit status is 0, and a trap's message and

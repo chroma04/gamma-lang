@@ -12,7 +12,9 @@ log; this file keeps the reasons and numbers for what was decided.
   operands (1 or 2). check/vector.gm `vector_lane_conversion`, `shuffle_index`.
 - `gamma test --backend=interp`: fork per test (runtime gm_proc_fork/gm_proc_fork_exit;
   testing/run.gm Fork protocol: workers ask the MAIN thread via Pool.fork_busy/ask/answer,
-  because worker stacks are 8 MB vs main 64 MB). compiler tests 112 s -> 7 s. Windows/WASI:
+  because worker stacks are 8 MB vs main 64 MB). compiler tests 112 s -> 7 s. Linux+glibc only (macOS CI hung: a
+  mutex/FILE lock records its owner's thread id, which the forked copy's thread lacks);
+  macOS/Windows/WASI:
   gm_proc_fork returns Unsupported -> old `--run-test=j` spawn path.
 - Interp: child-process read/write/wait on host threads when >1 green thread; scheduler
   re-polls Host waiters every 1 ms even if another thread has a later deadline (that was

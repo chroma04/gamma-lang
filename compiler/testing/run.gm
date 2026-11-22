@@ -19,7 +19,7 @@ str :: import "std/str"
 thread :: import "std/thread"
 tir :: import "../tir"
 
-/// Copies of this process for running interpreted tests (POSIX; elsewhere `gm_proc_fork`
+/// Copies of this process for running interpreted tests (Linux; elsewhere `gm_proc_fork`
 /// fails and each test starts `gamma` again): `gm_proc_fork` returns 0 in the copy, which
 /// ends with `gm_proc_fork_exit`, and the copy's handle (a `process.Child`) here.
 rt :: foreign "c" {
