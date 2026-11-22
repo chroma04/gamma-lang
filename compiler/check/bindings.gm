@@ -244,10 +244,20 @@ visit :: fn(e: ^Expr, f: fn(x: ^Expr)) {
     tir.for_each_child(e, fn(c: ^Expr) { visit(c, f) })
 }
 
-/// True if `e` mentions no locals: a candidate for evaluation at compile time.
-closed_const :: fn(s: ^Sema, e: ^Expr) -> bool {
+/// True if `e` mentions no locals: a candidate for evaluation at compile time. The hidden
+/// local that holds a temporary array of `e` itself (`f([_]i32(1, 2))`) does not count.
+closed_const :: fn(s: ^Sema, e: ^Expr) -> bool needs Alloc {
+    held := list(u32)
+    defer held.deinit()
+    visit(e, fn(x: ^Expr) {
+        if not is_held_temp(x) { return }
+        .Block(b) := x.kind else return
+        .Assign(lhs, _) := b.stmts[0] else return
+        if .Local(id) := lhs.kind { held.push(id)! }
+    })
     ok := true
     visit(e, fn(x: ^Expr) {
+        if .Local(id) := x.kind and id in held.items { return }
         if s.tys.has_param(x.ty) or x.kind in (.Local(_), .Upvar(_), .ValueParam(_), .SizeOf(_), .IntLimit(_), .TypeName(_), .TypeIs(_), .Closure(_), .HandlerRef(_)) { ok = false }
     })
     return ok

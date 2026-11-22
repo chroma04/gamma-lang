@@ -120,6 +120,22 @@ Versions and what each kind of change means are described in
 - **`< <= > >=` on booleans, enums, tuples, arrays and strings in a constant** (§7.5) were
   rejected as operators the compiler cannot evaluate; they now give the value the same
   comparison has at run time.
+- **Deep recursion in a compile-time evaluation is a compile error**
+  (`compile-time evaluation failed: stack overflow`), as §17.1 requires; it crashed the
+  compiler with a stack overflow of its own. The evaluator now stops when it has used
+  512 MiB of the compiler's stack.
+- **An immutable local whose initializer passes a temporary array is evaluated at compile
+  time** (§17.2): `total :: sum([_]i32(1, 2, 3))` ran at run time, so it could not size
+  an array or appear in `@static_assert`. When an immutable local or a parameter is used
+  where a compile-time value is needed, the error no longer suggests declaring it with
+  `::`.
+- **The language server's hover no longer shows `{error}`** for an expression whose type
+  could not be found (such as a call of an unknown function); it shows nothing there.
+- **`difftest` accepts `--option=value`**, as `gamma` does and `docs/contributing.md`
+  shows (`--mode=checked`); it rejected every option written that way.
+- **A tuple destructuring written in parentheses gets a clear error**: `(a, b) := t` was
+  reported as a pattern that can fail; the error now says that a tuple is destructured
+  without parentheses, `a, b := t` (§4.5).
 
 ## 0.3.0 - 2026-11-21
 

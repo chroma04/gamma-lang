@@ -2484,7 +2484,7 @@ CRC32 :: crc_table(0xEDB88320)        // crc_table :: fn(poly: u32) -> [256]u32
 
 ### 17.3 Step budget
 
-Each required evaluation has a budget of evaluation steps (implementation-defined, at least 10⁷ per top-level declaration). `#fuel(n)` on a declaration raises its budget to `n`. Exceeding the budget in a required evaluation is a compile error naming the call.
+Each required evaluation has a budget of evaluation steps (implementation-defined, at least 10⁷ per top-level declaration). `#fuel(n)` on a declaration raises its budget to `n`. Exceeding the budget in a required evaluation is a compile error naming the call. Calls also nest only to an implementation-defined depth (recursion at least 10⁴ calls deep is supported); going deeper is a stack overflow, a compile error in every evaluation, opportunistic ones included.
 
 ### 17.4 What a constant may contain
 

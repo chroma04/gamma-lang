@@ -92,6 +92,11 @@ NO_FN: u32 : 0xFFFF_FFFF
 /// How deeply calls may nest.
 MAX_DEPTH: u32 : 200_000
 
+/// How much host stack an evaluation may use below the point where it starts. Each call
+/// evaluated takes several kilobytes, so the host stack, not `MAX_DEPTH`, usually limits
+/// recursion; the compiler runs on a stack of 1 GiB (`COMPILER_STACK` in main.gm).
+EVAL_STACK: usize : 1 << 29
+
 /// What evaluating an expression gives.
 pub EvalResult :: union {
     Ok: Value
@@ -103,6 +108,13 @@ pub EvalResult :: union {
 /// Evaluates the closed expression `e` with `budget` steps.
 pub run :: fn(s: ^Sema, e: ^Expr, budget: u64) -> EvalResult needs Load {
     m := machine(s, budget)
+    outermost := s.eval_stack_floor is 0
+    if outermost {
+        marker: u8 = 0
+        here := (&marker).addr()
+        s.eval_stack_floor = if here > EVAL_STACK { here - EVAL_STACK } else { 1 }
+    }
+    defer if outermost { s.eval_stack_floor = 0 }
     return match m.eval(e) {
         !.Trap(t) => .Trap(t)
         !.Unsupported(u) => .Unsupported(u.span, u.what)
@@ -842,7 +854,8 @@ args :: fn(m: ^Machine, args: []Expr) -> Flow![]Value needs Load {
 /// Calls function `f` with `args`. A function literal runs in the frame it was made in
 /// (`env`); a nested function called by name finds the frame of its parent.
 call :: fn(m: ^Machine, f: u32, args: []Value, env: ?^EvalFrame, span: source.Span) -> Flow!Value needs Load {
-    if m.depth >= MAX_DEPTH { return !m.trap(span, "stack overflow") }
+    marker: u8 = 0
+    if m.depth >= MAX_DEPTH or (&marker).addr() < m.s.eval_stack_floor { return !m.trap(span, "stack overflow") }
     try m.tick(span)
     sig := &m.s.fns.items[usize(f)]
     def := m.s.def_of(f)

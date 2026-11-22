@@ -1,6 +1,6 @@
 # Gamma: agent memory INDEX (read first)
 
-## State (2026-11-22, s85)
+## State (2026-11-22, s86)
 - `main` = PRs #1–#141 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
   commit). `## Unreleased` in CHANGELOG.md started in s77.
   Tag `rust-reference-final` marks the last Rust implementation.
@@ -23,6 +23,7 @@
   software i128; Windows/FreeBSD/real-editor items need machines this box lacks).
   s85 perf follow-ups (077): in-place results, `let` result hint, statement-run C
   blocks, template forwarding; roadmap §2 now empty.
+  s86 bug sweep (history.md): six small fixes; how to sweep: gotchas/bug-sweeps.md.
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
@@ -41,6 +42,7 @@
 - spec-notes/     amendments.md (index of spec edits by session) · pain-points.md
                   (recurring usability pain: open, settled, by design)
 - gotchas/        build-and-test.md (memory limits, rebuilds, diagnosing failures, git) ·
+                  bug-sweeps.md (difftest, sanitizers, fuzzers, fmt round trips: recipes) ·
                   platforms.md (clang, aarch64, s390x, Windows, WASI, Fil-C) ·
                   codegen.md (generated C, runtime, host stack) ·
                   parallel-agents.md (worktree workers: stale bases, limits)

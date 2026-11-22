@@ -520,7 +520,7 @@ declare :: fn(cx: ^FnCx, name: string, b: LocalBinding, span: source.Span) needs
     match b {
         .Untyped(v) => cx.s.local_consts.push(sema.LocalConst(name: name, kind: .Untyped(v)))!
         .Const(c) => cx.s.local_consts.push(sema.LocalConst(name: name, kind: .Const(..c)))!
-        .Var(_) => cx.s.local_consts.push(sema.LocalConst(name: name, kind: .Var))!
+        .Var(id) => cx.s.local_consts.push(sema.LocalConst(name: name, kind: .Var(cx.locals.items[usize(id)].mutable)))!
         _ => {}
     }
     cx.scopes.items[cx.scopes.items.len - 1].push(Binding(name: name, value: b))!

@@ -1,0 +1,18 @@
+// An immutable local whose initializer passes a temporary array as a slice is still a
+// constant expression, evaluated at compile time (§17.2): it may size an array.
+sum :: fn(xs: []const i32) -> i32 {
+    s: i32 = 0
+    for x in xs { s += x }
+    return s
+}
+
+count :: fn(xs: []const u8) -> usize => xs.len
+
+main :: fn() needs Out {
+    total :: sum([_]i32(1, 2, 3))
+    @static_assert(total is 6, "evaluated at compile time")
+    n :: count([_]u8(7, 8, 9, 10)[1..])
+    buf := [n]u8(fill: 0)
+    tail :: [_]i32(4, 5, 6)[1..].len
+    print("{} {} {}\n", total, buf.len, tail)
+}
