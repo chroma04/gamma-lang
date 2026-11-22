@@ -111,21 +111,7 @@ num_float_int :: fn(x: f64, op: tir.Builtin) -> ?NumVal {
 // ---------------------------------------------------------------------------------
 
 /// The `f64` equal to the binary16 number with bits `h`.
-num_f16_to_f64 :: fn(h: u16) -> f64 {
-    sign := u64(h & 0x8000) << 48
-    exp := u64((h >> 10) & 0x1f)
-    man := u64(h & 0x3ff)
-    if exp is 0 {
-        v := man.to(f64) * 0x1.0p-24
-        return if sign is 0 { v } else { -v }
-    }
-    if exp is 0x1f {
-        if man is 0 { return (sign | 0x7FF0_0000_0000_0000).bits(f64) }
-        // As the hardware widens a NaN: sign and payload kept, quiet.
-        return (sign | 0x7FF8_0000_0000_0000 | (man << 42)).bits(f64)
-    }
-    return (sign | ((exp + 1008) << 52) | (man << 42)).bits(f64)
-}
+num_f16_to_f64 :: fn(h: u16) -> f64 => ratio.f16_value(h)
 
 /// The bits of the binary16 number nearest `x` (ties to even).
 num_f64_to_f16 :: fn(x: f64) -> u16 => ratio.f16_bits(x)

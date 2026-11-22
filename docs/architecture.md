@@ -433,20 +433,23 @@ them into static storage and the interpreter lays them out in its memory.
 
 `compiler/lir/` lowers a checked, monomorphic function body from TIR to one form that a back
 end can run or translate directly, and on which analyses such as the removal of checks a
-loop's range proves can be done once. The interpreter compiles every body from it
-(`interp/vm_lir.gm`, below). The C back end walks TIR, and with `GAMMA_CGEN_LIR=1` generates
-from LIR each body whose instructions `cgen/lirc.gm` translates (`GAMMA_CGEN_LIR=report` lists
-the others and why), sharing the expression helpers with the TIR path (operators, builtins,
-coercions, calls, formatted output take C values, not TIR nodes). Each temporary becomes a C
+loop's range proves can be done once. Both back ends translate every body from it: the
+interpreter compiles it for its register machine (`interp/vm_lir.gm`, below) and the C back
+end translates it to C (`cgen/lirc.gm`), with expression helpers that take C values
+(operators, builtins, coercions, calls, formatted output). Each temporary becomes a C
 temporary; a large value loaded from a place, or a union variant, is computed only where it is
 needed, so `x is .V(p)` compares the tag and payload in place and a copy is a `memmove`; a
 call whose large result is returned or stored in a local writes it there. `defer` and the
 loops of a function with nested functions use the same ladder as the TIR path: a block with a
 `defer` is a block scope whose deferred bodies are LIR lists, and a branch out of it to a
 block's end is an exit to a rung for that block. A `with` installs its handler nodes and has
-the `with` scope of the TIR path, and exits between frames, `resume` and `cancel` are the
-same C. Bodies with `with … on`, vector values, atomics, `@fiber`, `in` or `#bits` fields
-still take the TIR path, as do specialized clones, very long bodies and `-g` builds.
+a `with` scope, and exits between frames, `resume` and `cancel` go through the ladder. The
+body of a `with … on` is a C function of its own that reaches the frame through a pointer;
+a branch out of it is an exit to a rung of the block it leaves. A large argument read from a
+place is passed in place, and one built from literals comes from static storage
+(`constarg.gm`). The whole-program analyses of the C back end (parameters read in place,
+purity, which calls may exit, call depth) still read TIR: LIR is lowered one function at a
+time, as it is translated, and lowering is about 5% of a build's time.
 `gamma lir` prints it, and the `lir` suite checks that every conformance program and
 example lowers to well-formed LIR with nothing left to TIR.
 
@@ -454,7 +457,7 @@ example lowers to well-formed LIR with nothing left to TIR.
   WebAssembly: `Block`, `Loop` and `If` hold lists of their own, and control leaves a
   block only by falling off its end or by `Br`/`BrIf` to its label (a loop runs again when
   its body falls off the end). Structure is kept, rather than a graph of basic blocks,
-  because the C back end splits long functions by runs of statements and needs to see them,
+  because the C back end splits long functions by runs of instructions and needs to see them,
   and because the interpreter's compiler already turns structure into jumps. A `Defer`
   belongs to the block it is in and runs whenever that block is left.
 - **Values.** The locals are TIR's (same indices), then those lowering adds for the value
@@ -661,14 +664,13 @@ operating system, the architecture, whether it is a Fil-C target and whether `f1
 | --- | --- |
 | `gen.gm`, `program.gm` | `Gen`: the whole program, prototypes, constants, entry points; the checked program as the back end sees it |
 | `types.gm`, `layout.gm` | C representations of types (typed structs, blobs, mirrors), type descriptors for `@write`; the target and pointer maps for Fil-C (layouts come from `sema/layout.gm`) |
-| `func.gm`, `fngen.gm` | functions: frames, blocks, statements, the exit ladders; the state of generating one function |
-| `lirc.gm` | function bodies from LIR (`GAMMA_CGEN_LIR`), for the functions whose LIR it translates; the others are generated from TIR |
-| `expr.gm`, `calls.gm` | expressions, places and coercions; calls, effects, `with`, `try`, equality |
-| `patterns.gm`, `bits.gm` | conditions, `match`, patterns and `in`; `#bits` fields |
+| `func.gm`, `fngen.gm` | functions: frames, scopes, the exit ladders; the state of generating one function |
+| `lirc.gm` | function bodies, translated from their LIR; long lists of instructions in C blocks and helpers |
+| `expr.gm`, `calls.gm` | values, coercions, `return`/`break` targets; calls, effects, equality |
+| `patterns.gm`, `bits.gm` | `in`; `#bits` fields |
 | `consts.gm` | compile-time values in static storage |
 | `spec.gm` | handler specialization |
-| `chain.gm` | long chains of operations (`a + b + …`, `x.abs().abs()…`) through an accumulator |
-| `outline.gm` | long runs of statements moved into helper functions that share the frame |
+| `outline.gm` | long runs of instructions moved into helper functions that share the frame |
 | `arith.gm`, `builtins.gm` | checked scalar operators; the builtins, system operations, atomics and conversions |
 | `vector.gm` | vector operations as GCC/Clang vector extensions, lane loops where a check applies (§5.6.2) |
 | `helpers.gm` | per-type equality, ordering and hashing |
@@ -695,13 +697,13 @@ Operands are evaluated into C temporaries in order, so expressions are never nes
 the C text. A function with tens of thousands of operations is still expensive to
 compile: Clang tracks the lifetime of every variable of a scope at each branch out of
 it, and gcc's points-to analysis and jump threading are superlinear in the size of one
-function. A chain of more than 256 operations that each take the previous one's value
-as their first operand (binary operators, `and`/`or`, unary operators, built-in and
-function-call links with a scalar value) is therefore emitted as an accumulator
-variable updated by one block per link (`chain.gm`), which keeps the live temporaries of
-any scope bounded; the first operand is still evaluated first, so order, traps and
-early exits are unchanged. Chains of large values (structs, arrays) and chains through
-other operations keep one scope. A generated function of more than 20,000 temporaries
+function. A list of more than 256 LIR instructions (counting nested ones) is therefore
+emitted in segments of about 64, each a C block of its own (`lc_segments` in `lirc.gm`):
+a temporary read past its segment is copied to a variable declared before the block, so
+the live temporaries of any scope stay bounded, as in a chain of tens of thousands of
+operations, and order, traps and early exits are unchanged. In a long function
+(`outline.gm`), a run of instructions that no temporary crosses into or out of moves to a
+helper function instead. A generated function of more than 20,000 temporaries
 is marked `GM_HUGE_FN`, which turns off those two gcc passes for it, and `-w` is
 accompanied by `-Wno-free-nonheap-object` because gcc otherwise still runs its
 access-warning pass over such functions. Clang from LLVM 19 on (Apple clang 17 on)
@@ -1182,23 +1184,13 @@ while direct calls use the internal one.
 
 A large result is returned through a first parameter `gm_out`, the address of
 the caller's destination, and the function returns `void`. The callee writes it
-only when it returns (or, below, as the last thing it does), so the caller passes
-the variable or place being assigned (`x = f(…)`, `x := f(…)`, `a[i] = f(…)`,
-`return f(…)`) instead of a temporary: the assignment still happens after the
-whole call, and an exit out of the call leaves the destination as it was
-(`expr_into`). Struct and array constructions are likewise built in their
-destination once every element is evaluated, except that an element which is itself
-a struct or array (or, into a new variable, a call) is built directly in its place
-in the destination, and an element read from a place is copied straight from it.
-That writes the destination before the later elements are evaluated, so it is done
-only when nothing evaluated meanwhile can read the destination (`Observed`): a new
-variable or result slot, or the caller's destination when every element only reads
-constants and the function's own locals and parameters. An assignment to an existing
-place builds the value in a temporary first. A caller does not pass a destination
-that overlaps a parameter the callee reads in place while building its result (it
-copies that argument first; `read_during_build`). A function body with no pending
-deferred statement builds its result, or copies a returned local, straight into
-`gm_out`; otherwise the result goes to the frame's result slot first, and the
+only when it returns, copying a value it built in a temporary (or passing its
+own `gm_out` on to a call whose result it returns), so a call whose large result is
+stored in a local or returned writes it there directly (`lc_call_dest` in `lirc.gm`):
+the assignment still happens after the whole call, and an exit out of the call leaves
+the destination as it was. Struct and array constructions are built in a temporary and
+copied. A function body with no pending deferred statement copies its result straight
+into `gm_out`; otherwise the result goes to the frame's result slot first, and the
 deferred statements run before it is copied out.
 
 A large parameter is read in place, without the copy, when no difference can be

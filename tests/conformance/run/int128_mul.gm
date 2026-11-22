@@ -1,0 +1,14 @@
+// Multiplication of `i128` (§7.4.2) in its wrapping, checked and saturating forms, near the
+// overflow boundary and across the 64-bit halves of the operands.
+main :: fn() needs Out {
+    xs := [_]i128(0, 1, -1, 2, -2, 3, 170141183460469231731687303715884105727, -170141183460469231731687303715884105728, 13043817825332782212, -13043817825332782212, 13043817825332782213, 9223372036854775808, -9223372036854775808, 18446744073709551616, -85070591730234615865843651857942052864)
+    for a in xs {
+        for b in xs {
+            w := a *% b
+            c := a *? b else 7
+            s := a *| b
+            print("{} {} {} {} {}\n", a, b, w, c, s)
+        }
+    }
+    print("{}\n", (3i128).pow(80).checked(i128) else 0)
+}

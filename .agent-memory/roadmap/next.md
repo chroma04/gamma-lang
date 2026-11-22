@@ -21,10 +21,9 @@ Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability repo
 ## 2. Performance (measure first; callgrind recipe in docs/contributing.md)
 s77 (decisions/072) measured every item of the old list: kept the cheap wins, closed the
 rest with numbers. What is left needs a structural change; do it only if asked:
-- Lowered IR (decisions/075; user approved the detour, P5/LLVM dropped). P0–P2 done
-  (s79–s81: the interp runs everything from LIR, no tree evaluator); P3a bounds-check
-  elimination done (s82); P4a (cgen/lirc.gm behind GAMMA_CGEN_LIR, 97% of bodies) done
-  (s82). NEXT: P4 coverage (075 "State after P4a", Next for P4), then default on.
+- LIR follow-ups (decisions/075 "State after P4", plan done s83): range-check
+  elimination (`xs[i..j]`); C blocks per statement run in short lists (stack reuse);
+  nested helpers in split long functions.
 - Interp: push without copying constants (consts as immediates in Bc) and without the
   frame memset (needs proof registers are written before read); `with` re-resolves its
   perform site per ctx.

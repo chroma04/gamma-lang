@@ -25,16 +25,6 @@ pub SiteConst :: struct {
     name: string = ""
 }
 
-same_site_const :: fn(a, b: ^const SiteConst) -> bool {
-    if a.ty is not b.ty or a.bytes.items is not b.bytes.items or a.relocs.items.len is not b.relocs.items.len { return false }
-    for i in 0..a.relocs.items.len {
-        x := a.relocs.items[i]
-        y := b.relocs.items[i]
-        if x.offset is not y.offset or x.data is not y.data { return false }
-    }
-    return true
-}
-
 /// A zeroed constant of type `t`.
 new_site_const :: fn(g: ^Gen, t: Ty) -> SiteConst needs sema.Load {
     size := g.ty.size(t)
@@ -44,11 +34,10 @@ new_site_const :: fn(g: ^Gen, t: Ty) -> SiteConst needs sema.Load {
     return v
 }
 
-/// The C address (`uint8_t *`) of static storage holding the value of `e`, if `e` is built
-/// from literals only.
-const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
-    v := new_site_const(g, e.ty)
-    if not g.const_into(e, 0, &v) { return null }
+/// The static storage (`gm_kN`, a `uint8_t *` expression) of the constant argument `v`,
+/// shared with every other argument of the same value.
+site_const_storage :: fn(g: ^Gen, sc: SiteConst) -> string needs sema.Load {
+    v := sc
     i := g.site_consts.items.len
     for k in 0..g.site_consts.items.len {
         if same_site_const(&g.site_consts.items[k], &v) {
@@ -67,8 +56,63 @@ const_arg :: fn(g: ^Gen, e: ^Expr) -> ?string needs sema.Load {
     return str.format("((uint8_t *){})", g.site_consts.items[i].name)!
 }
 
-/// Whether `e` is built from literals only, so that `const_arg` passes it from static
-/// storage.
+same_site_const :: fn(a, b: ^const SiteConst) -> bool {
+    if a.ty is not b.ty or a.bytes.items is not b.bytes.items or a.relocs.items.len is not b.relocs.items.len { return false }
+    for i in 0..a.relocs.items.len {
+        x := a.relocs.items[i]
+        y := b.relocs.items[i]
+        if x.offset is not y.offset or x.data is not y.data { return false }
+    }
+    return true
+}
+
+/// Writes the value `v` of the LIR body `f` at `off` in `sc`; false if `v` is not built
+/// from constants only (`Word`, `Big`, string literals and aggregates of them, each
+/// temporary read only here, as `defs` defines it). `parts` collects those temporaries.
+lir_const_into :: fn(g: ^Gen, f: ^const lir.Func, defs: []const ?^const lir.Inst, uses: []const u32, v: lir.Value, off: u64, sc: ^SiteConst, parts: ^List(u32)) -> bool needs sema.Load {
+    match v {
+        .Word(t, bits) => {
+            match g.ty.repr(t) {
+                .Int(_, _, _), .Bool => {}
+                .Float(w) => if w is 16 { return false }
+                _ => if bits is not 0 { return false }
+            }
+            g.store_int(sc.bytes.items, off, u128(bits), g.ty.size(t).min(8))
+        }
+        .Big(t, bits) => g.store_int(sc.bytes.items, off, bits, g.ty.size(t).min(16))
+        .Zero(_) => {}
+        .Uninit(_) => return false
+        .Temp(t) => {
+            if uses[usize(t)] is not 1 { return false }
+            i := defs[usize(t)] else return false
+            match i.op {
+                .Str(_, s, cstr) => {
+                    sc.relocs.push(SiteReloc(offset: off, data: s))!
+                    if not cstr {
+                        p := g.ty.lay.target.ptr_bytes
+                        g.store_int(sc.bytes.items, off + p, u128(s.len), p)
+                    }
+                }
+                .Aggregate(_, items) => {
+                    ty := f.temps[usize(t)]
+                    if g.ty.bits_layout(ty) is not null { return false }
+                    esz: u64 = 0
+                    offs: []const u64 = empty_slice(u64)
+                    if .Array(_, elem, _) := g.ty.kind(ty) { esz = g.ty.size(elem) } else { offs = g.ty.offsets(ty) }
+                    for k, x in enumerate(items) {
+                        o := if offs.len > k { offs[k] } else { u64(k) * esz }
+                        if not g.lir_const_into(f, defs, uses, x, off + o, sc, parts) { return false }
+                    }
+                }
+                _ => return false
+            }
+            parts.push(t)!
+        }
+    }
+    return true
+}
+
+/// Whether `e` is built from literals only, so that a call passes it from static storage.
 is_const_arg :: fn(g: ^Gen, e: ^Expr) -> bool needs sema.Load {
     v := new_site_const(g, e.ty)
     return g.const_into(e, 0, &v)

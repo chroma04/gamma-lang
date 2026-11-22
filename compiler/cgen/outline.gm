@@ -1,17 +1,17 @@
-// Long runs of statements moved into C functions of their own.
+// Long runs of instructions moved into C functions of their own.
 //
 // C compilers take time superlinear in the size of one function, so a Gamma function with
 // thousands of statements compiles slowly as one C function, even when every statement is
-// simple. In a function whose body is long (see `long_body`), the statements of a long
-// block are dealt out in runs to helper functions `gm_cN_K`, each called where its run
-// was (`runs_of`).
+// simple. In a function whose body is long (see `long_body`), the instructions of a long
+// LIR list are dealt out in runs to helper functions `gm_cN_K`, each called where its run
+// was (`lc_segments` in `lirc.gm`): a run that no temporary crosses into or out of.
 //
 // A helper shares the frame: it gets its address, and inside it `F` is a macro for
-// `(*gm_Fp)`, so a statement's code is the same as it would be inline. The function's
-// locals then all live in the frame (`frame_locals`), if some run moves (`outlines`): a
-// long function whose blocks are all short, such as one big `match`, keeps them in C
-// variables. The few C variables that statements
-// read besides (`env`, `cx`, `inst`, `gm_out`, the backtrace record `B`, the node of an
+// `(*gm_Fp)`, so an instruction's code is the same as it would be inline. The function's
+// locals then all live in the frame (`frame_locals`), if some list is long enough to split
+// (`outlines`): a long function whose lists are all short, such as one big `match`, keeps
+// them in C variables. The few C variables that the code
+// reads besides (`env`, `cx`, `inst`, `gm_out`, the backtrace record `B`, the node of an
 // enclosing `with` and the parameters read in place) are passed along.
 //
 // An exit from a run jumps to a label outside the helper (a rung of the ladder, a loop's
@@ -22,13 +22,6 @@
 /// The size of a function body, in expression nodes, above which its long blocks are split
 /// into helpers. The largest functions of ordinary programs stay below it.
 LONG_BODY: u32 : 1500
-
-/// The most expression nodes in one run of statements moved into a helper. A helper of that
-/// size has some 1,000 C names, well below `GM_LONG_FN`'s threshold.
-RUN_WEIGHT: u32 : 400
-
-/// Runs this small are left inline: a call would cost more than it saves.
-MIN_RUN: u32 : RUN_WEIGHT / 8
 
 /// A label outside a helper that its code jumps to, with the index of its scope (`null`
 /// for the function's own labels).
@@ -65,30 +58,6 @@ weight :: fn(e: ^Expr, cap: u32) -> u32 {
     return n.min(cap)
 }
 
-/// The number of expression nodes in statement `s`, counting up to `cap` at most.
-stmt_weight :: fn(s: ^const tir.Stmt, cap: u32) -> u32 {
-    n: u32 = 1
-    match s^ {
-        .Let(_, ?init) => if x := init { if n < cap { n += weight(x, cap - n) } }
-        .LetTuple(_, init) => if n < cap { n += weight(init, cap - n) }
-        .Assign(place, value) => {
-            if n < cap { n += weight(place, cap - n) }
-            if n < cap { n += weight(value, cap - n) }
-        }
-        .AssignTuple(places, value) => {
-            for p in places {
-                if x := p {
-                    if n < cap { n += weight(x, cap - n) }
-                }
-            }
-            if n < cap { n += weight(value, cap - n) }
-        }
-        .Expr(e) => if n < cap { n += weight(e, cap - n) }
-        .Defer(_, e) => if n < cap { n += weight(e, cap - n) }
-    }
-    return n.min(cap)
-}
-
 /// Jumps to C label `label`, whose scope has index `scope` in the scope stack (`null` for a
 /// label of the function itself: the ladder's last rung, the return).
 jump :: fn(fg: ^FnGen, label: string, scope: ?usize) needs Alloc {
@@ -112,97 +81,29 @@ jump :: fn(fg: ^FnGen, label: string, scope: ?usize) needs Alloc {
     fg.linef("goto {};", label)
 }
 
-/// The statements of a block, each in a C block of its own (so the C compiler can reuse
-/// their temporaries' stack space), runs of them in helpers in a long function.
-stmt_list :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
-    if not fg.split_runs or stmts.len < 2 {
-        for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
-        return ()
-    }
-    weights := list(u32)
-    for i in 0..stmts.len { weights.push(stmt_weight(&stmts[i], RUN_WEIGHT + 1))! }
-    runs := runs_of(weights.items)
-    for r in runs.items {
-        if r.outline {
-            try fg.outline_run(stmts[r.start..r.end])
-        } else {
-            for j in r.start..r.end { try fg.stmt_block(&stmts[j]) }
-        }
-    }
-}
-
-/// How `stmt_list` deals out statements of these weights: consecutive ranges, each moved to
-/// a helper (`outline`) or left inline.
-runs_of :: fn(weights: []const u32) -> List((start: usize, end: usize, outline: bool)) needs Alloc {
-    out := list((start: usize, end: usize, outline: bool))
-    // Only the statements small enough for a run can move. If they come to less than one
-    // run (a few statements beside a big one, such as a loop), moving them makes the C
-    // function hardly smaller, but its locals would have to live in the frame.
-    small: u64 = 0
-    for w in weights {
-        if w <= RUN_WEIGHT { small += u64(w) }
-    }
-    if weights.len < 2 or small <= u64(RUN_WEIGHT) {
-        out.push((start: 0, end: weights.len, outline: false))!
-        return out
-    }
-    i: usize = 0
-    while i < weights.len {
-        // A statement too big for a run stays here: its own blocks are split.
-        if weights[i] > RUN_WEIGHT {
-            out.push((start: i, end: i + 1, outline: false))!
-            i += 1
-            continue
-        }
-        start := i
-        total: u32 = 0
-        while i < weights.len and weights[i] <= RUN_WEIGHT and total + weights[i] <= RUN_WEIGHT {
-            total += weights[i]
-            i += 1
-        }
-        out.push((start: start, end: i, outline: total >= MIN_RUN))!
-    }
-    return out
-}
-
-/// Whether generating `def`'s body moves some run of statements into a helper, so that its
-/// locals must live in the frame: it is long, and some block of it has a run to move.
-outlines :: fn(g: ^Gen, f: u32) -> bool needs Alloc {
+/// Whether generating function `f` may move a run of instructions into a helper, so that its
+/// locals must live in the frame: its body is long, and so is some list of its LIR.
+outlines :: fn(g: ^Gen, f: u32) -> bool needs sema.Load {
     if not long_body(g, f) { return false }
-    b := g.prog.func(f).body else return false
-    return any_outlined(b)
+    func := g.lir_of(f)
+    return has_long_list(func.body)
 }
 
-/// Whether a block in `e` has a run of statements to move into a helper.
-any_outlined :: fn(e: ^Expr) -> bool needs Alloc {
-    match e.kind {
-        .Block(blk) => if block_outlines(blk) { return true }
-        .Loop(x) => if block_outlines(x.body) { return true }
-        _ => {}
-    }
-    return tir.any_child(e, fn(c: ^Expr) -> bool => any_outlined(c))
-}
-
-/// Whether `stmt_list` moves some run of the statements of `blk` into a helper.
-block_outlines :: fn(blk: ^tir.Block) -> bool needs Alloc {
-    weights := list(u32)
-    defer weights.deinit()
-    for i in 0..blk.stmts.len { weights.push(stmt_weight(&blk.stmts[i], RUN_WEIGHT + 1))! }
-    runs := runs_of(weights.items)
-    defer runs.deinit()
-    for r in runs.items {
-        if r.outline { return true }
+/// Whether `insts`, or a list nested in them, is long enough to be split (`LONG_LIST`).
+has_long_list :: fn(insts: []const lir.Inst) -> bool {
+    if insts.len > 1 and list_weight(insts, LONG_LIST + 1) > LONG_LIST { return true }
+    for i in insts {
+        match i.op {
+            .Block(_, b), .Loop(_, b), .DebugOnly(b) => if has_long_list(b) { return true }
+            .If(_, x, y), .With(_, _, x, _, y) => if has_long_list(x) or has_long_list(y) { return true }
+            _ => {}
+        }
     }
     return false
 }
 
-/// Emits the statements `stmts` as the body of a helper.
-outline_stmts :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
-    for i in 0..stmts.len { try fg.stmt_block(&stmts[i]) }
-}
-
-/// Moves the statements `stmts` into a helper and calls it (see the file's comment).
-outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
+/// Moves the code `emit` generates into a helper and calls it (see the file's comment).
+outline_code :: fn(fg: ^FnGen, emit: fn() -> Unsup!() needs sema.Load) -> Unsup!() needs sema.Load {
     k := fg.fresh()
     name := str.format("gm_c{}_{}", fg.tag, k)!
     outer_cx := fg.cx
@@ -215,7 +116,7 @@ outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
     fg.names = 0
     if not own_cx { fg.cx = "gm_hcx" }
     fg.runs.push(Run(depth: fg.scopes.items.len, exits: list(RunExit)))!
-    r := fg.outline_stmts(stmts)
+    r := emit()
     fg.end_lines()
     run := fg.runs.pop()?
     body := fg.out
@@ -293,6 +194,7 @@ outline_run :: fn(fg: ^FnGen, stmts: []tir.Stmt) -> Unsup!() needs sema.Load {
 
 test "thresholds" {
     // A run never exceeds a long body, and the smallest run worth a call is smaller than a run.
-    expect(MIN_RUN < RUN_WEIGHT)
-    expect(RUN_WEIGHT < LONG_BODY)
+    expect(LIR_MIN_RUN < LIR_RUN_WEIGHT)
+    expect(LIR_RUN_WEIGHT < LONG_BODY)
+    expect(SEG_WEIGHT < LONG_LIST)
 }

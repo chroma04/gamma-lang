@@ -20,6 +20,7 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
     out.push(kit.Test(name: "safe_builds_with_fil_c", run: safe_builds_with_fil_c))!
     out.push(kit.Test(name: "run_reuses_cached_executables", run: run_reuses_cached_executables))!
     out.push(kit.Test(name: "prints_and_black_boxes_do_not_grow_the_c_per_site", run: prints_do_not_grow_the_c))!
+    out.push(kit.Test(name: "constant_large_arguments_come_from_static_storage", run: constant_arguments_are_static))!
     out.push(kit.Test(name: "builds_never_overwrite_files_they_did_not_generate", run: never_overwrite_own_files))!
     out.push(kit.Test(name: "split_builds_compile_only_the_units_an_edit_changes", run: split_builds_reuse_units))!
     when target.os is not .Windows {
@@ -214,6 +215,30 @@ run_cached :: fn(t: ^kit.T, src, cache: string, args: []const string) -> kit.Fai
 /// A function with thousands of prints and `@black_box`es must not make the C compiler
 /// work through a copy of the effect dispatch for each: they call shared functions, so
 /// the C a statement takes stays small.
+/// A large argument built from literals (a struct literal, the `SourceLocation` of
+/// `@caller_location()`) is passed from static storage, not built at each call.
+constant_arguments_are_static :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
+    s := try setup(t, "constant-args")
+    src := kit.join(s.dir, "k.gm")
+    try t.write(src, "Big :: struct { a: i64, b: i64, c: i64, d: i64, e: i64 }\nf :: fn(x: Big, at: SourceLocation = @caller_location()) -> i64 => x.a + x.e + i64(at.line)\nmain :: fn() needs Out {\n    print(\"{}\\n\", f(Big(a: 1, b: 2, c: 3, d: 4, e: 5)))\n}\n")
+    exe := kit.join(s.dir, "k")
+    c := t.gamma([_]string("build", "-o", exe, src))
+    c.set("GAMMA_CACHE_DIR", kit.join(s.dir, "cache"))
+    c.set("GAMMA_C_UNITS", "1")
+    _ = try t.run_ok(c)
+    run := try t.run(kit.command(exe))
+    try t.expect_text("the output", "10\n", run.out)
+    gen := try t.read(c_of(exe))
+    // Both arguments are static constants `gm_k…`, shared by the calls passing them.
+    n: usize = 0
+    for line in str.lines(gen) {
+        if str.contains(line, "gm_f_f_") and str.contains(line, "(uint8_t *)gm_k") { n += 1 }
+    }
+    try t.check(n > 0, "the call does not pass its constant arguments from static storage")
+    return ()
+}
+
 prints_do_not_grow_the_c :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
     if not t.cfg.c { return !t.skip(SKIP_NO_CC) }
     N :: 200

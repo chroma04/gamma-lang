@@ -264,6 +264,23 @@ pub to_f16 :: fn(r: Rat) -> f64 needs Alloc {
     return if neg { -v } else { v }
 }
 
+/// The `f64` equal to the binary16 number with bits `h`.
+pub f16_value :: fn(h: u16) -> f64 {
+    sign := u64(h & 0x8000) << 48
+    exp := u64((h >> 10) & 0x1f)
+    man := u64(h & 0x3ff)
+    if exp is 0 {
+        v := man.to(f64) * 0x1.0p-24
+        return if sign is 0 { v } else { -v }
+    }
+    if exp is 0x1f {
+        if man is 0 { return (sign | 0x7FF0_0000_0000_0000).bits(f64) }
+        // As the hardware widens a NaN: sign and payload kept, quiet.
+        return (sign | 0x7FF8_0000_0000_0000 | (man << 42)).bits(f64)
+    }
+    return (sign | ((exp + 1008) << 52) | (man << 42)).bits(f64)
+}
+
 /// The bits of the binary16 number nearest `x` (ties to even).
 pub f16_bits :: fn(x: f64) -> u16 {
     bits := x.bits(u64)

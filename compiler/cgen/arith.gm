@@ -61,11 +61,6 @@ pub normalize :: fn(ii: IntInfo, v: string) -> string needs Alloc {
     return str.format("(({})(({}) & ((({})1 << {}) - 1)))", ii_cty(ii), v, ii_cty(ii), ii.bits)!
 }
 
-unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
-    v := try fg.expr(x)
-    return fg.unary_value(e.span, e.ty, op, x.ty, v)
-}
-
 /// The unary operator `op` on `v` of type `xt`, a value of type `t`; traps report `span`.
 unary_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.UnOp, xt: Ty, v: string) -> Unsup!string needs sema.Load {
     match op {
@@ -93,46 +88,6 @@ unary_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.UnOp, xt: Ty, v:
     }
 }
 
-binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!string needs sema.Load {
-    a := try fg.expr(l)
-    b := try fg.expr(r)
-    t := e.ty
-    if op in (.Lt, .Le, .Gt, .Ge) {
-        match fg.g.ty.repr(l.ty) {
-            .Int(_, _, _), .Float(_), .Bool, .Ptr => {
-                return fg.tmp(t, str.format("({} {} {})", a, tir.binop_symbol(op), b)!)
-            }
-            _ => {
-                lt := fg.g.helpers.less_fn(&fg.g.ty, l.ty)
-                eq := fg.g.helpers.eq_fn(&fg.g.ty, l.ty)
-                pa := fg.addr_of(l.ty, a)
-                pb := fg.addr_of(l.ty, b)
-                c: string = match op {
-                    .Lt => str.format("{}({}, {})", lt, pa, pb)!
-                    .Gt => str.format("{}({}, {})", lt, pb, pa)!
-                    .Le => str.format("({}({}, {}) || {}({}, {}))", lt, pa, pb, eq, pa, pb)!
-                    _ => str.format("({}({}, {}) || {}({}, {}))", lt, pb, pa, eq, pb, pa)!
-                }
-                return fg.tmp(t, str.format("(uint8_t){}", c)!)
-            }
-        }
-    }
-    match fg.g.ty.repr(l.ty) {
-        .Float(_) => {
-            sym: string = match op {
-                .Add(_) => "+"
-                .Sub(_) => "-"
-                .Mul(_) => "*"
-                .Div => "/"
-                _ => return !unsupported(e.span, str.format("operator `{}` on floats", tir.binop_symbol(op))!)
-            }
-            return fg.tmp(t, str.format("({} {} {})", a, sym, b)!)
-        }
-        .Int(_, _, _) => return try fg.int_binary(e.span, e.ty, op, l.ty, a, b)
-        _ => return !unsupported(e.span, str.format("operator `{}` on `{}`", tir.binop_symbol(op), fg.g.ty.show(l.ty))!)
-    }
-}
-
 /// The C expression converting the number `v` (of any C arithmetic type) to the float
 /// type `t`. An `f16` result goes through `GM_F16`.
 float_from :: fn(fg: ^FnGen, t: Ty, v: string) -> string needs Alloc {
@@ -155,7 +110,12 @@ int_binary :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.BinOp, lt: Ty, a:
             }
             r := str.format("r{}", fg.fresh())!
             o := str.format("o{}", fg.fresh())!
-            fg.linef("{} {}; bool {} = __builtin_{}_overflow({}, {}, &{});", c, r, o, name, a, b, r)
+            if name is "mul" and ii.signed and c is "__int128" {
+                // Not `__builtin_mul_overflow`: Clang calls compiler-rt for it (`gm_rt.h`).
+                fg.linef("{} {}; bool {} = gm_mul_ovf_i128({}, {}, &{});", c, r, o, a, b, r)
+            } else {
+                fg.linef("{} {}; bool {} = __builtin_{}_overflow({}, {}, &{});", c, r, o, name, a, b, r)
+            }
             if not ii_exact(ii) {
                 min := fg.int_lit(lt, ii_min(ii))
                 max := fg.int_lit(lt, ii_max(ii))

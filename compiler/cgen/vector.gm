@@ -7,6 +7,7 @@
 
 ast :: import "../ast"
 bigint :: import "../bigint"
+source :: import "../source"
 str :: import "std/str"
 tir :: import "../tir"
 types :: import "../types"
@@ -101,20 +102,18 @@ vec_lane_at :: fn(fg: ^FnGen, lane: Ty, bytes: u64, p: string, i: string) -> str
     return fg.tmp(lane, str.format("GM_LD({}, {} + {} * {})", ce, p, i, bytes)!)
 }
 
-vector_unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
+/// The unary operator `op` on the vector `v` of type `t`; traps report `span`.
+vector_unary_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.UnOp, v: string) -> Unsup!string needs sema.Load {
     vp := vec_parts(fg, t)
     n := vp.n
     lane := vp.lane
     bytes := vp.bytes
-    v := try fg.expr(x)
     if op is .Neg and fg.g.ty.is_integer(lane) and fg.g.opts.checks {
         // `-x` is `0 - x`, which overflows exactly when the negation does.
         pv := fg.addr_of(t, v)
         return try fg.vec_lane_loop(t, n, fn(i: string) -> Unsup!string {
             y := fg.vec_lane_at(lane, bytes, pv, i)
-            at := Expr(ty: lane, kind: .Uninit, span: e.span)
-            return try fg.int_binary(at.span, at.ty, .Sub(.Checked), lane, "0", y)
+            return try fg.int_binary(span, lane, .Sub(.Checked), lane, "0", y)
         })
     }
     a := fg.vec_load(t, v)
@@ -135,8 +134,9 @@ vector_unary :: fn(fg: ^FnGen, e: ^Expr, op: tir.UnOp, x: ^Expr) -> Unsup!string
     return fg.vec_store(t, r)
 }
 
-vector_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
+/// The binary operator `op` on the vector `a` (of type `t`) and `b` (a vector of type `t`,
+/// or the scalar amount of a shift); traps report `span`.
+vector_binary_value :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.BinOp, a: string, b: string) -> Unsup!string needs sema.Load {
     vp := vec_parts(fg, t)
     n := vp.n
     lane := vp.lane
@@ -150,28 +150,20 @@ vector_binary :: fn(fg: ^FnGen, e: ^Expr, op: tir.BinOp, l: ^Expr, r: ^Expr) -> 
     if checked {
         if op in (.Shl(_), .Shr) {
             // Every lane shifts by the one scalar amount, with the scalar checks.
-            a := try fg.expr(l)
-            b := try fg.expr(r)
             pa := fg.addr_of(t, a)
             return try fg.vec_lane_loop(t, n, fn(i: string) -> Unsup!string {
                 x := fg.vec_lane_at(lane, bytes, pa, i)
-                at := Expr(ty: lane, kind: .Uninit, span: e.span)
-                return try fg.int_binary(at.span, at.ty, op, lane, x, b)
+                return try fg.int_binary(span, lane, op, lane, x, b)
             })
         }
-        a := try fg.expr(l)
-        b := try fg.expr(r)
         pa := fg.addr_of(t, a)
         pb := fg.addr_of(t, b)
         return try fg.vec_lane_loop(t, n, fn(i: string) -> Unsup!string {
             x := fg.vec_lane_at(lane, bytes, pa, i)
             y := fg.vec_lane_at(lane, bytes, pb, i)
-            at := Expr(ty: lane, kind: .Uninit, span: e.span)
-            return try fg.int_binary(at.span, at.ty, op, lane, x, y)
+            return try fg.int_binary(span, lane, op, lane, x, y)
         })
     }
-    a := try fg.expr(l)
-    b := try fg.expr(r)
     va := fg.vec_load(t, a)
     if op in (.Shl(_), .Shr) {
         // Without checks an amount of the lane width or more gives an unspecified value:
@@ -234,25 +226,30 @@ vec_blend :: fn(fg: ^FnGen, t: Ty, m: string, a: string, b: string) -> string ne
     return str.format("({})((({}){} & {}) | (({}){} & ~{}))", s, u, a, mm, u, b, mm)!
 }
 
-/// The vector builtins (§21.3), or `null` if `op` is not one.
-vector_builtin :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!?string needs sema.Load {
+/// Whether `op` is a vector builtin (`vector_builtin_values`).
+is_vector_builtin :: fn(op: tir.Builtin) -> bool => match op {
+    .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe, .ReduceSum, .ReduceMin, .ReduceMax => true
+    .MaskAll, .MaskAny, .MaskCount, .Select, .LaneMin, .LaneMax, .LaneAbs, .LaneConvert => true
+    .Shuffle, .VecLoad, .VecStore => true
+    _ => false
+}
+
+/// Vector builtin `op` (`is_vector_builtin`) of result type `t` on `vals` (of types `tys`;
+/// a shuffle's lane indexes are `lanes`, not among them); traps report `span`.
+vector_builtin_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys: []const Ty, vals: []const string, lanes: []const u64) -> Unsup!string needs sema.Load {
     match op {
-        .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe => return try fg.vec_compare(op, args)
-        .ReduceSum, .ReduceMin, .ReduceMax => return try fg.vec_reduce(e, op, &args[0])
-        .MaskAll, .MaskAny, .MaskCount => return try fg.vec_mask_test(e, op, &args[0])
-        .Select => return try fg.vec_select(e, args)
-        .LaneMin, .LaneMax, .LaneAbs => return try fg.vec_minmax_abs(e, op, args)
-        .LaneConvert => return try fg.vec_convert(e, &args[0])
-        .Shuffle => return try fg.vec_shuffle(e, args)
-        .VecLoad, .VecStore => return try fg.vec_load_store(e, op, args)
-        _ => return null
+        .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe => return fg.vec_compare(op, tys[0], vals[0], vals[1])
+        .ReduceSum, .ReduceMin, .ReduceMax => return try fg.vec_reduce(span, op, tys[0], vals[0])
+        .MaskAll, .MaskAny, .MaskCount => return fg.vec_mask_test(t, op, tys[0], vals[0])
+        .Select => return fg.vec_select(t, tys[0], vals[0], vals[1], vals[2])
+        .LaneMin, .LaneMax, .LaneAbs => return try fg.vec_minmax_abs(span, t, op, vals)
+        .LaneConvert => return fg.vec_convert(t, tys[0], vals[0])
+        .Shuffle => return fg.vec_shuffle(t, tys[0], vals[0], lanes)
+        _ => return fg.vec_load_store(span, t, op, tys, vals)
     }
 }
 
-vec_compare :: fn(fg: ^FnGen, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
-    t := args[0].ty
-    a := try fg.expr(&args[0])
-    b := try fg.expr(&args[1])
+vec_compare :: fn(fg: ^FnGen, op: tir.Builtin, t: Ty, a: string, b: string) -> string needs sema.Load {
     va := fg.vec_load(t, a)
     vb := fg.vec_load(t, b)
     sym: string = match op {
@@ -266,24 +263,21 @@ vec_compare :: fn(fg: ^FnGen, op: tir.Builtin, args: []Expr) -> Unsup!string nee
     return fg.vec_compare_mask(t, sym, va, vb)
 }
 
-vec_reduce :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!string needs sema.Load {
-    t := x.ty
+vec_reduce :: fn(fg: ^FnGen, span: source.Span, op: tir.Builtin, t: Ty, v: string) -> Unsup!string needs sema.Load {
     vp := vec_parts(fg, t)
     lane := vp.lane
-    v := try fg.expr(x)
     p := fg.addr_of(t, v)
     acc := fg.vec_lane_at(lane, vp.bytes, p, "0")
     i := str.format("i{}", fg.fresh())!
     fg.linef("for (size_t {} = 1; {} < {}; {}++) {{", i, i, vp.n, i)
     fg.indent += 1
     y := fg.vec_lane_at(lane, vp.bytes, p, i)
-    at := Expr(ty: lane, kind: .Uninit, span: e.span)
     r: string = ""
     if op is .ReduceSum {
         if fg.g.ty.is_float(lane) {
             r = fg.tmp(lane, str.format("({} + {})", acc, y)!)
         } else {
-            r = try fg.int_binary(at.span, at.ty, .Add(.Checked), lane, acc, y)
+            r = try fg.int_binary(span, lane, .Add(.Checked), lane, acc, y)
         }
     } else if fg.g.ty.is_float(lane) {
         f := if op is .ReduceMin { "gm_fmin" } else { "gm_fmax" }
@@ -299,10 +293,9 @@ vec_reduce :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!strin
     return acc
 }
 
-vec_mask_test :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!string needs sema.Load {
-    n := vec_parts(fg, x.ty).n
-    v := try fg.expr(x)
-    p := fg.addr_of(x.ty, v)
+vec_mask_test :: fn(fg: ^FnGen, t: Ty, op: tir.Builtin, xt: Ty, v: string) -> string needs sema.Load {
+    n := vec_parts(fg, xt).n
+    p := fg.addr_of(xt, v)
     count := fg.tmp(fg.g.ty.usize_ty(), "0")
     fg.linef("for (size_t i = 0; i < {}; i++) {} += {}[i];", n, count, p)
     r: string = match op {
@@ -310,30 +303,25 @@ vec_mask_test :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, x: ^Expr) -> Unsup!st
         .MaskAny => str.format("(uint8_t)({} != 0)", count)!
         _ => count
     }
-    return fg.tmp(e.ty, r)
+    return fg.tmp(t, r)
 }
 
-vec_select :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
-    m := try fg.expr(&args[0])
-    a := try fg.expr(&args[1])
-    b := try fg.expr(&args[2])
-    vm := fg.vec_load(args[0].ty, m)
+vec_select :: fn(fg: ^FnGen, t: Ty, mt: Ty, m: string, a: string, b: string) -> string needs sema.Load {
+    vm := fg.vec_load(mt, m)
     va := fg.vec_load(t, a)
     vb := fg.vec_load(t, b)
     r := fg.vec_blend(t, vm, va, vb)
     return fg.vec_store(t, r)
 }
 
-vec_minmax_abs :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
-    t := e.ty
+vec_minmax_abs :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, vals: []const string) -> Unsup!string needs sema.Load {
     vp := vec_parts(fg, t)
     n := vp.n
     lane := vp.lane
     bytes := vp.bytes
-    a := try fg.expr(&args[0])
+    a := vals[0]
     b: ?string = null
-    if args.len > 1 { b = try fg.expr(&args[1]) }
+    if vals.len > 1 { b = vals[1] }
     // Float `min` and `max` follow the scalar rules for NaN and signed zeros, and an
     // integer `abs` checks for the most negative value: lane by lane.
     is_abs := op is .LaneAbs
@@ -341,7 +329,7 @@ vec_minmax_abs :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Uns
         pa := fg.addr_of(t, a)
         pb: ?string = null
         if bv := b { pb = fg.addr_of(t, bv) }
-        loc := fg.loc(e)
+        loc := fg.g.src_loc(span)
         return try fg.vec_lane_loop(t, n, fn(i: string) -> Unsup!string {
             x := fg.vec_lane_at(lane, bytes, pa, i)
             if pbv := pb {
@@ -377,32 +365,23 @@ vec_minmax_abs :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Uns
     return fg.vec_store(t, r)
 }
 
-vec_convert :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr) -> Unsup!string needs sema.Load {
-    vp := vec_parts(fg, e.ty)
-    v := try fg.expr(x)
-    va := fg.vec_load(x.ty, v)
+vec_convert :: fn(fg: ^FnGen, t: Ty, xt: Ty, v: string) -> string needs sema.Load {
+    vp := vec_parts(fg, t)
+    va := fg.vec_load(xt, v)
     tv := vec_ty(fg, vp.n, vp.lane, null)
-    return fg.vec_store(e.ty, str.format("__builtin_convertvector({}, {})", va, tv)!)
+    return fg.vec_store(t, str.format("__builtin_convertvector({}, {})", va, tv)!)
 }
 
-vec_shuffle :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema.Load {
-    t := args[0].ty
-    vp := vec_parts(fg, t)
+vec_shuffle :: fn(fg: ^FnGen, t: Ty, xt: Ty, v: string, lanes: []const u64) -> string needs sema.Load {
+    vp := vec_parts(fg, xt)
     lane := vp.lane
     bytes := vp.bytes
-    m := vec_parts(fg, e.ty).n
+    m := vec_parts(fg, t).n
     idx := list(string)
-    for k in 1..args.len {
-        if .Int(i) := args[k].kind {
-            idx.push(bigint.to_decimal(i))!
-        } else {
-            idx.push("0")!
-        }
-    }
-    v := try fg.expr(&args[0])
-    va := fg.vec_load(t, v)
+    for k in lanes { idx.push(str.format("{}", k)!)! }
+    va := fg.vec_load(xt, v)
     tv := vec_ty(fg, m, lane, null)
-    res := fg.tmp_uninit(e.ty)
+    res := fg.tmp_uninit(t)
     r := str.format("v{}", fg.fresh())!
     fg.line("#if defined(__clang__) || __GNUC__ >= 12")
     fg.linef("{} {} = __builtin_shufflevector({}, {}, {});", tv, r, va, va, str.join(idx.items, ", ")!)
@@ -415,26 +394,23 @@ vec_shuffle :: fn(fg: ^FnGen, e: ^Expr, args: []Expr) -> Unsup!string needs sema
     return res
 }
 
-vec_load_store :: fn(fg: ^FnGen, e: ^Expr, op: tir.Builtin, args: []Expr) -> Unsup!string needs sema.Load {
+vec_load_store :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builtin, tys: []const Ty, vals: []const string) -> string needs sema.Load {
     is_load := op is .VecLoad
-    vt := if is_load { e.ty } else { args[0].ty }
-    sl := if is_load { &args[0] } else { &args[1] }
+    vt := if is_load { t } else { tys[0] }
+    k := if is_load { 0 } else { 1 }
     vp := vec_parts(fg, vt)
     n := vp.n
-    v: ?string = null
-    if not is_load { v = try fg.expr(&args[0]) }
-    s := try fg.expr(sl)
-    ps := fg.addr_of(sl.ty, s)
+    ps := fg.addr_of(tys[k], vals[k])
     p := slice_ptr(ps)
     len := fg.slice_len(ps)
     if fg.g.opts.checks {
-        loc := fg.loc(e)
+        loc := fg.g.src_loc(span)
         what := if is_load { "load" } else { "store" }
         fg.linef("if ((uintptr_t)({}) < {}) gm_trap_lanes(\"{}\", {}, {}, {});", len, n, what, n, len, loc)
     }
     size := n * vp.bytes
-    if vv := v {
-        pv := fg.addr_of(vt, vv)
+    if not is_load {
+        pv := fg.addr_of(vt, vals[0])
         fg.linef("memcpy({}, {}, {});", p, pv, size)
         return fg.unit()
     }

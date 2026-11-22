@@ -12,7 +12,7 @@
 - Newer clang: `apt-get install clang-19 clang-20`. Clang ≥19 (Apple ≥17) is ~cubic on long
   op chains: functions with > 2,000 names get `optnone,noinline` (GM_LONG_FN).
 - C compilers are superlinear in the size of ONE function: keep generated functions small
-  (cgen outlines statement runs and chains; decisions/031).
+  (lirc.gm segments long LIR lists into C blocks and, in long functions, helpers; 075).
 - macOS: `qsort_r` argument order and qsort comparison order differ from glibc; tests must
   not depend on either. gcc may CSE pure recursive calls (fib is no benchmark).
 - gcc `-fstack-clash-protection` probes fault before GM_STACK_CHECK → SIGSEGV handler.
@@ -60,3 +60,7 @@ relative TMPDIR). gamma links WASI unoptimized (clang would run wasm-opt itself)
   capability; at -O2 SROA turns a word read both as int and pointer into inttoptr (why
   blobs are typed per word, decisions/032). Test Safe traps at -O2: filcc drops accesses
   it can prove fail. filcc is superlinear in function size.
+- wasm32: frames and locals are only 4-aligned; a test casting a local `[N]i32` to
+  `[^]u64` traps there by stack-layout luck (pointer_arith.gm, s83).
+- clang lowers `__builtin_mul_overflow` on signed `__int128` to compiler-rt `__muloti4`,
+  missing from libgcc (aarch64 bootstrap link failed, s83): cgen uses gm_mul_ovf_i128.

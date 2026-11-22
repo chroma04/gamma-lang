@@ -13,9 +13,12 @@ Versions and what each kind of change means are described in
   of function literals and clauses, `defer`, continuations, 128-bit integers and values of
   any size. Its tree-walking evaluator and the old compiler of bodies are gone. The
   benchmarks run 5–13% fewer instructions.
-- **The C back end can generate function bodies from LIR** (`GAMMA_CGEN_LIR=1`, for now an
-  option for testing): 97% of the bodies of the compiler and the test programs, which run
-  as before. The rest are generated as before, from the checked tree.
+- **The C back end generates every function body from LIR**, as the interpreter does, and
+  its translation of the checked tree is gone (2,500 lines). Long functions are still split
+  into helper functions, constant large arguments still come from static storage, and
+  `-g` maps the C to Gamma lines as before. Optimized executables run the same or fewer
+  instructions: `sha256sum` 7%, `julia` 4%, a perform-heavy benchmark 6% and
+  `safe_map_insert` 4% fewer, the others within 0.4%.
 - **Bounds checks that a comparison proves are removed** (spec D.7): in
   `for i in 0..xs.len { xs[i] }`, `while i < a.len { a[i] … }` and after
   `if n > xs.len { return }`, indexing no longer checks. The interpreter does this now,
@@ -23,7 +26,7 @@ Versions and what each kind of change means are described in
   whether checked or not (`for x in xs` included): 0.5–3% fewer instructions on the
   benchmarks and examples.
 - **`gamma lir`** prints a program's functions in LIR, the lowered form that the
-  interpreter compiles from and that the C back end is to share: instructions on
+  interpreter compiles from and that the C back end translates: instructions on
   numbered temporaries, with the order of evaluation, bounds checks, the tests of
   patterns, handlers and jumps between frames written out. The format is not stable.
 - **Optimized builds use Clang when it is installed.** Without `CC`, Checked and Fast

@@ -1,11 +1,13 @@
 //! The C back end: translates a checked program to C, which the system C compiler
 //! compiles together with the runtime (`runtime/gm_rt.c`).
 //!
-//! Values have the bytes of the target's layout, checks trap with the spec's messages, and
-//! formatting goes through the runtime's type descriptors. The optimizations are: functions
-//! specialized for the handler that is their context (`spec.gm`), parameters read in place
-//! (`borrow.gm`), long runs of statements in helpers (`outline.gm`), shortcuts for long
-//! operator chains (`chain.gm`) and constant arguments in static storage (`constarg.gm`).
+//! Function bodies are translated from LIR (`lirc.gm`), the lowered form the interpreter
+//! compiles from too. Values have the bytes of the target's layout, checks trap with the
+//! spec's messages, and formatting goes through the runtime's type descriptors. The
+//! optimizations are: functions specialized for the handler that is their context
+//! (`spec.gm`), parameters read in place (`borrow.gm`), long lists of instructions in C
+//! blocks and helpers (`lirc.gm`, `outline.gm`) and constant arguments in static storage
+//! (`constarg.gm`).
 
 ast :: import "../ast"
 bigint :: import "../bigint"
@@ -48,8 +50,6 @@ pub Options :: struct {
     /// With `debug_info` on an ELF target: the text of the gdb pretty printers
     /// (`runtime/gdb_printers.py`) to embed in the executable. Empty for none.
     pub gdb_printers: string = ""
-    /// Generate function bodies from LIR where `lirc.gm` translates every instruction.
-    pub lir: bool = false
 }
 
 pub Gen :: struct {
@@ -90,8 +90,6 @@ pub Gen :: struct {
     frames_done: List(bool)
     /// Memo of `is_pure` (`0`: unknown, `1`: being computed, `2`: false, `3`: true).
     pub pure_memo: hash_map.HashMap(u32, u8)
-    /// Memo of `read_during_build`, by function.
-    pub early_memo: hash_map.HashMap(u32, []bool)
     /// Per function, the parameters whose caller's value no call site lets change (see
     /// `borrow.gm`); computed once for the whole program.
     pub steady: ?List([]bool) = null
@@ -142,12 +140,11 @@ pub Gen :: struct {
     pub cell_ids: hash_map.HashMap(usize, u32)
     /// The storage whose value is being written, which names the cells its pointers reach.
     pub cell_referrer: string = ""
-    /// The LIR lowering context (`Options.lir`), whether each function has nested ones, and
-    /// the functions generated from TIR instead, each with the reason.
+    /// The LIR lowering context, and whether each function has nested ones.
     pub lir_cx: ?^lir.Ctx = null
     pub lir_parents: List(bool)
-    pub lir_fallbacks: List(string)
-    pub lir_count: u32 = 0
+    /// The function `lir_of` lowered last, and its LIR.
+    pub lir_last: ?(f: u32, func: lir.Func) = null
 }
 
 /// What the back end produces.
@@ -163,10 +160,6 @@ pub Generated :: struct {
     pub freestanding: bool = false
     /// A freestanding program with a `#trap_hook`.
     pub trap_hook: bool = false
-    /// With `Options.lir`: how many bodies were generated from LIR, and each that was not,
-    /// with the reason.
-    pub lir_count: u32 = 0
-    pub lir_fallbacks: []const string = empty_slice(string)
 }
 
 /// Translates the program to C source whose `main` runs `entry`.
@@ -216,7 +209,6 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         queued: list(bool),
         frames_done: list(bool),
         pure_memo: hash_map.hash_map(u32, u8),
-        early_memo: hash_map.hash_map(u32, []bool),
         site_consts: list(SiteConst),
         spec_keys: list(SpecKey),
         spec_ids: hash_map.hash_map((u32, u32, u32), u32),
@@ -239,7 +231,6 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         statics_cells: list(StaticCell),
         cell_ids: hash_map.hash_map(usize, u32),
         lir_parents: list(bool),
-        lir_fallbacks: list(string),
     )
     g.ty.debug_names = opts.debug_info
     for entry in entries { g.queue(entry) }
@@ -328,7 +319,7 @@ generate_entries :: fn(p: ^Prog, entries: []const u32, select: bool, opts: Optio
         // function (see `split`), so the tail starts with one of its own.
         tail: str.format("{}{}{}{}", reset, consts.init, exports, main_text)!,
     )
-    return Generated(code: out.items, parts: parts, libs: g.libs.items, freestanding: freestanding, trap_hook: freestanding and p.s.trap_hook is not null, lir_count: g.lir_count, lir_fallbacks: g.lir_fallbacks.items)
+    return Generated(code: out.items, parts: parts, libs: g.libs.items, freestanding: freestanding, trap_hook: freestanding and p.s.trap_hook is not null)
 }
 
 // ---------------------------------------------------------------------------------

@@ -5,141 +5,6 @@
 // Calls
 // ---------------------------------------------------------------------------------
 
-call :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr) -> Unsup!string needs sema.Load {
-    dest: ?string = null
-    obs := Observed.Fresh
-    if dc := fg.dest_call {
-        if dc.call is e {
-            dest = dc.dest
-            obs = dc.obs
-            fg.dest_call = null
-        }
-    }
-    r := fg.call_inner(e, callee, args, dest, obs)
-    fg.call_dest = null
-    return r
-}
-
-call_inner :: fn(fg: ^FnGen, e: ^Expr, callee: tir.Callee, args: []Expr, dest: ?string, obs: Observed) -> Unsup!string needs sema.Load {
-    // The callee is evaluated before the arguments (§7.1).
-    cv: ?string = null
-    if .Indirect(c) := callee { cv = try fg.expr(c) }
-    vals := list(string)
-    tys := list(Ty)
-    for i in 0..args.len {
-        a := &args[i]
-        // A large argument read from a place is passed as the place itself when
-        // nothing evaluated before the call can change it (see `CTypes.by_ref`).
-        later_pure := true
-        for j in (i + 1)..args.len {
-            if not no_writes(&args[j]) { later_pure = false }
-        }
-        // A callee may build its result in the destination while reading a parameter in
-        // place, so the destination must not overlap a place passed in place.
-        borrows := dest is not null and fg.callee_borrows(callee, i)
-        root := fg.in_place_root(a)
-        overlaps := true
-        if r := root { overlaps = arg_may_overlap(r, obs, borrows) }
-        // A large constant is passed from static storage (see `constarg.gm`).
-        k: ?string = null
-        if fg.g.ty.by_ref(a.ty) { k = fg.g.const_arg(a) }
-        v: string = ""
-        if kc := k {
-            v = str.format("(*({} *){})", fg.g.ty.cty(a.ty), kc)!
-        } else if fg.g.ty.by_ref(a.ty) and root is not null and later_pure and not overlaps {
-            addr := try fg.place_addr(a)
-            v = str.format("(*({} *){})", fg.g.ty.cty(a.ty), addr)!
-        } else {
-            v = try fg.expr(a)
-        }
-        vals.push(v)!
-        tys.push(a.ty)!
-    }
-    fg.call_site(e.span)
-    // Set only now: the arguments' own calls have their own destinations.
-    fg.call_dest = dest
-    match callee {
-        .Fn(f) => return fg.call_fn(e.ty, e, f, vals.items)
-        .Indirect(c) => {
-            cvv := cv?
-            match fg.g.ty.kind(c.ty) {
-                .Fn(_) => return fg.call_closure(cvv, c.ty, vals.items, tys.items, e.ty)
-                .FnPtr(sig) => {
-                    effectful := not fg.g.within_sys(&sig.effects)
-                    cx := fg.cx
-                    r := fg.call_indirect(cvv, "NULL", cx, vals.items, tys.items, e.ty, effectful, sig.win64)
-                    // A second-class argument may leave the callee by a non-local exit.
-                    if effectful or fg.g.takes_fn(tys.items) { fg.check_unwind() }
-                    return r
-                }
-                _ => return !unsupported(e.span, str.format("calling a value of type `{}`", fg.g.ty.show(c.ty))!)
-            }
-        }
-        .Perform(eff, op) => return fg.perform(e.span, &eff, op, vals.items, tys.items, e.ty)
-    }
-}
-
-/// Whether parameter `i` of `callee` may be read in place while the result is built (see
-/// `read_during_build`): a function called indirectly may be any, so it is assumed to.
-callee_borrows :: fn(fg: ^FnGen, callee: tir.Callee, i: usize) -> bool needs sema.Load {
-    match callee {
-        .Fn(f) => {
-            r := fg.g.read_during_build(f)
-            return i < r.len and r[i]
-        }
-        .Indirect(_) => return true
-        .Perform(_, _) => return false
-    }
-}
-
-/// The variable or dereference a large argument is read from, when it can be passed
-/// in place: `a` is a local, an upvar or a dereference, or a field or array element
-/// (of a field…) of one. An element of a slice or many-pointer lives outside the frame
-/// like a dereference; its index must not write, as it is evaluated as part of the
-/// place. Fields of `#bits` structs have no address.
-in_place_root :: fn(fg: ^FnGen, a: ^Expr) -> ?^Expr needs sema.Load {
-    e := a
-    while true {
-        match e.kind {
-            .Local(_), .Upvar(_, _), .Deref(_) => return e
-            .Field(base, _) => {
-                if fg.g.ty.bits_layout(base.ty) is not null { return null }
-                e = base
-            }
-            .Index(base, index, _) => {
-                if not no_writes(index) { return null }
-                match fg.g.ty.kind(base.ty) {
-                    .Array(_, _, _) => { e = base }
-                    .Slice(_, _), .ManyPtr(_, _) => {
-                        if no_writes(base) { return e }
-                        return null
-                    }
-                    _ => return null
-                }
-            }
-            _ => return null
-        }
-    }
-}
-
-/// Whether argument `a`, passed in place, may overlap the destination of the call
-/// (see `Observed`) and so must be copied first. `borrows`: the callee may read it
-/// in place without copying it.
-arg_may_overlap :: fn(a: ^Expr, obs: Observed, borrows: bool) -> bool {
-    if not borrows { return false }
-    match obs {
-        .Fresh => return false
-        .Out => return a.kind is not .Local(_)
-        .Any(?root) => {
-            if .Local(l) := a.kind {
-                r := root else return true
-                return r is l
-            }
-            return true
-        }
-    }
-}
-
 /// In Debug builds, records `span` as the location of the call about to be made, for
 /// backtraces.
 call_site :: fn(fg: ^FnGen, span: source.Span) needs sema.Load {
@@ -207,7 +72,7 @@ call_result :: fn(fg: ^FnGen, ret: Ty, call: string) -> string needs sema.Load {
 }
 
 /// The variable a call writes its large result to (`CTypes.by_ref`): the call's
-/// destination if it has one (see `expr_into`), else a new temporary.
+/// destination if it has one (`FnGen.call_dest`), else a new temporary.
 result_var :: fn(fg: ^FnGen, ret: Ty) -> string needs sema.Load {
     if d := fg.call_dest {
         fg.call_dest = null
@@ -224,9 +89,9 @@ out_call :: fn(fg: ^FnGen, ret: Ty, callee: string, args: string) -> string need
     return r
 }
 
-/// A call of function `f` with the arguments `vals`, of type `rt`; `e` is the TIR call, if
-/// there is one, which a `with` may have chosen a specialization for (`spec_call`).
-call_fn :: fn(fg: ^FnGen, rt: Ty, e: ?^const Expr, f: u32, vals: []const string) -> Unsup!string needs sema.Load {
+/// A call of function `f` with the arguments `vals`, of type `rt` (the clone `spec_next`
+/// if a `with` chose one).
+call_fn :: fn(fg: ^FnGen, rt: Ty, f: u32, vals: []const string) -> Unsup!string needs sema.Load {
     fg.g.queue(f)
     def := fg.g.prog.func(f)
     // A function with a parent captures it (a literal called directly).
@@ -241,11 +106,9 @@ call_fn :: fn(fg: ^FnGen, rt: Ty, e: ?^const Expr, f: u32, vals: []const string)
         }
     }
     name := ""
-    if sc := fg.spec_call {
-        if x := e and sc.call is x {
-            fg.spec_call = null
-            name = fg.g.queue_spec(f, sc.spec)
-        }
+    if sn := fg.spec_next {
+        fg.spec_next = null
+        name = fg.g.queue_spec(f, sn)
     }
     if name.len is 0 {
         if s := fg.passed_spec(f) { name = fg.g.queue_spec(f, s) } else { name = fg.g.callee_name(f) }
@@ -583,105 +446,6 @@ native_op :: fn(fg: ^FnGen, effect_: ^const EffectRef, op: u32, vals: []const st
 // `with` and `try`
 // ---------------------------------------------------------------------------------
 
-with_expr :: fn(fg: ^FnGen, e: ^Expr, label: u32, handlers: []tir.HandlerValue, on_: ?^Expr, body: ^Expr) -> Unsup!string needs sema.Load {
-    cur := fg.cx
-    result_slot := str.format("(void *)&F.w{}", label)!
-    // A `with … on` (§14) has a driver state its handlers point at.
-    fw := ""
-    if on_ is not null {
-        w := str.format("gw{}", fg.fresh())!
-        fg.linef("gm_with {}; memset(&{}, 0, sizeof {});", w, w, w)
-        fw = w
-    }
-    fw_ref: string = if on_ is not null { str.format("&{}", fw)! } else { "NULL" }
-    nested := fg.nested_spec(handlers, on_)
-    for h in handlers {
-        match h {
-            .Literal(x) => {
-                hv := try fg.expr(x)
-                .Handler(hid) := fg.g.ty.kind(x.ty) else return !unsupported(x.span, "this handler value")
-                table := ""
-                if ns := nested { table = fg.g.spec_handler_table(hid, ns) } else { table = fg.g.handler_table(hid) }
-                eref := fg.g.prog.handler_lit(hid).effect_
-                id := fg.g.effect_id(&eref)
-                n := str.format("wn{}", fg.fresh())!
-                fg.linef("gm_node {} = {{.eff = {}, .kind = GM_LIT, .clauses = {}, .env = {}.env, .hctx = {}.cx, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = {}, .next = {}}};", n, id, table, hv, hv, label, result_slot, fw_ref, cur)
-                cur = str.format("(&{})", n)!
-            }
-            .Decl(decls, value) => {
-                v := try fg.expr(value)
-                s := fg.tmp(value.ty, v)
-                outer := cur
-                for d in decls {
-                    table := try fg.g.decl_table(d)
-                    eref := fg.g.prog.handler_decl(d).effect_
-                    id := fg.g.effect_id(&eref)
-                    n := str.format("wn{}", fg.fresh())!
-                    fg.linef("gm_node {} = {{.eff = {}, .kind = GM_DECL, .clauses = {}, .env = (void *)&{}, .hctx = {}, .with_frame = &F.h, .with_label = {}, .result = {}, .fw = {}, .next = {}}};", n, id, table, s, outer, label, result_slot, fw_ref, cur)
-                    cur = str.format("(&{})", n)!
-                }
-            }
-        }
-    }
-    if stack := on_ { return fg.with_on(e, label, fw, cur, stack, body) }
-    saved := fg.cx
-    fg.cx = cur
-    end := str.format("we{}", fg.fresh())!
-    scope := fg.with_scope(label, end)
-    fg.scopes.push(scope)!
-    saved_spec := fg.spec_call
-    fg.spec_call = fg.specializable(handlers, body, nested)
-    r := fg.expr(body)
-    fg.spec_call = saved_spec
-    scope2 := fg.scopes.pop()?
-    fg.cx = saved
-    v := try r
-    if not fg.g.ty.is_never(body.ty) and not fg.g.ty.is_never(e.ty) {
-        fg.linef("F.w{} = {};", label, v)
-    }
-    fg.end_scope(scope2, true)
-    fg.label(end)
-    if fg.g.ty.is_never(e.ty) { return fg.zero(e.ty) }
-    return fg.tmp(e.ty, str.format("F.w{}", label)!)
-}
-
-try_expr :: fn(fg: ^FnGen, e: ^Expr, x: ^Expr, lift: ?u32, levels: u32) -> Unsup!string needs sema.Load {
-    v := try fg.expr(x)
-    a := fg.addr_of(x.ty, v)
-    ret := fg.target_ret(levels)
-    slot := fg.frame_field(levels, "ret")
-    fr, _ := fg.frame_up(levels)
-    match fg.g.ty.kind(x.ty) {
-        .Optional(_) => {
-            present := fg.opt_present(x.ty, a)
-            fg.linef("if (!{}) {{", present)
-            fg.indent += 1
-            none := fg.make_none(ret)
-            fg.linef("{} = {};", slot, none)
-            fg.start_exit(.Return, fr, "0", "0")
-            fg.indent -= 1
-            fg.line("}")
-            return fg.load(e.ty, a)
-        }
-        .Result(err, _) => {
-            bad := fg.res_is_err(x.ty, a)
-            off := fg.g.ty.offsets(x.ty)[1]
-            fg.linef("if ({}) {{", bad)
-            fg.indent += 1
-            .Result(rerr, _) := fg.g.ty.kind(ret) else return !unsupported(e.span, "`try` in this function")
-            ev := fg.load(err, str.format("({} + {})", a, off)!)
-            if i := lift { ev = fg.make_variant(rerr, usize(i), ev) }
-            r := fg.make_res(ret, true, rerr, ev)
-            fg.linef("{} = {};", slot, r)
-            fg.start_exit(.Return, fr, "0", "1")
-            fg.indent -= 1
-            fg.line("}")
-            return fg.load(e.ty, str.format("({} + {})", a, off)!)
-        }
-        _ => return !unsupported(e.span, "`try` on this type")
-    }
-}
-
 // ---------------------------------------------------------------------------------
 // Equality
 // ---------------------------------------------------------------------------------
@@ -695,66 +459,4 @@ equal :: fn(fg: ^FnGen, t: Ty, a: string, b: string) -> string needs sema.Load {
         return str.format("{}({}, {})", f, pa, pb)!
     }
     return str.format("({} == {})", a, b)!
-}
-
-/// A C condition for `x is "text"` or `x is .V(p)` (or `.V`) on a union that compares the
-/// bytes, or the tag and payload, without building the constant or the variant: `null` if
-/// neither side is a string literal or a variant expression of a union. The value `x` is
-/// tested in place when evaluating the payload cannot change it.
-variant_equal :: fn(fg: ^FnGen, lhs: ^Expr, rhs: ^Expr) -> Unsup!?string needs sema.Load {
-    for (x, y) in [2](^Expr, ^Expr)((lhs, rhs), (rhs, lhs)) {
-        if .Str(bytes) := y.kind and fg.g.ty.kind(x.ty) is .Slice(_, _) {
-            return fg.str_equal_at(try fg.scrutinee_addr(x, true), bytes)
-        }
-    }
-    x := lhs
-    vx := tir.VariantExpr(variant: 0, payload: null)
-    if .Variant(v) := rhs.kind {
-        vx = v
-    } else if .Variant(v) := lhs.kind {
-        x = rhs
-        vx = v
-    } else {
-        return null
-    }
-    t := x.ty
-    if fg.g.ty.repr(t) is not .Blob { return null }
-    .Union(tag, variants) := fg.adt_def(t).kind else return null
-    variant := variants[usize(vx.variant)]
-    in_place := if p := vx.payload { fg.frame_pure(p) } else { true }
-    // The operands are evaluated in order; a variant on the left is a constant tag.
-    addr := ""
-    payload: ?string = null
-    if x is lhs {
-        addr = try fg.scrutinee_addr(x, in_place)
-        if p := vx.payload { payload = try fg.expr(p) }
-    } else {
-        if p := vx.payload { payload = try fg.expr(p) }
-        addr = try fg.scrutinee_addr(x, false)
-    }
-    offs := fg.g.ty.offsets(t)
-    tc := fg.g.ty.cty(tag)
-    tv: string = str.format("GM_LD({}, {} + {})", tc, addr, offs[0])!
-    if ii := fg.int_info(tag) { tv = normalize(ii, tv) }
-    c := str.format("({} == {})", tv, fg.int_lit(tag, variant.tag))!
-    pv := payload else return c
-    pt := variant.payload else return c
-    pa := str.format("({} + {})", addr, offs[1])!
-    pe := ""
-    if fg.g.ty.repr(pt) is .Blob {
-        f := fg.g.helpers.eq_fn(&fg.g.ty, pt)
-        pe = str.format("{}({}, {})", f, pa, fg.addr_of(pt, pv))!
-    } else {
-        ld: string = str.format("GM_LD({}, {})", fg.g.ty.cty(pt), pa)!
-        if ii := fg.int_info(pt) { ld = normalize(ii, ld) }
-        pe = if fg.g.ty.repr(pt) is .Bool { str.format("(({} != 0) == ({} != 0))", ld, pv)! } else { str.format("({} == {})", ld, pv)! }
-    }
-    return str.format("({} && {})", c, pe)!
-}
-
-/// A C condition: the bytes of the slice at `addr` are those of `text` (a string literal).
-str_equal_at :: fn(fg: ^FnGen, addr: string, text: []const u8) -> string needs sema.Load {
-    len := str.format("(GM_LD(uintptr_t, {} + {}) == {})", addr, fg.ptr_bytes(), text.len)!
-    if text.len is 0 { return len }
-    return str.format("({} && memcmp(GM_LD(void *, {}), {}, {}) == 0)", len, addr, fg.g.static_bytes(text), text.len)!
 }

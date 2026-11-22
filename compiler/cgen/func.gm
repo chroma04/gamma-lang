@@ -82,6 +82,12 @@ gen_fn :: fn(g: ^Gen, f: u32, spec: ?u32) -> Unsup!() needs sema.Load {
             frame.write("    {} l{}; /* {} */\n", c, i, l.name)!
         }
     }
+    // The body of a `with … on` from LIR is a C function of its own, which reaches the
+    // locals lowering adds through the frame too.
+    if lir_framed(g, f, body) {
+        lf := g.lir_of(f)
+        for i in def.locals.len..lf.locals.len { frame.write("    {} l{};\n", g.ty.cty(lf.locals[i].ty), i)! }
+    }
     frame.write("    {} ret;\n", g.ty.cty(def.ret))!
     withs := list(WithSlot)
     collect_withs(body, &withs)
@@ -129,22 +135,15 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
     borrowed := g.borrowed_params(f)
     in_frame := g.frame_locals(f)
     split_runs := not g.opts.debug_info and long_body(g, f)
-    // The body from LIR, when `lirc.gm` translates all of it (see there).
-    lf: ?lir.Func = null
-    if g.opts.lir and spec is null and not split_runs and not g.opts.debug_info {
-        func := g.lir_of(f)
-        if why := g.lir_unsupported(f, &func) {
-            g.lir_fallbacks.push(str.format("{}: {}", def.name, why)!)!
-        } else {
-            g.lir_count += 1
-            // The locals lowering adds are C locals.
-            all := list(bool)
-            all.extend(in_frame)!
-            while all.items.len < func.locals.len { all.push(false)! }
-            in_frame = all.items
-            lf = func
-        }
-    }
+    // The body, from its LIR (`lirc.gm`).
+    lf := g.lir_of(f)
+    try g.lir_check(def, &lf)
+    // The locals lowering adds are C locals, or frame fields where the frame holds them all.
+    all := list(bool)
+    all.extend(in_frame)!
+    framed := lir_framed(g, f, body)
+    while all.items.len < lf.locals.len { all.push(framed)! }
+    in_frame = all.items
     cname := ""
     if sp := spec { cname = g.spec_name(f, sp) } else { cname = g.fn_name(f) }
     sig := str.format("static __attribute__((aligned(4))) {}{}{} {}({})", hint_attrs(def.hints), conv_attr(def.win64), ret, cname, str.join(params.items, ", ")!)!
@@ -218,23 +217,7 @@ gen_body :: fn(g: ^Gen, f: u32, def: ^const Func, body: ^Expr, spec: ?u32) -> Un
         lv := fg.local_lv(p)
         fg.linef("{} = {};", lv, a)
     }
-    if x := lf {
-        try fg.lir_body(&x)
-    } else if out_ret and fg.builds_in_place(body) {
-        // Built straight in the caller's destination: the body has no `defer`.
-        ct := fg.g.ty.cty(def.ret)
-        try fg.expr_into(body, str.format("(*({} *)gm_out)", ct)!, .Out)
-        fg.line("goto gm_fdone;")
-    } else if out_ret and body.ty is def.ret and fg.reads_place(body) {
-        // A large place (`=> p.toks[p.pos]`) is copied straight to the caller's destination.
-        a := try fg.place_addr(body)
-        fg.linef("memmove(gm_out, {}, {});", a, fg.g.ty.size(body.ty))
-        fg.line("goto gm_fdone;")
-    } else if not fg.g.ty.is_never(body.ty) {
-        try fg.expr_into(body, "F.ret", .Fresh)
-    } else {
-        _ = try fg.expr(body)
-    }
+    try fg.lir_body(&lf)
     if fg.lad_used {
         fg.line("goto gm_fret;")
         fg.label("gm_lad")
@@ -429,22 +412,6 @@ hint_attrs :: fn(h: Hints) -> string needs Alloc {
     return s.items
 }
 
-/// Where statement `s` starts, for debug information.
-stmt_span :: fn(s: ^const tir.Stmt) -> ?source.Span {
-    match s^ {
-        .Let(_, null) => return null
-        .Let(_, e), .LetTuple(_, e), .Expr(e) => return e.span
-        .Assign(place, _) => return place.span
-        .AssignTuple(places, value) => {
-            for p in places {
-                if x := p { return x.span }
-            }
-            return value.span
-        }
-        _ => return null
-    }
-}
-
 /// The labels and types of the `with`s in `e` (excluding nested functions).
 collect_withs :: fn(e: ^Expr, out: ^List(WithSlot)) needs Alloc {
     if .With(w) := e.kind { out.push(WithSlot(label: w.label, ty: e.ty))! }
@@ -526,19 +493,6 @@ tmp_uninit :: fn(fg: ^FnGen, t: Ty) -> string needs Alloc {
     return n
 }
 
-/// The address of `place` for an assignment of `value`. The place is evaluated before the
-/// value (§4.7), so where its address is read from memory (through a pointer, a slice, an
-/// index) and `value` may change memory, the address is computed into a temporary first:
-/// `s.xs[0] = f(&s)` stores into the slice `s.xs` held before the call.
-assign_addr :: fn(fg: ^FnGen, place: ^Expr, value: ^Expr) -> Unsup!string needs sema.Load {
-    p := try fg.place_addr(place)
-    if fixed_address(place) or not may_write(value) { return p }
-    fg.temp_bytes += 8
-    n := fg.fresh_tmp()
-    fg.linef("uint8_t *{} = {};", n, p)
-    return n
-}
-
 /// A zero value of `t`. Scalars are a cast `0`: an empty initializer of a scalar
 /// (`(void *){}`) is C23, which older compilers (GCC 11, Apple clang 15) reject.
 zero :: fn(fg: ^FnGen, t: Ty) -> string needs Alloc {
@@ -606,12 +560,6 @@ frame_field :: fn(fg: ^FnGen, levels: u32, field: string) -> string needs Alloc 
     if levels is 0 { return str.format("F.{}", field)! }
     p, f := fg.frame_up(levels)
     return str.format("((struct {} *){})->{}", fg.g.frame_name(f), p, field)!
-}
-
-/// True if `e` reads a place whose type is large enough that copying it through a C
-/// temporary would cost noticeable stack.
-big_place :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
-    return fg.reads_place(e) and fg.g.ty.size(e.ty) > 256
 }
 
 // --- non-local exits ---------------------------------------------------------------------
@@ -745,11 +693,7 @@ defer_body_inner :: fn(fg: ^FnGen, guard: ?string, d: Defer, unwinding: bool) ne
     if unwinding { fg.line("gm_unwind gm_saved = gm_unw; gm_unw.kind = GM_NONE;") }
     // A defer body cannot fail to translate here if it translated before; errors are
     // reported where the defer statement is first seen.
-    if body := d.body {
-        _ = fg.expr(body)
-    } else if c := fg.lirc {
-        _ = c.lc_defer_list(d.lir)
-    }
+    if c := fg.lirc { _ = c.lc_defer_list(d.lir) }
     if unwinding { fg.line("gm_unw = gm_saved;") }
     fg.indent -= 1
     fg.line("}")
@@ -838,426 +782,12 @@ local_exit :: fn(fg: ^FnGen, kind: ExitKind, label: string, is_err: string) -> b
 
 // --- blocks and statements ------------------------------------------------------------------
 
-/// True if `e` is a large value (`CTypes.by_ref`) that `expr_into` builds in its
-/// destination rather than in a temporary copied there.
-builds_in_place :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
-    if not fg.g.ty.by_ref(e.ty) or fg.g.ty.is_never(e.ty) { return false }
-    match e.kind {
-        .Call(_), .Array(_) => return true
-        .Aggregate(_) => return fg.g.ty.bits_layout(e.ty) is null
-        .Coerce(kind, _) => return kind is .WrapOptional or kind is .WrapOk
-        .MakeErr(_), .Variant(_) => return true
-        .Block(b) => {
-            for s in b.stmts {
-                if s is .Defer(_, _) { return false }
-            }
-            t := b.tail else return false
-            return fg.builds_in_place(t)
-        }
-        _ => return false
-    }
-}
-
 /// True if no deferred statement is pending in the function: a `return` runs none.
 no_defers :: fn(fg: ^const FnGen) -> bool {
     for s in fg.scopes.items {
         if s.kind is .Block and s.defers.items.len > 0 { return false }
     }
     return true
-}
-
-/// Evaluates `e` and stores its value in `dest`, a C lvalue of its type. A large value (see
-/// `builds_in_place`) is built there instead of in a temporary: a call writes its result
-/// there and an aggregate stores its elements there. Either way `dest` is written only once
-/// everything in `e` has been evaluated, as an assignment would, so `e` may read what
-/// `dest` holds.
-///
-/// The exception is an element that is itself an aggregate (or a call, where `obs` is
-/// `Fresh`): it is built directly in its place in `dest`, so `dest` is then written before
-/// the elements after it are evaluated. That is done only when nothing evaluated meanwhile
-/// can read `dest`, as `obs` says.
-expr_into :: fn(fg: ^FnGen, e: ^Expr, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
-    if not fg.builds_in_place(e) {
-        v := try fg.expr(e)
-        if not fg.g.ty.is_never(e.ty) { fg.linef("{} = {};", dest, v) }
-        return ()
-    }
-    match e.kind {
-        .Call(_) => {
-            fg.dest_call = DestCall(call: e, dest: dest, obs: obs)
-            r := fg.expr(e)
-            fg.dest_call = null
-            v := try r
-            if not (v is dest) { fg.linef("{} = {};", dest, v) }
-        }
-        .Aggregate(elems), .Array(elems) => {
-            nested := false
-            for i in 0..elems.len {
-                if fg.nests_in_place(&elems[i], obs) { nested = true }
-            }
-            if nested and obs is .Any(_) {
-                // Built in a temporary of its own, so `dest` is written once at the end.
-                t := fg.tmp_uninit(e.ty)
-                try fg.expr_into(e, t, .Fresh)
-                c := fg.g.ty.cty(e.ty)
-                fg.linef("GM_ST({}, (uint8_t *)&{}, {});", c, dest, t)
-                return ()
-            }
-            eager := false
-            match obs {
-                .Fresh => { eager = true }
-                .Out => { eager = fg.frame_pure(e) }
-                .Any(_) => { eager = false }
-            }
-            l := list(u64)
-            if e.kind is .Aggregate(_) {
-                l.extend(fg.g.ty.offsets(e.ty))!
-            } else {
-                for i in 0..elems.len { l.push(u64(i) * fg.g.ty.size(elems[i].ty))! }
-            }
-            offs := l.items
-            // Padding is zero, as in the interpreter.
-            cursor: u64 = 0
-            for i in 0..elems.len {
-                off := offs[i]
-                sz := fg.g.ty.size(elems[i].ty)
-                if sz > 0 {
-                    if off > cursor { fg.linef("memset((uint8_t *)&{} + {}, 0, {});", dest, cursor, off - cursor) }
-                    cursor = off + sz
-                }
-            }
-            total := fg.g.ty.size(e.ty)
-            if total > cursor { fg.linef("memset((uint8_t *)&{} + {}, 0, {});", dest, cursor, total - cursor) }
-            if eager {
-                for i in 0..elems.len {
-                    x := &elems[i]
-                    off := offs[i]
-                    c := fg.g.ty.cty(x.ty)
-                    if fg.nests_in_place(x, obs) {
-                        sub := str.format("(*({} *)((uint8_t *)&{} + {}))", c, dest, off)!
-                        try fg.expr_into(x, sub, obs)
-                    } else if fg.g.ty.by_ref(x.ty) and fg.reads_place(x) {
-                        // Copied from where it is, not through a temporary.
-                        a := try fg.place_addr(x)
-                        sz := fg.g.ty.size(x.ty)
-                        fg.linef("memcpy((uint8_t *)&{} + {}, {}, {});", dest, off, a, sz)
-                    } else {
-                        v := try fg.expr(x)
-                        fg.linef("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, off, v)
-                    }
-                }
-            } else {
-                vals := list(string)
-                for i in 0..elems.len {
-                    v := try fg.expr(&elems[i])
-                    vals.push(v)!
-                }
-                for i in 0..elems.len {
-                    c := fg.g.ty.cty(elems[i].ty)
-                    fg.linef("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, offs[i], vals.items[i])
-                }
-            }
-        }
-        .Coerce(kind, x) => try fg.wrap_into(e.ty, kind is .WrapOptional, false, x, dest, obs)
-        .MakeErr(x) => try fg.wrap_into(e.ty, false, true, x, dest, obs)
-        .Variant(vx) => try fg.variant_into(e.ty, &vx, dest, obs)
-        .Block(b) => {
-            scope := fg.block_scope()
-            fg.scopes.push(scope)!
-            try fg.stmts(b)
-            t := b.tail?
-            fg.src_line(t.span)
-            try fg.expr_into(t, dest, obs)
-            popped := fg.scopes.pop()?
-            fg.end_scope(popped, true)
-        }
-        _ => @unreachable()
-    }
-}
-
-/// Stores in `dest` a value of the tagged type `t` (an optional, a result or a union):
-/// `tag` is the statement that writes the tag (of `tag_len` bytes at `tag_off`) and `x`
-/// the payload at `pay_off`. The payload goes straight to its place in `dest` (built there
-/// where `dest` is `Fresh`, copied once from a place, or stored once computed), then the
-/// tag and the zero padding.
-tagged_into :: fn(fg: ^FnGen, t: Ty, tag: string, tag_off: u64, tag_len: u64, x: ?^Expr, pay_off: u64, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
-    tag_part := BlobPart(off: tag_off, len: tag_len)
-    px := x else {
-        fg.clear_outside(t, dest, [1]BlobPart(tag_part)[..])
-        fg.line(tag)
-        return ()
-    }
-    parts := [2]BlobPart(BlobPart(off: pay_off, len: fg.g.ty.size(px.ty)), tag_part)
-    c := fg.g.ty.cty(px.ty)
-    if obs is .Fresh and fg.nests_in_place(px, obs) {
-        fg.clear_outside(t, dest, parts[..])
-        fg.line(tag)
-        try fg.expr_into(px, str.format("(*({} *)((uint8_t *)&{} + {}))", c, dest, pay_off)!, obs)
-        return ()
-    }
-    if fg.g.ty.by_ref(px.ty) and fg.reads_place(px) {
-        // The address is computed before `dest` is written.
-        a := try fg.place_addr(px)
-        fg.temp_bytes += 8
-        p := fg.fresh_tmp()
-        fg.linef("const uint8_t *{} = {};", p, a)
-        fg.clear_outside(t, dest, parts[..])
-        fg.line(tag)
-        fg.linef("memmove((uint8_t *)&{} + {}, {}, {});", dest, pay_off, p, fg.g.ty.size(px.ty))
-        return ()
-    }
-    v := try fg.expr(px)
-    fg.clear_outside(t, dest, parts[..])
-    fg.line(tag)
-    fg.linef("GM_ST({}, (uint8_t *)&{} + {}, {});", c, dest, pay_off, v)
-    return ()
-}
-
-/// `tagged_into` for an optional (`some`) or a result: the tag is a byte.
-wrap_into :: fn(fg: ^FnGen, t: Ty, some: bool, err: bool, x: ^Expr, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
-    offs := fg.g.ty.offsets(t)
-    pay_off: u64 = if some { 0 } else { offs[1] }
-    tag_off := if some { offs[1] } else { offs[0] }
-    tag := str.format("((uint8_t *)&{})[{}] = {};", dest, tag_off, if some or err { 1 } else { 0 })!
-    return fg.tagged_into(t, tag, tag_off, 1, x, pay_off, dest, obs)
-}
-
-/// `tagged_into` for variant `vx` of the union type `t`.
-variant_into :: fn(fg: ^FnGen, t: Ty, vx: ^const tir.VariantExpr, dest: string, obs: Observed) -> Unsup!() needs sema.Load {
-    def := fg.adt_def(t)
-    .Union(tag_ty, variants) := def.kind else @unreachable()
-    variant := variants[usize(vx.variant)]
-    offs := fg.g.ty.offsets(t)
-    tag_val := fg.int_lit(tag_ty, variant.tag)
-    tag := str.format("GM_ST({}, (uint8_t *)&{} + {}, {});", fg.g.ty.cty(tag_ty), dest, offs[0], tag_val)!
-    x: ?^Expr = vx.payload
-    if variant.payload is null {
-        if px := x { _ = try fg.expr(px) }
-        x = null
-    }
-    return fg.tagged_into(t, tag, offs[0], fg.g.ty.size(tag_ty), x, offs[1], dest, obs)
-}
-
-/// True if element `x` of an aggregate is built straight in its place in the aggregate
-/// rather than in a temporary: a large aggregate or array, or where the destination is
-/// `Fresh` a large value that is the result of a call.
-nests_in_place :: fn(fg: ^FnGen, x: ^Expr, obs: Observed) -> bool needs Alloc {
-    if not fg.builds_in_place(x) { return false }
-    match x.kind {
-        .Aggregate(_), .Array(_) => return true
-        .Call(_) => return obs is .Fresh
-        _ => return false
-    }
-}
-
-/// True if `e` reads the value of a place that `place_addr` gives the address of.
-reads_place :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
-    match e.kind {
-        .Local(_), .Upvar(_), .Deref(_), .Global(_) => return true
-        .Field(base, _) => return fg.g.ty.bits_layout(base.ty) is null
-        .Index(_, _, _) => return true
-        _ => return false
-    }
-}
-
-/// True if evaluating `e` only reads constants, this function's own locals and parameters,
-/// and has no effect but a failed check. A callee's result destination does not overlap a
-/// parameter read in place, so nothing in `e` can read a destination `Observed.Out`.
-frame_pure :: fn(fg: ^FnGen, e: ^Expr) -> bool needs Alloc {
-    match e.kind {
-        .Int(_), .Float(_), .Bool(_), .Null, .Str(_), .CStr(_), .Uninit, .Const(_) => return true
-        .Local(_) => return true
-        .Field(base, _) => return fg.frame_pure(base)
-        .Index(base, index, _) => return fg.g.ty.kind(base.ty) is .Array(_, _, _) and fg.frame_pure(base) and fg.frame_pure(index)
-        .Unary(_, operand) => return not (fg.g.ty.repr(e.ty) is .Blob) and fg.frame_pure(operand)
-        .Binary(_, lhs, rhs) => {
-            return not (fg.g.ty.repr(e.ty) is .Blob) and not (fg.g.ty.repr(lhs.ty) is .Blob) and fg.frame_pure(lhs) and fg.frame_pure(rhs)
-        }
-        .Aggregate(elems), .Array(elems) => {
-            for i in 0..elems.len {
-                if not fg.frame_pure(&elems[i]) { return false }
-            }
-            return true
-        }
-        _ => return false
-    }
-}
-
-/// A block. Temporaries have unique names, so no C braces are needed and the block's value
-/// stays visible after it.
-block :: fn(fg: ^FnGen, b: ^tir.Block) -> Unsup!string needs sema.Load {
-    scope := fg.block_scope()
-    fg.scopes.push(scope)!
-    result: ?string = null
-    try fg.block_inner(b, &result)
-    popped := fg.scopes.pop()?
-    // Leaving normally runs the plain defers (not the errdefers), last first.
-    k := popped.defers.items.len
-    while k > 0 {
-        k -= 1
-        d := popped.defers.items[k]
-        if not d.is_err { fg.defer_body(null, d, false) }
-    }
-    fg.end_scope(popped, true)
-    if r := result { return r }
-    return fg.unit()
-}
-
-block_inner :: fn(fg: ^FnGen, b: ^tir.Block, result: ^?string) -> Unsup!() needs sema.Load {
-    try fg.stmts(b)
-    if t := b.tail {
-        fg.src_line(t.span)
-        v := try fg.expr(t)
-        // Defers run after the value is computed, so it is kept in a temporary.
-        if fg.g.ty.is_never(t.ty) { result^ = fg.zero(t.ty) } else { result^ = fg.tmp(t.ty, v) }
-    }
-}
-
-/// The statements of block `b` (see `stmt_list`).
-stmts :: fn(fg: ^FnGen, b: ^tir.Block) -> Unsup!() needs sema.Load => fg.stmt_list(b.stmts)
-
-/// Statement `s` in a C block of its own, so the C compiler can reuse the stack space of
-/// its temporaries for the next statement's.
-stmt_block :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
-    if span := stmt_span(s) { fg.src_line(span) }
-    fg.line("{")
-    fg.indent += 1
-    r := fg.stmt(s)
-    fg.indent -= 1
-    fg.line("}")
-    return r
-}
-
-stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
-    match s^ {
-        .Let(local, ?init) => {
-            x := init else return ()
-            // `---` leaves the local as it is (filled with 0xAA in Debug builds, §18.3).
-            if x.kind is .Uninit {
-                if fg.g.opts.debug {
-                    lv := fg.local_lv(local)
-                    fg.linef("memset(&{}, 0xAA, sizeof {});", lv, lv)
-                }
-                return ()
-            }
-            // A large value read from a place is copied directly, without a temporary.
-            if fg.big_place(x) {
-                a := try fg.place_addr(x)
-                lv := fg.local_lv(local)
-                fg.linef("memmove(&{}, {}, sizeof {});", lv, a, lv)
-                return ()
-            }
-            lv := fg.local_lv(local)
-            try fg.expr_into(x, lv, .Fresh)
-        }
-        .LetTuple(locals, init) => {
-            v := try fg.expr(init)
-            t := fg.tmp(init.ty, v)
-            offs := fg.g.ty.offsets(init.ty)
-            for i, l in enumerate(locals) {
-                if x := l {
-                    lt := fg.def.locals[usize(x)].ty
-                    c := fg.g.ty.cty(lt)
-                    lv := fg.local_lv(x)
-                    fg.linef("{} = GM_LD({}, (uint8_t *)&{} + {});", lv, c, t, offs[i])
-                }
-            }
-        }
-        .Assign(place, value) => {
-            // Assigning a `#bits` field rewrites its bits in the integer.
-            if .Field(base, index) := place.kind {
-                if bl := fg.g.ty.bits_layout(base.ty) {
-                    foff := bl.fields[usize(index)].off
-                    w := bl.fields[usize(index)].width
-                    // A field of a nested `#bits` field: bits of the outermost integer.
-                    outer := base
-                    off := foff
-                    while true {
-                        .Field(b, i) := outer.kind else break
-                        fs := fg.g.ty.bits_layout(b.ty) else break
-                        off += fs.fields[usize(i)].off
-                        outer = b
-                    }
-                    ol := fg.g.ty.bits_layout(outer.ty)?
-                    a := try fg.assign_addr(outer, value)
-                    v := try fg.expr(value)
-                    raw := fg.bits_raw(value.ty, v)
-                    uc := fg.g.ty.cty(ol.int_ty)
-                    m := mask(w)
-                    fg.linef("GM_ST({}, {}, ({})(((unsigned __int128)GM_LD({}, {}) & ~({} << {})) | ((({}) & {}) << {})));", uc, a, uc, uc, a, m, off, raw, m, off)
-                    return ()
-                }
-            }
-            if fg.big_place(value) {
-                p := try fg.assign_addr(place, value)
-                a := try fg.place_addr(value)
-                fg.linef("memmove({}, {}, {});", p, a, fg.g.ty.size(value.ty))
-                return ()
-            }
-            if fg.builds_in_place(value) {
-                p := try fg.assign_addr(place, value)
-                c := fg.g.ty.cty(place.ty)
-                root := fg.g.prog.s.root_local(place)
-                try fg.expr_into(value, str.format("(*({} *){})", c, p)!, Observed.Any(root))
-                return ()
-            }
-            // A local assigned a value of its own type is assigned as a C lvalue.
-            if .Local(l) := place.kind {
-                if value.ty is place.ty and fg.def.locals[usize(l)].ty is place.ty and not fg.is_borrowed(l) {
-                    v := try fg.expr(value)
-                    lv := fg.local_lv(l)
-                    fg.linef("{} = {};", lv, v)
-                    return ()
-                }
-            }
-            p := try fg.assign_addr(place, value)
-            v := try fg.expr(value)
-            c := fg.g.ty.cty(place.ty)
-            fg.linef("GM_ST({}, {}, {});", c, p, v)
-        }
-        .AssignTuple(places, value) => {
-            addrs := list(?string)
-            for pl in places {
-                if x := pl {
-                    a := try fg.assign_addr(x, value)
-                    addrs.push(a)!
-                } else {
-                    addrs.push(null)!
-                }
-            }
-            v := try fg.expr(value)
-            t := fg.tmp(value.ty, v)
-            offs := fg.g.ty.offsets(value.ty)
-            for i in 0..addrs.items.len {
-                if a := addrs.items[i] {
-                    if pe := places[i] {
-                        c := fg.g.ty.cty(pe.ty)
-                        fg.linef("GM_ST({}, {}, GM_LD({}, (uint8_t *)&{} + {}));", c, a, c, t, offs[i])
-                    }
-                }
-            }
-        }
-        .Expr(e) => {
-            _ = try fg.expr(e)
-        }
-        .Defer(is_err, body) => {
-            // Check that it translates; its code is emitted where it runs.
-            saved_out := fg.out
-            fg.out = list(u8)
-            saved_split := fg.split_runs
-            fg.split_runs = false
-            saved := fg.set_aside_scopes()
-            r := fg.expr(body)
-            fg.restore_scopes(saved)
-            fg.split_runs = saved_split
-            fg.out = saved_out
-            _ = try r
-            if fg.scopes.items.len > 0 {
-                top := &fg.scopes.items[fg.scopes.items.len - 1]
-                if top.kind is .Block { top.defers.push(Defer(is_err: is_err, body: body))! }
-            }
-        }
-    }
 }
 
 // --- frame layout --------------------------------------------------------------------------
@@ -1274,7 +804,7 @@ stmt :: fn(fg: ^FnGen, s: ^tir.Stmt) -> Unsup!() needs sema.Load {
 /// registers, and the stack check, which counts the C locals with the temporaries that may
 /// lie below the frame, would otherwise also count them when the C compiler places them
 /// above it, and could report an overflow on a stack that suffices.
-frame_locals :: fn(g: ^Gen, f: u32) -> []bool needs Alloc {
+frame_locals :: fn(g: ^Gen, f: u32) -> []bool needs sema.Load {
     at := usize(f)
     while g.frame_memo.items.len <= at { g.frame_memo.push(null)! }
     if known := g.frame_memo.items[at] { return known }
@@ -1308,6 +838,11 @@ captured_locals :: fn(g: ^Gen) -> hash_map.HashMap((u32, u32), bool) needs Alloc
     return set
 }
 
+/// Whether the locals that LIR adds to function `f` (of body `body`) live in the frame:
+/// with its other locals, when code that reaches them may be a C function of its own (the
+/// body of a `with … on`, a run of a long function).
+lir_framed :: fn(g: ^Gen, f: u32, body: ^Expr) -> bool needs sema.Load => has_fiber_with(body) or outlines(g, f) or g.opts.debug or g.opts.debug_info
+
 /// Whether `e` contains a `with … on` (excluding nested functions).
 has_fiber_with :: fn(e: ^Expr) -> bool {
     if .With(w) := e.kind {
@@ -1326,30 +861,4 @@ collect_upvars :: fn(prog: ^Prog, f: u32, e: ^Expr, out: ^hash_map.HashMap((u32,
         out.put((owner, local), true)!
     }
     tir.for_each_child(e, fn(c: ^Expr) { collect_upvars(prog, f, c, out) })
-}
-
-/// Whether the address of `place` is fixed: a local, global, constant or captured variable,
-/// or a field of one, whose address no store can change.
-fixed_address :: fn(place: ^Expr) -> bool {
-    match place.kind {
-        .Local(_), .Global(_), .Const(_), .Upvar(_) => return true
-        .Field(base, _) => return fixed_address(base)
-        _ => return false
-    }
-}
-
-/// Whether evaluating `e` may store to memory: it calls a function, runs statements or
-/// performs an operation with side effects.
-may_write :: fn(e: ^Expr) -> bool {
-    writes := false
-    match e.kind {
-        .Call(_), .Block(_), .Loop(_), .With(_), .Closure(_), .Resume(_), .Cancel(_), .Write(_), .WriteDeferred(_), .SoaDeferred(_) => { writes = true }
-        .Builtin(op, _) => match op {
-            .AtomicStore, .AtomicSwap, .AtomicCas, .AtomicRmw(_), .VolatileStore, .Sys(_), .Fiber, .HeapAlloc, .HeapFree, .AllocTag, .AllocCheck, .CopyElems, .Asm(_, _) => { writes = true }
-            _ => {}
-        }
-        _ => {}
-    }
-    if writes { return true }
-    return tir.any_child(e, fn(c: ^Expr) -> bool => may_write(c))
 }

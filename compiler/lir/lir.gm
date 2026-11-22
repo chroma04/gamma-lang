@@ -377,6 +377,16 @@ pub for_each_value :: fn(op: ^const Op, f: fn(v: Value)) {
     }
 }
 
+/// Calls `f` on each place instruction `op` reads or writes (not in its nested lists).
+#allow("needless-pub")
+pub for_each_place :: fn(op: ^const Op, f: fn(p: ^const Place)) {
+    match op^ {
+        .Load(_, p), .AddrOf(_, p), .IsPresent(_, p, _), .TagIs(_, p, _), .Store(p, _) => f(&p)
+        .Check(c) => if .Unwrap(_, p, _) := c { f(&p) }
+        _ => {}
+    }
+}
+
 /// The type of the value at place `p` of `f`, if it is known here.
 #allow("needless-pub")
 pub place_type :: fn(s: ^Sema, f: ^const Func, p: ^const Place) -> ?Ty needs Alloc {
