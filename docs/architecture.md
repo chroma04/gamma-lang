@@ -98,7 +98,7 @@ package manifest and `compiler/main.gm` the root module.
 | `compiler/check/` | checking function bodies and lowering them to TIR: expressions, calls, methods, patterns, `match`, exhaustiveness, literal inference, effects, handlers, iterators, generics, escape and dangling-pointer checks, continuations, `@stack_size`, format templates, vectors; the `gamma tir` dump |
 | `compiler/tir/` | the typed intermediate representation, compile-time values, deep copies for generic instances |
 | `compiler/eval/` | compile-time evaluation (spec §17) over TIR |
-| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends (the interpreter compiles from it in `interp/vm_lir.gm`): its instructions (`lir.gm`), the lowering (`lower.gm`), the removal of proven bounds checks (`checks.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
+| `compiler/lir/` | LIR, function bodies lowered from TIR for the back ends (the interpreter compiles from it in `interp/vm_lir.gm`): its instructions (`lir.gm`), the lowering (`lower.gm`), the removal of proven bounds and slicing checks (`checks.gm`), the verifier (`verify.gm`) and the `gamma lir` dump (`dump.gm`) |
 | `compiler/interp/` | the interpreter |
 | `compiler/cgen/` | the C back end |
 | `compiler/driver/` | the C toolchain and target selection, native builds, the cache of runtimes and programs, library paths, the interpreter entry, the options and the table of command-line options (`flags.gm`), from which the usage text is generated |
@@ -488,13 +488,16 @@ example lowers to well-formed LIR with nothing left to TIR.
 - **Proven checks** (`checks.gm`). After lowering, `elide_checks` removes each bounds check
   whose index an unsigned comparison before it proves below the length (`i < len`, or
   `i < n` with `n <= len`, or constants), as spec D.7 asks: `for i in 0..xs.len { xs[i] }`
-  and `while i < a.len { a[i] … }` keep no check. It walks the body once, naming values
+  and `while i < a.len { a[i] … }` keep no check. Likewise a slicing's range check goes
+  when `lo <= hi` and `hi <= len` (`hi < len` if inclusive) are proven: `xs[i..]` after
+  `if i > xs.len { return }`, `xs[..n]` after `if n <= xs.len`, `xs[..]`, constants within
+  an array. It walks the body once, naming values
   by the *generation* of the local they were loaded from; a store starts a new generation,
   a loop starts new ones for what it stores, and what a block, loop or `if` stores gets
   new ones after it. Facts come from `BrIf` and `If` (and from an `if` one of whose
   branches always leaves) and last to the end of their list. Locals whose address is taken
-  or that nested functions reach are not followed. Functions without a bounds check skip
-  the pass.
+  or that nested functions reach are not followed. Functions without a bounds or range
+  check skip the pass.
 - **Verification** (`verify.gm`). The verifier checks the rules above (temporaries
   written once and read where their write is visible, branches to enclosing blocks only and
   never out of a `defer`'s body, a `Defer` directly in a block) and the types of loads and
@@ -1383,10 +1386,15 @@ change the value (integers and booleans; Fil-C and other types: a round trip thr
 tests (the modules of the root's package that it imports; all of them with `--all`), compile
 the chosen tests into one executable whose `main` runs the test given by its first argument,
 and run it once per test with captured output. With `--backend=interp` there is no
-executable: each test runs in a `gamma` process started with the same command line plus the
-hidden option `--run-test=j`, which checks the program again and interprets the `j`th
-selected test's entry (`driver.run_interp_entry`), so traps, exits and `--timeout` work as
-for an executable. The tests that reach foreign code or assembly (`driver.needs_native`) are
+executable: each test is interpreted (`driver.run_interp_entry`) in a process of its own, so
+traps, exits and `--timeout` work as for an executable. On Linux (glibc) that process is a
+copy of `gamma` made by `fork` (the runtime's `gm_proc_fork`), in which the program is
+checked and lowered already; the copy runs the test and ends with its status. Worker threads
+have small stacks, so they ask the main thread to fork, and the test runs on its stack.
+Elsewhere (macOS, where a forked copy of a threaded process can find its locks held by a
+thread it lacks, and Windows) each test runs in a `gamma` started with the same command
+line plus the hidden option `--run-test=j`, which checks the program again and interprets
+the `j`th selected test. The tests that reach foreign code or assembly (`driver.needs_native`) are
 compiled into one executable of their own and run natively, in their place in the report. `run.gm`
 selects the cases (`--filter`), runs them, on `--jobs` threads that only start processes, and
 prints the results in order; a test passes if its exit status is 0, and a trap's message and

@@ -1,0 +1,9 @@
+//! exit: 134
+//! stderr
+// A lane that does not fit the integer type traps as the scalar `trunc` does (§6.6).
+F4 :: #simd [4]f32
+
+main :: fn() needs Out {
+    v := F4(1.5, 2.0, 300.0, 4.0)
+    print("{}\n", v.trunc(u8))
+}

@@ -582,7 +582,10 @@ differential testing is not part of the main test job, but CI runs it in its own
 `difftest` with it, runs the fixed seeds 0..100 (reproducible anywhere), and then 200 seeds starting
 at a point that moves with the run number, so successive runs cover new programs. Both need
 gcc and clang. A failure prints the seed and the three outputs; `difftest --print SEED`
-shows the program and `--reduce` shrinks it. The job takes a few minutes.
+shows the program and `--reduce` shrinks it. The job takes a few minutes. The generated
+programs also go through a second parser: the "Editor grammars" job parses 300 of them
+(a different range on each run) with the tree-sitter grammar, which must accept every one
+(`editors/tree-sitter-gamma/README.md`).
 
 ## The website
 

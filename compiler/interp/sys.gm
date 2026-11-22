@@ -452,6 +452,23 @@ socket_on_host_thread :: fn(m: ^Machine, span: source.Span, op: HostOp) -> Flow!
     return result
 }
 
+/// `ProcReadOut` on the child `c`: as the system service gives it, the length of the chunk
+/// (plus 2^32 if it is from standard error), 0 at the end, or an error code.
+proc_read :: fn(c: process.Child, buf: []u8) -> i64 needs Proc {
+    got := Proc.read(c, buf) else err => return sys_code(err)
+    chunk := got else return 0
+    return chunk.len.trunc(i64) + (if chunk.from is .Stderr { i64(1) << 32 } else { 0 })
+}
+
+/// `ProcWait`'s result: the exit code, the signal plus 2^32, or an error code.
+proc_status :: fn(r: IoError!process.ExitStatus) -> i64 {
+    status := r else err => return sys_code(err)
+    return match status {
+        .Exited(code) => i64(code)
+        .Signaled(sig) => i64(sig) + (i64(1) << 32)
+    }
+}
+
 /// The child-process services.
 sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []^Node, vals: []const []u8) -> Flow!i64 needs Run {
     if op is .ProcLaunch {
@@ -483,6 +500,7 @@ sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []^Node, val
         .ProcWriteIn => {
             data := try m.sys_src(span, vals[1])
             c := m.sys.procs.get(h) else return SYS_BADF
+            if m.threads.list.items.len > 1 { return (try m.on_host_thread(span, .ProcWrite(c, data))).code }
             return sys_count(Proc.write(c, data))
         }
         .ProcCloseIn => {
@@ -493,19 +511,14 @@ sys_proc :: fn(m: ^Machine, span: source.Span, op: tir.SysOp, args: []^Node, val
         .ProcReadOut => {
             buf := try m.sys_dest(span, vals[1])
             c := m.sys.procs.get(h) else return SYS_BADF
-            got := Proc.read(c, buf) else err => return sys_code(err)
-            chunk := got else return 0
-            return chunk.len.trunc(i64) + (if chunk.from is .Stderr { i64(1) << 32 } else { 0 })
+            if m.threads.list.items.len > 1 { return (try m.on_host_thread(span, .ProcRead(c, buf))).code }
+            return proc_read(c, buf)
         }
         .ProcWait => {
             c := m.sys.procs.get(h) else return SYS_BADF
-            r := Proc.wait(c)
+            r := if m.threads.list.items.len > 1 { (try m.on_host_thread(span, .ProcWait(c))).code } else { proc_status(Proc.wait(c)) }
             _ = m.sys.procs.remove(h)
-            status := r else err => return sys_code(err)
-            return match status {
-                .Exited(code) => i64(code)
-                .Signaled(sig) => i64(sig) + (i64(1) << 32)
-            }
+            return r
         }
         .ProcTryWait => {
             c := m.sys.procs.get(h) else return SYS_BADF

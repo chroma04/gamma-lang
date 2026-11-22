@@ -804,9 +804,11 @@ vm_perform_site :: fn(m: ^Machine, code: ^const Code, pc: usize, s: ^CallSite, c
                 s.callee_cx = lcx
                 s.self_ = null
             }
+            // The context was pushed for one of `decls`, with its effect: the only one
+            // needs no comparing.
             .Decl(decls, value, outer) => for d in decls {
                 info := m.p.handler_decl(d)
-                if info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0 { continue }
+                if decls.len > 1 and (info.effect_.eff is not node.effect_.eff or types.cmp_ref(&info.effect_, &node.effect_) is not 0) { continue }
                 f = info.clauses[us(p.op)]
                 s.env = null
                 s.callee_cx = outer

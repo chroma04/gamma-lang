@@ -53,6 +53,7 @@ which also show what each example prints.
 | [`mandelbrot.gm`](mandelbrot.gm) | the Mandelbrot set in ASCII | floating point, loops, `--backend=c` for speed |
 | [`julia.gm`](julia.gm) | a Julia set in ASCII | `Complex(f64)`: operators, `abs()` |
 | [`nbody.gm`](nbody.gm) | a leapfrog simulation of a sun and three planets | math vectors (`#vec [3]f64`): operators, `dot`, `norm` |
+| [`rosetta.gm`](rosetta.gm) | classic small tasks in the style of Rosetta Code: FizzBuzz, a sieve, GCD, Ackermann, Hanoi, Levenshtein, Roman numerals, N-queens, Collatz, Caesar, binary search | everyday Gamma idioms side by side: generic functions with `where`, closures passed as `fn` parameters, recursion, bit sets, lists, `?T` results, one test per task |
 
 Run a module directory or a package by naming the directory: `gamma run calc <
 data/calc-input.txt`, `gamma test bank`.

@@ -4,7 +4,9 @@
 /// length where it runs (spec D.7): a branch on an unsigned `i < len` (or `i < x` with
 /// `x <= len`, or a constant `i < c <= len`) leads to it, and neither side has changed
 /// since. This is what makes `for i in 0..xs.len { xs[i] }` and `while i < a.len { a[i] }`
-/// check-free. Returns how many checks it removed.
+/// check-free. Likewise each `Check(.Range(lo, hi, len))` of a slicing whose bounds are
+/// known to be in order and within the length: `xs[i..]` after `if i <= xs.len`,
+/// `xs[..n]` after `if n <= xs.len`, `xs[..]`. Returns how many checks it removed.
 ///
 /// The analysis walks the body once, in order, giving each value it can name a symbol:
 /// a constant, or the bytes at an offset of a local as one *generation* of the local holds
@@ -149,10 +151,11 @@ learn :: fn(e: ^Elider, cond: Value, truth: bool) needs Alloc {
     e.facts.push(fact)!
 }
 
-/// Whether `a <= b` (`a < b` if `strict`) holds without facts: both are constants, or
-/// they are the same.
+/// Whether `a <= b` (`a < b` if `strict`) holds without facts: both are constants, they
+/// are the same, or `a` is 0 (the values compared are unsigned).
 plain :: fn(a, b: Sym, strict: bool) -> bool {
     if .Const(x) := a and .Const(y) := b { return if strict { x < y } else { x <= y } }
+    if not strict and a is .Const(0) and b is not .None { return true }
     return not strict and same(a, b)
 }
 
@@ -178,6 +181,18 @@ proven :: fn(e: ^Elider, index, len: Value) -> bool {
     n := e.sym_of(len)
     if i is .None or n is .None { return false }
     return e.holds(i, n, true)
+}
+
+/// Whether the check of the slicing bounds `lo` and `hi` (and `len`, if known) always
+/// passes here: `lo <= hi`, which gives `lo <= hi + 1` for an inclusive range too, and
+/// `hi <= len` (`hi < len` if `inclusive`).
+range_proven :: fn(e: ^Elider, lo, hi: Value, len: ?Value, inclusive: bool) -> bool {
+    if not e.is_unsigned(value_type(e.f, lo)) or not e.is_unsigned(value_type(e.f, hi)) { return false }
+    a := e.sym_of(lo)
+    b := e.sym_of(hi)
+    if a is .None or b is .None or not e.holds(a, b, false) { return false }
+    n := len else return true
+    return e.holds(b, e.sym_of(n), inclusive)
 }
 
 /// Walks the list `insts`, removing the checks it proves; returns what is left of it.
@@ -256,7 +271,10 @@ leaves :: fn(insts: []const Inst) -> bool {
 /// Looks at one instruction; false if it is a check that can go.
 step :: fn(e: ^Elider, inst: ^Inst) -> bool needs Alloc {
     match inst.op {
-        .Check(c) => if .Bounds(i, n) := c and e.proven(i, n) { return false }
+        .Check(c) => {
+            if .Bounds(i, n) := c and e.proven(i, n) { return false }
+            if .Range(lo, hi, len, inclusive) := c and e.range_proven(lo, hi, len, inclusive) { return false }
+        }
         .Move(d, v) => { e.val[usize(d)] = e.sym_of(v) }
         .Load(d, p) => { e.val[usize(d)] = e.load_sym(&p, e.f.temps[usize(d)]) }
         .Bin(d, op, a, b) => if e.is_unsigned(value_type(e.f, a)) {

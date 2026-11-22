@@ -229,8 +229,8 @@ vec_blend :: fn(fg: ^FnGen, t: Ty, m: string, a: string, b: string) -> string ne
 /// Whether `op` is a vector builtin (`vector_builtin_values`).
 is_vector_builtin :: fn(op: tir.Builtin) -> bool => match op {
     .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe, .ReduceSum, .ReduceMin, .ReduceMax => true
-    .MaskAll, .MaskAny, .MaskCount, .Select, .LaneMin, .LaneMax, .LaneAbs, .LaneConvert => true
-    .Shuffle, .VecLoad, .VecStore => true
+    .MaskAll, .MaskAny, .MaskCount, .Select, .LaneMin, .LaneMax, .LaneAbs, .LaneConvert, .LaneMap(_) => true
+    .Shuffle(_), .VecLoad, .VecStore => true
     _ => false
 }
 
@@ -244,7 +244,8 @@ vector_builtin_values :: fn(fg: ^FnGen, span: source.Span, t: Ty, op: tir.Builti
         .Select => return fg.vec_select(t, tys[0], vals[0], vals[1], vals[2])
         .LaneMin, .LaneMax, .LaneAbs => return try fg.vec_minmax_abs(span, t, op, vals)
         .LaneConvert => return fg.vec_convert(t, tys[0], vals[0])
-        .Shuffle => return fg.vec_shuffle(t, tys[0], vals[0], lanes)
+        .LaneMap(lop) => return try fg.vec_lane_map(span, t, lop, tys[0], vals[0])
+        .Shuffle(_) => return fg.vec_shuffle(t, tys[0], vals, lanes)
         _ => return fg.vec_load_store(span, t, op, tys, vals)
     }
 }
@@ -372,23 +373,38 @@ vec_convert :: fn(fg: ^FnGen, t: Ty, xt: Ty, v: string) -> string needs sema.Loa
     return fg.vec_store(t, str.format("__builtin_convertvector({}, {})", va, tv)!)
 }
 
-vec_shuffle :: fn(fg: ^FnGen, t: Ty, xt: Ty, v: string, lanes: []const u64) -> string needs sema.Load {
+/// The scalar builtin of `lop` on each lane of `v` (of type `xt`), giving the vector type
+/// `t`: one loop, which the C compiler may vectorize.
+vec_lane_map :: fn(fg: ^FnGen, span: source.Span, t: Ty, lop: tir.LaneOp, xt: Ty, v: string) -> Unsup!string needs sema.Load {
+    from := vec_parts(fg, xt)
+    to := vec_parts(fg, t).lane
+    px := fg.addr_of(xt, v)
+    scalar := tir.lane_scalar(lop)
+    return try fg.vec_lane_loop(t, from.n, fn(i: string) -> Unsup!string {
+        x := fg.vec_lane_at(from.lane, from.bytes, px, i)
+        return try fg.builtin_values(span, to, scalar, [1]Ty(from.lane)[..], [1]string(x)[..])
+    })
+}
+
+vec_shuffle :: fn(fg: ^FnGen, t: Ty, xt: Ty, vals: []const string, lanes: []const u64) -> string needs sema.Load {
     vp := vec_parts(fg, xt)
     lane := vp.lane
     bytes := vp.bytes
     m := vec_parts(fg, t).n
     idx := list(string)
     for k in lanes { idx.push(str.format("{}", k)!)! }
-    va := fg.vec_load(xt, v)
+    va := fg.vec_load(xt, vals[0])
+    vb := if vals.len > 1 { fg.vec_load(xt, vals[1]) } else { va }
     tv := vec_ty(fg, m, lane, null)
     res := fg.tmp_uninit(t)
     r := str.format("v{}", fg.fresh())!
     fg.line("#if defined(__clang__) || __GNUC__ >= 12")
-    fg.linef("{} {} = __builtin_shufflevector({}, {}, {});", tv, r, va, va, str.join(idx.items, ", ")!)
+    fg.linef("{} {} = __builtin_shufflevector({}, {}, {});", tv, r, va, vb, str.join(idx.items, ", ")!)
     fg.linef("memcpy(&{}, &{}, sizeof {});", res, r, res)
     fg.line("#else")
-    for j, k in enumerate(idx.items) {
-        fg.linef("memcpy((uint8_t *)&{} + {}, (uint8_t *)&{} + {} * {}, {});", res, u64(j) * bytes, va, k, bytes, bytes)
+    for j, k in enumerate(lanes) {
+        src := if k >= vp.n { vb } else { va }
+        fg.linef("memcpy((uint8_t *)&{} + {}, (uint8_t *)&{} + {} * {}, {});", res, u64(j) * bytes, src, k % vp.n, bytes, bytes)
     }
     fg.line("#endif")
     return res

@@ -95,7 +95,6 @@ fn main@places.gm:16:1 escapes 0
   store l3, %4
   %5 = load l3
   %6 = addr l1
-  check range 0:usize..4:usize len 4:usize
   %7 = slice %6 0:usize..4:usize *4
   %8 = coerce PtrToPtr %7
   %9 = call fn sum (%8)

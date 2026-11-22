@@ -27,7 +27,15 @@ npm run parse-corpus         # needs the gamma executable (bootstrap/build.sh)
 
 `npx tree-sitter test -u` rewrites the expected trees of the corpus. Read the diff before committing it.
 
-`scripts/parse-corpus.sh` asks the compiler (`gamma parse`) which files in `lib/` and `tests/conformance/` are valid. It parses those with tree-sitter and lists the files that produce `ERROR` or `MISSING` nodes. The conformance suite also holds programs that are invalid on purpose. The grammar is not meant to reject those, so the script skips the files the compiler rejects. The script exits with status 1 if a file under `lib/` fails.
+`scripts/parse-corpus.sh` asks the compiler (`gamma parse`) which files in `lib/`, `tests/conformance/` and `examples/` (or the directories it is given) are valid. It parses those with tree-sitter and lists the files that produce `ERROR` or `MISSING` nodes. The conformance suite also holds programs that are invalid on purpose. The grammar is not meant to reject those, so the script skips the files the compiler rejects. The script exits with status 1 if a file under `lib/` fails.
+
+The programs that `tools/difftest` generates are valid Gamma too, which makes the grammar a second parser to compare the compiler's with on code nobody wrote by hand. CI parses a few hundred of them on each run:
+
+```sh
+gamma build tools/difftest -o /tmp/difftest
+mkdir /tmp/progs && for s in $(seq 0 299); do /tmp/difftest --save $s /tmp/progs/seed$s.gm; done
+STRICT=1 scripts/parse-corpus.sh /tmp/progs
+```
 
 ## How newlines work
 

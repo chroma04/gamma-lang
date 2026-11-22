@@ -842,7 +842,7 @@ lc_builtin :: fn(c: ^LirC, span: source.Span, t: Ty, op: tir.Builtin, args: []co
     tys := list(Ty)
     lanes := list(u64)
     for k, a in enumerate(args) {
-        if op is .Shuffle and k > 0 {
+        if .Shuffle(nv) := op and k >= usize(nv) {
             lanes.push(if .Word(_, bits) := a { bits } else { 0 })!
             continue
         }

@@ -6,7 +6,35 @@ Versions and what each kind of change means are described in
 
 ## Unreleased
 
+### Language
+
+- **Memory has no declared type** (spec §18.4): an aligned access through a `^T` that
+  covers `@size_of(T)` bytes of one live object reads or writes those bytes as a `T`,
+  whatever they were written as, so pointers to different types may alias. This replaces
+  the undefined "compatible type" of §18.4 case 2, which is now only misaligned accesses
+  and accesses that run past an object. Implementations already behaved this way.
+- **More lane-wise vector methods** (§5.6.2): `v.sqrt()`, and `v.trunc(I)`, `.round(I)`,
+  `.floor(I)`, `.ceil(I)` and `.sat(I)`, which convert each lane to the integer lane type
+  `I` with the checks of the scalar conversions. `v.shuffle(w, i0, …)` picks lanes from two
+  vectors: index `N + k` is `w[k]`.
+
+### Documentation
+
+- **`examples/rosetta.gm`**: classic small tasks in the style of Rosetta Code (FizzBuzz, a
+  sieve, GCD and LCM, Ackermann, Towers of Hanoi, Levenshtein distance, Roman numerals,
+  N-queens, Collatz, a Caesar cipher, binary search), each with a test.
+
 ### Tooling
+
+- **Slicing checks that a comparison proves are removed**, as bounds checks already were:
+  `xs[i..]` after `if i > xs.len { return }`, `xs[..n]` inside `if n <= xs.len`, `xs[..]`
+  and constant slices of arrays no longer check their range. A third of the slicings in
+  the compiler lose their check.
+
+- **`gamma test --backend=interp` checks the program once.** On Linux each test
+  runs in a copy of `gamma` made by `fork`, in which the program is checked already,
+  instead of in a new `gamma` that checked it again: the compiler's own 179 tests take 7 s
+  instead of 112 s (4 s instead of 30 s with `-j 4`). Other systems keep starting `gamma`.
 
 - **The interpreter runs every function from LIR**: each body is lowered to LIR and
   compiled from it for the register machine, including `with` (and `with … on`), jumps out
@@ -64,6 +92,10 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **The interpreter no longer hangs when one thread reads a child process's output while
+  another writes its input**: reading, writing and waiting for a child run on a host thread
+  when the program has several threads, as file and socket calls already did, and a thread
+  waiting with a far deadline no longer delays noticing that such a call has finished.
 - **A local constant that called the core library could fail to evaluate**, depending on
   the order in which the compiler checked function bodies: `b: bool : s.starts_with("ab")`
   in `main`, or a call of a standard library function that uses such a method, reported

@@ -56,7 +56,8 @@ LLVM-only, but not worth it:
 - TBAA: §18.4.2 makes wrong-type access UB, but "compatible type" is undefined in the
   spec, Safe builds define punning as reinterpretation, and the interpreter treats memory
   as bytes: TBAA would make native and interp diverge on programs the tests accept.
-  Open spec ambiguity: define "compatible type" in §18.4.2 (not done; needs design).
+  Settled s84: §18.4 now says memory has no declared type (no strict aliasing), so TBAA
+  is ruled out by the spec, not only by practice.
 - tailcc/guaranteed tail calls: only matter if Gamma gets `become`; clang `musttail`
   and `preserve_none` (19+) already reach C.
 - Real DWARF (DW_TAG_variant_part for unions, no `#line` per line, no views.gm/gdb/lldb

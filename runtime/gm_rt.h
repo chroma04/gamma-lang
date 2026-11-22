@@ -580,6 +580,11 @@ GM_API int64_t gm_proc_read_out(int64_t h, void *p, size_t n);
 GM_API int64_t gm_proc_wait(int64_t h);
 GM_API int64_t gm_proc_try_wait(int64_t h);
 GM_API int64_t gm_proc_kill(int64_t h);
+/* gm_proc_fork starts a copy of this process (Linux with glibc; elsewhere IoError.Unsupported) whose
+ * stdin is the null device and whose output streams are pipes read with gm_proc_read_out:
+ * it returns 0 in the copy, which ends with gm_proc_fork_exit(status), and a handle here. */
+GM_API int64_t gm_proc_fork(void);
+GM_API void gm_proc_fork_exit(int32_t status);
 
 /* ---- threads (§19.6) ----------------------------------------------------------------
  *

@@ -391,7 +391,7 @@ apply_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0,
             try m.hash_val(span, t0, v[0], &h)
             m.put_uint(dst, u128(h))
         }
-        .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe, .ReduceSum, .ReduceMin, .ReduceMax, .MaskAll, .MaskAny, .MaskCount, .Select, .LaneMin, .LaneMax, .LaneAbs, .LaneConvert, .Shuffle => return m.vector_builtin(span, op, res_ty, t0, t1, v, dst)
+        .LaneEq, .LaneNe, .LaneLt, .LaneLe, .LaneGt, .LaneGe, .ReduceSum, .ReduceMin, .ReduceMax, .MaskAll, .MaskAny, .MaskCount, .Select, .LaneMin, .LaneMax, .LaneAbs, .LaneConvert, .LaneMap(_), .Shuffle(_) => return m.vector_builtin(span, op, res_ty, t0, t1, v, dst)
         _ => return !m.unsupported(span, str.format("the builtin `{}`", op)!)
     }
 }

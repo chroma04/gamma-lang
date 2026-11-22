@@ -388,6 +388,19 @@ pub Coercion :: union {
     Unresolved
 }
 
+/// The scalar builtins that apply to a vector lane by lane (`Builtin.LaneMap`).
+pub LaneOp :: union { Sqrt, Trunc, Round, Floor, Ceil, Sat }
+
+/// The scalar builtin that `LaneMap(op)` applies to each lane.
+pub lane_scalar :: fn(op: LaneOp) -> Builtin => match op {
+    .Sqrt => .Sqrt
+    .Trunc => .Trunc
+    .Round => .Round
+    .Floor => .Floor
+    .Ceil => .Ceil
+    .Sat => .Sat
+}
+
 /// Explicit conversions and builtin operations.
 pub Builtin :: union {
     /// `T(x)`: a lossless conversion (§6.5).
@@ -465,8 +478,12 @@ pub Builtin :: union {
     LaneAbs
     /// A vector of the same number of lanes of another type, lane by lane.
     LaneConvert
-    /// `v.shuffle(i0, …)`: the arguments after the vector are `usize` constants.
-    Shuffle
+    /// `v.sqrt()`, `v.trunc(T)`, `.round(T)`, `.floor(T)`, `.ceil(T)` and `.sat(T)`: the
+    /// scalar builtin `lane_scalar(op)` on each lane.
+    LaneMap: LaneOp
+    /// `v.shuffle(i0, …)` and `v.shuffle(w, i0, …)`: the payload is the number of vector
+    /// arguments (1 or 2); the arguments after them are `usize` constants.
+    Shuffle: u8
     /// `V.load(xs)` and `v.store(dst)`.
     VecLoad
     VecStore

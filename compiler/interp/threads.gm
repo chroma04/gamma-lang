@@ -9,6 +9,7 @@
 
 fs :: import "std/fs"
 net :: import "std/net"
+process :: import "std/process"
 thread :: import "std/thread"
 
 /// How many calls or loop iterations a thread runs before letting another one in.
@@ -113,9 +114,13 @@ switch_thread :: fn(m: ^Machine, span: source.Span) -> Flow!() needs Run {
                 if e := earliest and e <= d {} else { earliest = d }
             }
         }
-        // A blocking call on a host thread ends by itself: look again shortly.
+        // A blocking call on a host thread ends by itself: look again shortly, whatever the
+        // other deadlines.
         for t in th.list.items {
-            if t.state is .Host(_) and earliest is null { earliest = (now else Clock.now().ns) +| 1_000_000 }
+            if t.state is .Host(_) {
+                soon := (now else Clock.now().ns) +| 1_000_000
+                if e := earliest and e <= soon {} else { earliest = soon }
+            }
         }
         e := earliest else return !m.trap(span, "deadlock: every thread is blocked")
         // Sleeping hands the output so far to the system.
@@ -235,13 +240,19 @@ pub HostOp :: union {
     Accept: net.Listener
     Send: (socket: net.Socket, data: []const u8)
     Recv: (socket: net.Socket, buf: []u8)
+    /// The child-process services, whose results are given as the system service would
+    /// give them (`HostResult.code`).
+    ProcRead: (child: process.Child, buf: []u8)
+    ProcWrite: (child: process.Child, data: []const u8)
+    ProcWait: process.Child
 }
 
-/// What a call on a host thread gave: a count (0 for `Connect` and `Accept`) and the new
-/// socket of `Connect` or `Accept`.
+/// What a call on a host thread gave: a count (0 for `Connect` and `Accept`), the new
+/// socket of `Connect` or `Accept`, and the result of a child-process service.
 pub HostResult :: struct {
     count: IoError!usize
     socket: ?net.Socket = null
+    code: i64 = 0
 }
 
 HostCall :: struct {
@@ -251,7 +262,7 @@ HostCall :: struct {
 }
 
 host_main :: fn(j: ^HostCall) needs Sys {
-    thread.defaults(fn() needs Fs + In + Net {
+    thread.defaults(fn() needs Fs + In + Net + Proc {
         j.result = match j.op {
             .Stdin(buf) => HostResult(count: In.read(buf))
             .Read(f, buf) => HostResult(count: Fs.read(f, buf))
@@ -259,6 +270,9 @@ host_main :: fn(j: ^HostCall) needs Sys {
             .Recv(s, buf) => HostResult(count: Net.recv(s, buf))
             .Connect(host, port) => connected(Net.connect(host, port))
             .Accept(l) => connected(Net.accept(l))
+            .ProcRead(c, buf) => HostResult(count: 0, code: proc_read(c, buf))
+            .ProcWrite(c, data) => HostResult(count: 0, code: sys_count(Proc.write(c, data)))
+            .ProcWait(c) => HostResult(count: 0, code: proc_status(Proc.wait(c)))
         }
     })
     @atomic_store(&j.done, 1, .Release)

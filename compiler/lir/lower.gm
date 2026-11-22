@@ -55,7 +55,7 @@ Lw :: struct {
     escapes: u32
     /// For each TIR label (by index): the local a `break` with a value stores it in.
     results: List(?u32)
-    /// How many bounds checks the body has.
+    /// How many bounds and slicing checks the body has.
     bounds: u32 = 0
 }
 
@@ -1298,6 +1298,7 @@ slice :: fn(lw: ^Lw, e: ^Expr, sl: tir.SliceExpr) -> Value needs Alloc {
         hi = len else return lw.escape(e)
         inclusive = false
     }
+    lw.bounds += 1
     lw.emit(.Check(.Range(lo, hi, len, inclusive)), e.span)
     d := lw.temp(e.ty)
     lw.emit(.MakeSlice(d, ptr, lo, hi, inclusive, esz), e.span)

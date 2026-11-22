@@ -1,0 +1,37 @@
+//! endian: little
+// §18.4: memory has no declared type. An aligned, in-bounds access through a pointer of
+// any type reads or writes the bytes as that type, and pointers to different types alias.
+Header :: struct { tag: u16, len: u16, id: u32 }
+
+bump :: fn(a: ^u32, b: ^f32) -> u32 {
+    a^ = 0x3F80_0000
+    b^ = 2.0
+    return a^
+}
+
+main :: fn() needs Out {
+    words := [2]u32(0, 0)
+    bytes := (&words).cast(^[8]u8)
+    bytes^[0] = 0x78
+    bytes^[1] = 0x56
+    bytes^[2] = 0x34
+    bytes^[3] = 0x12
+    print("{:x}\n", words[0])
+
+    d: u64 = 0
+    (&d).cast(^f64)^ = 1.5
+    print("{:x}\n", d)
+
+    buf: [4]u64 = ---
+    raw := (&buf).cast(^[32]u8)
+    for i in 0..32 { raw^[i] = u8(i) }
+    h := (&buf).cast(^Header)
+    print("{} {} {}\n", h.tag, h.len, h.id)
+    h.id = 0
+    print("{} {}\n", raw^[4], raw^[8])
+
+    // Two pointers of different types to one object: the write through `b` is seen
+    // through `a`.
+    cell: u32 = 0
+    print("{:x}\n", bump(&cell, (&cell).cast(^f32)))
+}

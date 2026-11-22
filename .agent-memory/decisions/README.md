@@ -45,3 +45,5 @@ Status words: CURRENT (holds today), PARTLY (read with the later one), HISTORY (
   (compiler −41%; measuring recipe) · 069 round 9 (copy elision) · 072 round 10
   (every remaining roadmap item measured: kept / dropped / closed; scripts) · 073 shared
   bodies for `@write` template parameters (compiler C −13%)
+- 076 s84 roadmap sweep: done items, interp push/with measured (kept: single-decl
+  perform site, −3% with.gm; dropped: frame memset, consts as immediates)
