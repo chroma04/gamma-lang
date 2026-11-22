@@ -2,7 +2,7 @@
 # Runs a small program that imports the standard library with the given gamma and checks
 # its output.
 #
-#     scripts/smoke-hello.sh GAMMA
+#     tools/smoke-hello.sh GAMMA
 set -eu
 [ "$#" -eq 1 ] || { echo "usage: $0 GAMMA" >&2; exit 2; }
 work=$(mktemp -d)

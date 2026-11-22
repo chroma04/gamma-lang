@@ -1,6 +1,6 @@
 // Arithmetic and comparisons on words (u64): integers of at most 64 bits and floats. This is the
-// fast path of the tree walker and the register machine; its overflow and shift rules are
-// the ones of `intarith.gm`, which it calls where an operation leaves the common case.
+// register machine's fast path; its overflow and shift rules are the ones of `intarith.gm`,
+// which it calls where an operation leaves the common case.
 
 /// The low `bits` bits set.
 #inline

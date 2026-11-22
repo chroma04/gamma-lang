@@ -4,7 +4,7 @@ Homebrew, macOS signing, VS Code Marketplace/Open VSX and Zed extension publishi
 Linguist/nvim-treesitter submissions. (Private vulnerability reporting: enabled.)
 
 ## Always
-- Keep `CHANGELOG.md` `## Unreleased` current (0.3.0 is the last release section; start
+- Keep `CHANGELOG.md` `## Unreleased` current (0.4.0 is the last release section; start
   `## Unreleased` above it with the first change after it).
 - New diagnostics follow spec ch. 23 (kinds, what is an error, limits in §23.5).
 - Regenerate `docs/std` after std changes: `gamma doc lib/std --all -o docs/std`.
@@ -46,3 +46,5 @@ them only with a profile that shows them.
 
 ## Small cleanups (only when touching the code)
 - check: generic_call_packed's per-argument loop; write_expr's big match.
+- lir: `Tir` escapes (lower.gm `escape`) are only an internal-error path in both back ends
+  now; could become a lowering error with the `Tir` instruction deleted.

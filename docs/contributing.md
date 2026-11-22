@@ -360,7 +360,7 @@ tools/test.sh --filter for-rust doc_examples/
 ## Benchmarks
 
 `bench/benches.gm` holds `bench` declarations, run with `gamma bench bench/` (see
-`bench/README.md`); `bench/programs/` holds small programs that exercise the call, effect and allocation paths. On pull requests CI runs `scripts/bench-compare.sh` to compare the
+`bench/README.md`); `bench/programs/` holds small programs that exercise the call, effect and allocation paths. On pull requests CI runs `tools/bench-compare.sh` to compare the
 benchmarks of the branch with those of its base; the job only reports, it never fails.
 
 ### Profiling the compiler

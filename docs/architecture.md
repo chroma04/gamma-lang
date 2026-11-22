@@ -124,7 +124,8 @@ Outside `compiler/`:
 | `tests/harness/` | the test harness, written in Gamma, one module per suite (see [`contributing.md`](contributing.md)) |
 | `tests/conformance/`, `tests/examples/` | the conformance tests, grouped by area, and the cases that run `examples/` |
 | `fuzz/` | the libFuzzer targets of the compiler |
-| `tools/` | `test.sh`, the release packaging and install scripts, the seed refresh, and generators for checked-in files (the Unicode tables of `std/text`, the float printing table) |
+| `bench/` | the benchmarks that `gamma bench` runs and CI compares on pull requests (see [`bench/README.md`](../bench/README.md)) |
+| `tools/` | `test.sh`, the differential tester (`difftest/`), the release packaging, smoke-test and install scripts, the seed refresh, CI helpers (`bench-compare.sh`, `version.sh`, the ARM64 Windows compiler wrapper), and generators for checked-in files (the Unicode tables of `std/text`, the float printing table, the time zone fixtures) |
 | `editors/` | editor support: TextMate and tree-sitter grammars, extensions for VS Code, Zed and Emacs (see [`editors.md`](editors.md)) |
 | `web/` | the website generator and the playground |
 

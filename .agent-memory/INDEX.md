@@ -1,8 +1,12 @@
 # Gamma: agent memory INDEX (read first)
 
-## State (2026-11-22, s86)
-- `main` = PRs #1–#141 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
-  commit). `## Unreleased` in CHANGELOG.md started in s77.
+## State (2026-11-22, s87)
+- `main` = PRs #1–#146 merged. s87 prepared 0.4.0 (CHANGELOG section `0.4.0`, versions
+  bumped; the user tags `v0.4.0` on the merge commit). No `## Unreleased` yet: start it
+  above `## 0.4.0` with the first change after it. Release recipe: docs/versioning.md;
+  version strings live in compiler/gamma.toml, compiler/main.gm, compiler/lsp/lsp.gm,
+  editors/* (emacs, zed toml+lock, vscode json+lock+README, tree-sitter json+lock and
+  src/parser.c metadata), docs/editors.md (`git grep` the old version).
   Tag `rust-reference-final` marks the last Rust implementation.
 - The compiler is self-hosted: `compiler/` (Gamma) builds `gamma` from the C seed in
   `bootstrap/seed/` (= the build's C units; refresh with `tools/refresh-seed.sh` after
@@ -24,6 +28,7 @@
   s85 perf follow-ups (077): in-place results, `let` result hint, statement-run C
   blocks, template forwarding; roadmap §2 now empty.
   s86 bug sweep (history.md): six small fixes; how to sweep: gotchas/bug-sweeps.md.
+  s87 0.4.0 release prep + cleanup (`scripts/` folded into `tools/`).
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
@@ -46,7 +51,7 @@
                   platforms.md (clang, aarch64, s390x, Windows, WASI, Fil-C) ·
                   codegen.md (generated C, runtime, host stack) ·
                   parallel-agents.md (worktree workers: stale bases, limits)
-- history.md      compact project history, s1–s85
+- history.md      compact project history, s1–s87
 
 ## Conventions in Gamma code (quick reminders; the guide is the reference)
 - Effects: `fn() -> T needs Alloc + Out`; effect-set args `Sched(Out + Clock)`; pure

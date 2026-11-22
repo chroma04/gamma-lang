@@ -4,7 +4,14 @@ All notable changes to the Gamma language, its standard library and the `gamma` 
 Versions and what each kind of change means are described in
 [`docs/versioning.md`](docs/versioning.md).
 
-## Unreleased
+## 0.4.0 - 2026-11-22
+
+This release gives both back ends one lowered form (LIR) that the interpreter compiles
+from and the C back end translates, which removes the bounds and slicing checks a
+comparison proves and lets generated code build large values where they go. Optimized
+builds use Clang and ThinLTO when they are installed, `gamma` builds for ARM64 Windows,
+and CI runs the undefined behavior sanitizer. The language gains lane-wise vector
+conversions and states that memory has no declared type. There are no breaking changes.
 
 ### Language
 
@@ -18,98 +25,75 @@ Versions and what each kind of change means are described in
   `I` with the checks of the scalar conversions. `v.shuffle(w, i0, …)` picks lanes from two
   vectors: index `N + k` is `w[k]`.
 
-### Documentation
-
-- **`examples/rosetta.gm`**: classic small tasks in the style of Rosetta Code (FizzBuzz, a
-  sieve, GCD and LCM, Ackermann, Towers of Hanoi, Levenshtein distance, Roman numerals,
-  N-queens, Collatz, a Caesar cipher, binary search), each with a test.
-
 ### Tooling
 
 - **ARM64 Windows.** `gamma` builds for `aarch64-w64-mingw32` (fibers switch the stack
   bounds Windows keeps for each thread, as on x86-64 Windows), and CI cross-builds it with
   Zig's Clang (`tools/zig-cc-windows-arm64.sh`) and runs the conformance tests and examples
   on an ARM64 Windows runner.
-
-- **Less copying and smaller frames in generated C.** A struct, array, optional, result
-  or union value that is returned or stored in a local is built where it goes instead of
-  in a temporary that is then copied (a call's result already was), also when deferred
-  statements run before the function returns; `x := if …`/`match`/`else` leaves its value
-  in `x` directly; and statements that use large temporaries get C blocks of their own, so
-  the C compiler reuses their stack slots. Half of the copies in the compiler's C go, and
-  its stack frames are 3–7% smaller.
-- **A function that passes its template on shares one body too** (`log.info` to
-  `log.log`): its instances call the shared body of the function it passes the template
-  to, which then has no instance per template.
-
-- **Slicing checks that a comparison proves are removed**, as bounds checks already were:
-  `xs[i..]` after `if i > xs.len { return }`, `xs[..n]` inside `if n <= xs.len`, `xs[..]`
-  and constant slices of arrays no longer check their range. A third of the slicings in
-  the compiler lose their check.
-
-- **`gamma test --backend=interp` checks the program once.** On Linux each test
-  runs in a copy of `gamma` made by `fork`, in which the program is checked already,
-  instead of in a new `gamma` that checked it again: the compiler's own 179 tests take 7 s
-  instead of 112 s (4 s instead of 30 s with `-j 4`). Other systems keep starting `gamma`.
-
-- **The interpreter runs every function from LIR**: each body is lowered to LIR and
-  compiled from it for the register machine, including `with` (and `with … on`), jumps out
-  of function literals and clauses, `defer`, continuations, 128-bit integers and values of
-  any size. Its tree-walking evaluator and the old compiler of bodies are gone. The
-  benchmarks run 5–13% fewer instructions.
-- **The C back end generates every function body from LIR**, as the interpreter does, and
-  its translation of the checked tree is gone (2,500 lines). Long functions are still split
-  into helper functions, constant large arguments still come from static storage, and
-  `-g` maps the C to Gamma lines as before. Optimized executables run the same or fewer
-  instructions: `sha256sum` 7%, `julia` 4%, a perform-heavy benchmark 6% and
-  `safe_map_insert` 4% fewer, the others within 0.4%.
-- **Bounds checks that a comparison proves are removed** (spec D.7): in
-  `for i in 0..xs.len { xs[i] }`, `while i < a.len { a[i] … }` and after
-  `if n > xs.len { return }`, indexing no longer checks. The interpreter does this now,
-  and loads and stores an element through a slice or many-pointer in one instruction
-  whether checked or not (`for x in xs` included): 0.5–3% fewer instructions on the
-  benchmarks and examples.
-- **`gamma lir`** prints a program's functions in LIR, the lowered form that the
-  interpreter compiles from and that the C back end translates: instructions on
-  numbered temporaries, with the order of evaluation, bounds checks, the tests of
-  patterns, handlers and jumps between frames written out. The format is not stable.
 - **Optimized builds use Clang when it is installed.** Without `CC`, Checked and Fast
-  builds now compile with `clang` if it is on `PATH`, except on Windows; Debug builds keep `cc`. The compiler built this way is 19% smaller and checks
-  programs 15% faster. Set `CC` to choose the compiler yourself.
+  builds now compile with `clang` if it is on `PATH`, except on Windows; Debug builds keep
+  `cc`. The compiler built this way is 19% smaller and checks programs 15% faster. Set
+  `CC` to choose the compiler yourself.
 - **Very large optimized programs are optimized across their units.** A Checked or Fast
   build that is split into units (the compiler itself) is compiled for ThinLTO and linked
   with lld when it uses Clang and `ld.lld` is installed, with lld's cache in the cache
   directory: the compiler runs 8% fewer instructions. Building it from nothing takes about
   10 s longer; after an edit, the link redoes only what changed.
-- **A `match` on a union dispatches without a range check**: the `switch` on its tag tells
-  the C compiler that no other tag occurs. The interpreter, whose instruction loop is such a
-  `match`, runs 1–3.5% fewer instructions.
-- **Clang builds for AArch64 Linux link programs that multiply `i128`s with a check.**
-  Clang calls `__muloti4` for them, which libgcc lacks; the runtime now provides it.
-- **Formatting functions no longer get a copy per template.** A generic function whose
-  `template :: string` parameter is the template of its `@write`s (and is otherwise used
-  only as a run-time string), such as `str.format`, `List(u8).write` or a logging wrapper,
-  now has one body for each set of value types, which reads the template from a static
-  table when it runs; each call is still checked against its own template, with the same
-  errors as before. The compiler's own C is 13% smaller and it builds 8% faster from
-  scratch; formatting in a program is as fast as before or slightly faster.
-- **The interpreter is faster on hash maps, allocation and 128-bit integers**: `@hash` of
-  an integer, comparisons and shifts of 128-bit integers, signed 128-bit division,
-  widening to and truncating from 128 bits, and string literals no longer leave the
-  register machine's fast path, and a Debug run no longer formats the call site of every
-  allocation (it does so only to report a mismatched `free`). Measured in instructions:
-  inserts and lookups in a `HashMap` about 20% fewer, `new` and `destroy` 30% fewer, a
-  number-theory program on `u128` 31% fewer.
-- **The compiler checks large `match`es faster**: the exhaustiveness check finds the
-  variants that no arm covers by index instead of comparing every pair.
-- **Smaller generated C**: every hash map type shares one growth function (the compiler's
-  own C is 0.9% smaller), and Debug builds name the file of each call site through the
-  static string trap reports already use instead of repeating its path.
-
+- **`gamma lir`** prints a program's functions in LIR, the lowered form that the
+  interpreter compiles from and that the C back end translates: instructions on
+  numbered temporaries, with the order of evaluation, bounds checks, the tests of
+  patterns, handlers and jumps between frames written out. The format is not stable.
+- **`gamma test --backend=interp` checks the program once.** On Linux each test
+  runs in a copy of `gamma` made by `fork`, in which the program is checked already,
+  instead of in a new `gamma` that checked it again: the compiler's own 179 tests take 7 s
+  instead of 112 s (4 s instead of 30 s with `-j 4`). Other systems keep starting `gamma`.
 - **CI runs the undefined behavior sanitizer** over every conformance `run` test, with gcc
   and Clang, and over the runtime's own tests: the `ubsan` lane of the `lanes` suite
   (`GAMMA_TEST_LANE=ubsan`). `//! ubsan: skip <reason>` leaves out a test that does on
   purpose what C calls undefined.
+- The repository's helper scripts are all in `tools/`: `scripts/bench-compare.sh`,
+  `scripts/smoke-hello.sh` and `scripts/version.sh` moved there.
+
+### Speed
+
+- **Generated code.** Bounds checks that a comparison proves are removed (spec D.7): in
+  `for i in 0..xs.len { xs[i] }`, `while i < a.len { a[i] … }` and after
+  `if n > xs.len { return }`, indexing no longer checks; so are slicing checks
+  (`xs[i..]` after `if i > xs.len { return }`, `xs[..n]` inside `if n <= xs.len`, `xs[..]`
+  and constant slices of arrays), a third of those in the compiler. A struct, array,
+  optional, result or union value that is returned or stored in a local is built where it
+  goes instead of in a temporary that is then copied, also when deferred statements run
+  before the function returns, and `x := if …`/`match`/`else` leaves its value in `x`
+  directly; statements that use large temporaries get C blocks of their own, so the C
+  compiler reuses their stack slots. Half of the copies in the compiler's C go, and its
+  stack frames are 3–7% smaller. A `match` on a union dispatches without a range check.
+  Optimized executables run the same or fewer instructions than with 0.3.0: `sha256sum`
+  7%, `julia` 4%, a perform-heavy benchmark 6% and `safe_map_insert` 4% fewer.
+- **Smaller generated C.** A generic function whose `template :: string` parameter is the
+  template of its `@write`s (and is otherwise used only as a run-time string), such as
+  `str.format`, `List(u8).write` or a logging wrapper, has one body for each set of value
+  types, which reads the template from a static table when it runs, and a function that
+  passes its template on (`log.info` to `log.log`) shares that body too; each call is still
+  checked against its own template, with the same errors as before. Every hash map type
+  shares one growth function, and Debug builds name the file of each call site through a
+  static string. The compiler's own C is 13% smaller and it builds 8% faster from scratch.
+- **The interpreter** compiles every function from LIR for its register machine, including
+  `with`, jumps out of function literals and clauses, `defer`, continuations, 128-bit
+  integers and values of any size, and loads and stores an element through a slice or
+  many-pointer in one instruction: the benchmarks run 5–13% fewer instructions. `@hash` of
+  an integer, 128-bit comparisons, shifts, division and conversions, and string literals no
+  longer leave its fast path, and a Debug run no longer formats the call site of every
+  allocation: inserts and lookups in a `HashMap` take about 20% fewer instructions, `new`
+  and `destroy` 30% fewer, a number-theory program on `u128` 31% fewer.
+- **The compiler checks large `match`es faster**: the exhaustiveness check finds the
+  variants that no arm covers by index instead of comparing every pair.
+
+### Documentation
+
+- **`examples/rosetta.gm`**: classic small tasks in the style of Rosetta Code (FizzBuzz, a
+  sieve, GCD and LCM, Ackermann, Towers of Hanoi, Levenshtein distance, Roman numerals,
+  N-queens, Collatz, a Caesar cipher, binary search), each with a test.
 
 ### Fixed
 
@@ -141,6 +125,8 @@ Versions and what each kind of change means are described in
 - **A tuple destructuring written in parentheses gets a clear error**: `(a, b) := t` was
   reported as a pattern that can fail; the error now says that a tuple is destructured
   without parentheses, `a, b := t` (§4.5).
+- **Clang builds for AArch64 Linux link programs that multiply `i128`s with a check.**
+  Clang calls `__muloti4` for them, which libgcc lacks; the runtime now provides it.
 
 ## 0.3.0 - 2026-11-21
 

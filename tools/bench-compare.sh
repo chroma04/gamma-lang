@@ -5,7 +5,7 @@
 # it never fails on timing, and a base compiler without `gamma bench` just leaves the ratio out.
 # It fails when the benchmarks do not build or run with the compiler at $1.
 #
-# usage: scripts/bench-compare.sh <head gamma> <base gamma or ""> <bench directory>
+# usage: tools/bench-compare.sh <head gamma> <base gamma or ""> <bench directory>
 set -u
 
 head_gamma=$1

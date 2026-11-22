@@ -1,6 +1,6 @@
 [package]
 name = "gammac"
-version = "0.3.0"
+version = "0.4.0"
 
 [build]
 # The compiler is a large program that runs for long: an optimized build with every check.
