@@ -18,6 +18,12 @@ Versions and what each kind of change means are described in
   `I` with the checks of the scalar conversions. `v.shuffle(w, i0, …)` picks lanes from two
   vectors: index `N + k` is `w[k]`.
 
+### Documentation
+
+- **`examples/rosetta.gm`**: classic small tasks in the style of Rosetta Code (FizzBuzz, a
+  sieve, GCD and LCM, Ackermann, Towers of Hanoi, Levenshtein distance, Roman numerals,
+  N-queens, Collatz, a Caesar cipher, binary search), each with a test.
+
 ### Tooling
 
 - **`gamma test --backend=interp` checks the program once.** On POSIX systems each test

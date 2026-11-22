@@ -1,0 +1,285 @@
+//! Classic small programming tasks, in the style of Rosetta Code: each is a short function
+//! that solves one well-known problem the way Gamma code is usually written, with a test
+//! that checks it. `main` runs them all.
+//!
+//! Run from the examples/ directory:
+//!
+//!     gamma run rosetta.gm
+//!     gamma test rosetta.gm
+
+arena :: import "std/arena"
+
+/// FizzBuzz: the numbers 1 to n, with multiples of 3 as "Fizz", of 5 as "Buzz" and of both as
+/// "FizzBuzz", one per line.
+fizzbuzz :: fn(n: u32) needs Out {
+    for i in 1..=n {
+        if i % 15 is 0 {
+            print("FizzBuzz\n")
+        } else if i % 3 is 0 {
+            print("Fizz\n")
+        } else if i % 5 is 0 {
+            print("Buzz\n")
+        } else {
+            print("{}\n", i)
+        }
+    }
+}
+
+/// Sieve of Eratosthenes: the primes up to `n`.
+primes_up_to :: fn(n: usize) -> List(usize) needs Alloc {
+    composite := list(bool)
+    defer composite.deinit()
+    for _ in 0..=n { composite.push(false)! }
+    out := list(usize)
+    for i in 2..=n {
+        if composite.items[i] { continue }
+        out.push(i)!
+        j := i * i
+        while j <= n {
+            composite.items[j] = true
+            j += i
+        }
+    }
+    return out
+}
+
+/// Greatest common divisor (Euclid) and least common multiple, for any unsigned type.
+gcd :: fn(T: type, a, b: T) -> T where Int(T) {
+    x := a
+    y := b
+    while y is not 0 {
+        r := x % y
+        x = y
+        y = r
+    }
+    return x
+}
+
+lcm :: fn(T: type, a, b: T) -> T where Int(T) => if a is 0 or b is 0 { 0 } else { a / gcd(a, b) * b }
+
+/// The Ackermann function, which grows too fast for anything but tiny arguments: checked
+/// arithmetic traps rather than wrapping if it overflows.
+ackermann :: fn(m, n: u64) -> u64 {
+    if m is 0 { return n + 1 }
+    if n is 0 { return ackermann(m - 1, 1) }
+    return ackermann(m - 1, ackermann(m, n - 1))
+}
+
+/// Towers of Hanoi: the moves that take `n` discs from peg `from` to peg `to`, handed to
+/// `move` one by one.
+hanoi :: fn(n: u32, from, to, via: string, move: fn(from, to: string)) {
+    if n is 0 { return }
+    hanoi(n - 1, from, via, to, move)
+    move(from, to)
+    hanoi(n - 1, via, to, from, move)
+}
+
+/// Levenshtein distance: the fewest single-byte insertions, deletions and substitutions
+/// that turn `a` into `b`, keeping one row of the table.
+levenshtein :: fn(a, b: string) -> usize needs Alloc {
+    row := list(usize)
+    defer row.deinit()
+    for j in 0..=b.len { row.push(j)! }
+    for i in 1..=a.len {
+        diag := row.items[0]
+        row.items[0] = i
+        for j in 1..=b.len {
+            up := row.items[j]
+            cost: usize = if a[i - 1] is b[j - 1] { 0 } else { 1 }
+            row.items[j] = (up + 1).min(row.items[j - 1] + 1).min(diag + cost)
+            diag = up
+        }
+    }
+    return row.items[b.len]
+}
+
+/// Roman numerals: `n` (1 to 3999) written with the subtractive forms (`IV`, `XC`, …).
+roman :: fn(n: u32) -> string needs Alloc {
+    VALUES :: [_]u32(1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1)
+    DIGITS :: [_]string("M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I")
+    assert(n >= 1 and n <= 3999, "roman: out of range")
+    out := list(u8)
+    rest := n
+    for i, v in enumerate(VALUES) {
+        while rest >= v {
+            out.extend(DIGITS[i])!
+            rest -= v
+        }
+    }
+    return string(out.items)
+}
+
+/// N-queens: the number of ways to place `n` queens on an n×n board so that none attacks
+/// another, by backtracking over rows with the taken columns and diagonals as bit sets.
+queens :: fn(n: u32) -> u64 => place_queens((u64(1) << n) - 1, 0, 0, 0)
+
+/// The ways to finish a board whose columns are the bits of `all`, given the columns and
+/// diagonals that the queens placed so far attack in the next row.
+place_queens :: fn(all, cols, left, right: u64) -> u64 {
+    if cols is all { return 1 }
+    count: u64 = 0
+    free := all & ~(cols | left | right)
+    while free is not 0 {
+        bit := free & (0 -% free)   // the lowest free column
+        free = free ~ bit
+        count += place_queens(all, cols | bit, ((left | bit) << 1) & all, (right | bit) >> 1)
+    }
+    return count
+}
+
+/// The Collatz (hailstone) sequence: how many steps it takes `n` to reach 1.
+collatz_steps :: fn(n: u64) -> u32 {
+    x := n
+    steps: u32 = 0
+    while x is not 1 {
+        x = if x % 2 is 0 { x / 2 } else { 3 * x + 1 }
+        steps += 1
+    }
+    return steps
+}
+
+/// Caesar cipher: each ASCII letter shifted `k` places along the alphabet, keeping its case.
+caesar :: fn(text: string, k: u8) -> string needs Alloc {
+    out := list(u8)
+    for c in bytes(text) {
+        base: ?u8 = if c in 'a'..='z' { 'a' } else if c in 'A'..='Z' { 'A' } else { null }
+        if b := base {
+            out.push(b + (c - b + k % 26) % 26)!
+        } else {
+            out.push(c)!
+        }
+    }
+    return string(out.items)
+}
+
+/// Binary search: the position of `x` in the sorted slice `xs`, or `null`.
+binary_search :: fn(T: type, xs: []const T, x: T) -> ?usize where Ord(T) {
+    lo: usize = 0
+    hi := xs.len
+    while lo < hi {
+        mid := lo + (hi - lo) / 2
+        if xs[mid] < x {
+            lo = mid + 1
+        } else if xs[mid] > x {
+            hi = mid
+        } else {
+            return mid
+        }
+    }
+    return null
+}
+
+main :: fn() needs Out + Alloc {
+    print("== FizzBuzz\n")
+    fizzbuzz(15)
+
+    print("== Sieve of Eratosthenes\n")
+    ps := primes_up_to(50)
+    print("{}\n", ps.items)
+
+    print("== GCD and LCM\n")
+    print("gcd(1071, 462) = {}, lcm(4, 6) = {}\n", gcd(u32(1071), 462), lcm(u32(4), 6))
+
+    print("== Ackermann\n")
+    print("A(2, 3) = {}, A(3, 3) = {}\n", ackermann(2, 3), ackermann(3, 3))
+
+    print("== Towers of Hanoi\n")
+    moves: u32 = 0
+    hanoi(3, "A", "C", "B", fn(from, to: string) {
+        moves += 1
+        print("{}: {} -> {}\n", moves, from, to)
+    })
+
+    print("== Levenshtein distance\n")
+    print("kitten/sitting: {}, rosettacode/raisethysword: {}\n", levenshtein("kitten", "sitting"), levenshtein("rosettacode", "raisethysword"))
+
+    print("== Roman numerals\n")
+    for n in [_]u32(1990, 2008, 1666, 3999) { print("{} = {}\n", n, roman(n)) }
+
+    print("== N-queens\n")
+    for n in 1..=8 { print("{}: {}\n", n, queens(n)) }
+
+    print("== Collatz\n")
+    best: u64 = 1
+    for n in 1..100 {
+        if collatz_steps(n) > collatz_steps(best) { best = n }
+    }
+    print("27 takes {} steps; below 100, {} takes the most ({})\n", collatz_steps(27), best, collatz_steps(best))
+
+    print("== Caesar cipher\n")
+    secret := caesar("The quick brown fox, jumps over the lazy dog.", 13)
+    print("{}\n{}\n", secret, caesar(secret, 13))
+
+    print("== Binary search\n")
+    print("{} {}\n", binary_search(ps.items, 37), binary_search(ps.items, 38))
+}
+
+test "primes" {
+    ps := primes_up_to(30)
+    defer ps.deinit()
+    expect_eq(ps.items, [_]usize(2, 3, 5, 7, 11, 13, 17, 19, 23, 29)[..])
+}
+
+test "gcd and lcm" {
+    expect_eq(gcd(u64(48), 18), 6)
+    expect_eq(gcd(u8(7), 0), 7)
+    expect_eq(lcm(u32(21), 6), 42)
+    expect_eq(lcm(u32(0), 6), 0)
+}
+
+test "ackermann" {
+    expect_eq(ackermann(0, 0), 1)
+    expect_eq(ackermann(2, 3), 9)
+}
+
+test "hanoi takes 2^n - 1 moves" {
+    for n in 0..8 {
+        count: u32 = 0
+        hanoi(n, "A", "C", "B", fn(from, to: string) { count += 1 })
+        expect_eq(count, (u32(1) << n) - 1)
+    }
+}
+
+test "levenshtein" {
+    expect_eq(levenshtein("", "abc"), 3)
+    expect_eq(levenshtein("flaw", "lawn"), 2)
+    expect_eq(levenshtein("same", "same"), 0)
+}
+
+// The strings these tasks return are freed with the arena they were made in.
+test "roman" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(roman(4), "IV")
+        expect_eq(roman(1994), "MCMXCIV")
+        expect_eq(roman(3888), "MMMDCCCLXXXVIII")
+    }
+}
+
+test "queens" {
+    expect_eq(queens(4), 2)
+    expect_eq(queens(8), 92)
+}
+
+test "collatz" {
+    expect_eq(collatz_steps(1), 0)
+    expect_eq(collatz_steps(27), 111)
+}
+
+test "caesar" {
+    a := arena.new()
+    defer a.deinit()
+    with a.allocator() {
+        expect_eq(caesar("abc XYZ!", 3), "def ABC!")
+        expect_eq(caesar(caesar("Round trip", 7), 19), "Round trip")
+    }
+}
+
+test "binary search" {
+    xs := [_]i32(-5, 0, 3, 8, 13)
+    expect_eq(binary_search(xs[..], 8), 3)
+    expect_eq(binary_search(xs[..], -5), 0)
+    expect(binary_search(xs[..], 4) is null)
+    expect(binary_search(xs[0..0], 4) is null)
+}

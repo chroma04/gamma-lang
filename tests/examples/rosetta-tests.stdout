@@ -1,0 +1,11 @@
+test "primes" ... ok
+test "gcd and lcm" ... ok
+test "ackermann" ... ok
+test "hanoi takes 2^n - 1 moves" ... ok
+test "levenshtein" ... ok
+test "roman" ... ok
+test "queens" ... ok
+test "collatz" ... ok
+test "caesar" ... ok
+test "binary search" ... ok
+10 passed, 0 failed

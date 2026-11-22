@@ -1,0 +1,53 @@
+== FizzBuzz
+1
+2
+Fizz
+4
+Buzz
+Fizz
+7
+8
+Fizz
+Buzz
+11
+Fizz
+13
+14
+FizzBuzz
+== Sieve of Eratosthenes
+[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47]
+== GCD and LCM
+gcd(1071, 462) = 21, lcm(4, 6) = 12
+== Ackermann
+A(2, 3) = 9, A(3, 3) = 61
+== Towers of Hanoi
+1: A -> C
+2: A -> B
+3: C -> B
+4: A -> C
+5: B -> A
+6: B -> C
+7: A -> C
+== Levenshtein distance
+kitten/sitting: 3, rosettacode/raisethysword: 8
+== Roman numerals
+1990 = MCMXC
+2008 = MMVIII
+1666 = MDCLXVI
+3999 = MMMCMXCIX
+== N-queens
+1: 1
+2: 0
+3: 0
+4: 2
+5: 10
+6: 4
+7: 40
+8: 92
+== Collatz
+27 takes 111 steps; below 100, 97 takes the most (118)
+== Caesar cipher
+Gur dhvpx oebja sbk, whzcf bire gur ynml qbt.
+The quick brown fox, jumps over the lazy dog.
+== Binary search
+11 null

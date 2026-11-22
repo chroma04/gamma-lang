@@ -36,7 +36,7 @@ rest with numbers. What is left needs a structural change; do it only if asked:
 - Editors: Zed extension untried in real Zed; Emacs mode tested in batch only.
 
 ## 4. Language and library (only with evidence; check spec §22 for std additions)
-- Platforms: FreeBSD, a freestanding/embedded profile. Docs: Rosetta-style examples.
+- Platforms: FreeBSD, a freestanding/embedded profile.
 
 ## Small cleanups (only when touching the code)
 - check: generic_call_packed's per-argument loop; write_expr's big match.
