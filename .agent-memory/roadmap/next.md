@@ -32,10 +32,17 @@ rest with numbers. What is left needs a structural change; do it only if asked:
   examples/conformance programs pass through it), manifest, archive.) Tree-sitter as a
   second parser: done s84 (CI editors job parses 300 difftest programs per run; 2,200 seeds
   checked locally, all clean).
-- Editors: Zed extension untried in real Zed; Emacs mode tested in batch only.
+- Editors (need a desktop, the user's): Zed extension untried in real Zed; Emacs mode
+  tested in batch only (CI).
 
 ## 4. Language and library (only with evidence; check spec §22 for std additions)
-- Platforms: FreeBSD, a freestanding/embedded profile.
+- Platforms: FreeBSD (no FreeBSD machine or CI here). Embedded (32-bit MCU) profile:
+  BLOCKED on 32-bit targets: `gamma build --target=thumbv7em-none-eabi` /
+  `riscv32-unknown-none-elf` with clang 18 stops at the driver's `__int128` check
+  (native.gm). Needs a software i128/u128 in cgen (arith, bits, helpers, consts, expr: ~50
+  uses) and gm_rt (~37 uses), e.g. a two-word struct with helper functions when the C
+  compiler lacks `__int128`; then a freestanding harness test on thumbv7em/riscv32 (qemu
+  not installed). x86_64/aarch64 freestanding already works (tests/harness/freestanding).
 
 ## Small cleanups (only when touching the code)
 - check: generic_call_packed's per-argument loop; write_expr's big match.

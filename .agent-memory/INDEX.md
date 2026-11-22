@@ -1,7 +1,7 @@
 # Gamma: agent memory INDEX (read first)
 
-## State (2026-11-21)
-- `main` = PRs #1–#139 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
+## State (2026-11-22)
+- `main` = PRs #1–#141 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
   commit). `## Unreleased` in CHANGELOG.md started in s77.
   Tag `rust-reference-final` marks the last Rust implementation.
 - The compiler is self-hosted: `compiler/` (Gamma) builds `gamma` from the C seed in
@@ -18,7 +18,9 @@
   re-evaluated (074): stay on C; s79–s83 lowered IR (075), plan DONE: s81 interp from
   LIR (tree evaluator deleted), s82 bounds-check elimination, s83 cgen from LIR for every
   body, TIR body translation deleted, seed refreshed; cgen's whole-program analyses
-  (borrow.gm, may-exit, call depth) deliberately stay on TIR (075).
+  (borrow.gm, may-exit, call depth) deliberately stay on TIR (075). s84 roadmap sweep
+  (076): what was done, measured and dropped; what is blocked (32-bit embedded needs a
+  software i128; Windows/FreeBSD/real-editor items need machines this box lacks).
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 

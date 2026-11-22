@@ -52,3 +52,8 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
   large args in place, const args static); TIR body code deleted (−2.5k lines); seed
   refreshed. Fast benches equal or −1..−7%. P3 closed: analyses stay on TIR, VM handler
   specialization measured (≤7% on iterate) and dropped.
+- s84 (076): roadmap sweep: §18.4 untyped memory; vector sqrt/trunc/round/floor/ceil/sat
+  + two-vector shuffle; `test --backend=interp` forks per test (112 s -> 7 s); interp
+  child-process calls on host threads (std_process_within interpreted); slicing-check
+  elision; single-decl perform site (−3% with.gm); examples/rosetta.gm; tree-sitter on
+  difftest programs in CI. Measured and dropped: interp frame memset / const copy.
