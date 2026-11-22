@@ -106,6 +106,11 @@ Versions and what each kind of change means are described in
   own C is 0.9% smaller), and Debug builds name the file of each call site through the
   static string trap reports already use instead of repeating its path.
 
+- **CI runs the undefined behavior sanitizer** over every conformance `run` test, with gcc
+  and Clang, and over the runtime's own tests: the `ubsan` lane of the `lanes` suite
+  (`GAMMA_TEST_LANE=ubsan`). `//! ubsan: skip <reason>` leaves out a test that does on
+  purpose what C calls undefined.
+
 ### Fixed
 
 - **The interpreter no longer hangs when one thread reads a child process's output while

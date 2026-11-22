@@ -18,6 +18,9 @@
 //! - `//! safe: skip <reason>` leaves a test out of the Safe lane (below), for tests whose
 //!   behavior differs in Safe builds by design, such as tests that overflow the stack or turn
 //!   integers into pointers.
+//! - `//! ubsan: skip <reason>` leaves a test out of the `ubsan` lane (`tests/harness/lanes`),
+//!   for tests that do on purpose what C calls undefined, such as calling a function through
+//!   a pointer re-typed to its C ABI split.
 //! - `//! arch: x86_64` (or `aarch64`, …) runs the test only when compiling for that
 //!   architecture (the host's, or the one a cross compiler in `CC` targets), for tests of
 //!   features that exist on some targets only.
@@ -158,6 +161,7 @@ pub Expectations :: struct {
     pub os: ?string = null
     pub ptr_bits: ?u32 = null
     pub safe_skip: bool = false
+    pub ubsan_skip: bool = false
     pub needs_f16: bool = false
     pub needs_threads: bool = false
     pub needs_sockets: bool = false
@@ -257,6 +261,11 @@ parse_directive :: fn(t: ^kit.T, file: string, line: u32, d: string, e: ^Expecta
             return !t.fail("{}:{}: expected `safe: skip <reason>`", file, line)
         }
         e.safe_skip = true
+    } else if v := str.strip_prefix(d, "ubsan:") {
+        if str.strip_prefix(str.trim(v), "skip ") is null {
+            return !t.fail("{}:{}: expected `ubsan: skip <reason>`", file, line)
+        }
+        e.ubsan_skip = true
     } else if str.strip_prefix(d, "native:") is not null {
         e.native = true
     } else if v := str.strip_prefix(d, "exit:") {

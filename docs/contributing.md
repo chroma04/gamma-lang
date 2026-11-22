@@ -152,7 +152,7 @@ what it checks, what it needs and when it skips itself.
 | `GAMMA_TEST_HARNESS` | a prebuilt harness executable, instead of building one (for example one cross-built for Windows) |
 | `GAMMA_TEST_C` | `0` skips the lanes that need a C compiler; `1` makes a missing C compiler a failure (CI sets it) |
 | `GAMMA_TEST_SAFE` | `1` adds the Safe lane (Fil-C) to the conformance tests; `0` turns the Safe tests off |
-| `GAMMA_TEST_LANE` | `safe`, `s390x`, `aarch64` or `wasi`: the lane of the `lanes` suite (below) |
+| `GAMMA_TEST_LANE` | `safe`, `s390x`, `aarch64`, `wasi` or `ubsan`: the lane of the `lanes` suite (below) |
 | `GAMMA_TEST_TIMEOUT` | seconds a program may run (default 600); the program and everything it started are killed |
 | `GAMMA_TEST_TMPDIR` | where tests keep their files (default `target/test-tmp`) |
 | `GAMMA_TEST_FILTER` | the same as `--filter` |
@@ -264,8 +264,8 @@ error the section requires.
 
 ### Other lanes
 
-The `lanes` suite builds every conformance `run` test for a platform the host is not, and
-checks the output and exit status. `GAMMA_TEST_LANE` names the lane, and without it the suite
+The `lanes` suite builds every conformance `run` test for a platform the host is not (or,
+for `ubsan`, with a sanitizer), and checks the output and exit status. `GAMMA_TEST_LANE` names the lane, and without it the suite
 does nothing:
 
 | `GAMMA_TEST_LANE` | What it does | Needs |
@@ -274,6 +274,7 @@ does nothing:
 | `s390x` | cross-compiles for big-endian s390x, runs under qemu-user | `s390x-linux-gnu-gcc`, `qemu-s390x` |
 | `aarch64` | cross-compiles for AArch64 Linux, runs under qemu-user | `aarch64-linux-gnu-gcc`, `qemu-aarch64` |
 | `wasi` | builds for `wasm32-wasi`, runs under Wasmtime | clang with the WASI C library, `wasmtime` |
+| `ubsan` | builds for the host with `-fsanitize=undefined -fno-sanitize-recover=undefined`, in each test's own mode: a report stops the program | gcc or Clang (`CC`) with the sanitizer runtime |
 
 ```sh
 GAMMA_TEST_LANE=aarch64 tools/test.sh lanes/
@@ -287,8 +288,12 @@ suite itself: every `run` and `test` test in the default or Checked mode also ru
 build and must match. Mark a test that differs by design (for example one that depends on a
 Debug-only trap or on the size of a stack) with `//! safe: skip <reason>`. Write tests so that
 they print the same on both byte orders: use `target.endian` in a `when` where a program
-inspects its own memory, or mark the test `//! endian:`. CI has a job for each lane (the s390x
-one also runs the C runtime tests, the WASI one the `wasi` suite).
+inspects its own memory, or mark the test `//! endian:`. The generated C and the runtime must
+have no undefined behavior in any build mode; a test that does on purpose what C calls
+undefined (calling a function through a pointer re-typed to its C ABI split, which Clang's
+sanitizer reports) is marked `//! ubsan: skip <reason>`. CI has a job for each lane (the s390x
+one also runs the C runtime tests, the WASI one the `wasi` suite, the `ubsan` one both gcc
+and Clang and the runtime tests under the sanitizer).
 
 The `cross` suite checks the toolchain variables and target detection; most of it needs
 `clang`. `CC` and `CFLAGS` select the C compiler the suites use, and `GAMMA_RUNNER` names an

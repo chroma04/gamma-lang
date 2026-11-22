@@ -11,7 +11,10 @@ IDE output, tool CLIs, diagnostics. Look there first.
 - difftest: `gamma build tools/difftest -o X; X --start N --count 600 --work DIR`
   (~25 min on 4 cores); `--mode=checked` too. Use seed windows far from CI's
   (CI: 0..100 and 1000 + (run % 500) * 200).
-- Sanitizers (no CI lane): `CFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+- UBSan has a CI lane now (`GAMMA_TEST_LANE=ubsan tools/test.sh lanes/`, ~70 s on 3
+  threads; also with CC=clang). ASan has none (fiber stacks need
+  `__sanitizer_start_switch_fiber` in gm_rt.c first; roadmap/next.md). By hand:
+  ASan+UBSan: `CFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
   LDFLAGS="-fsanitize=address,undefined" gamma build f.gm -o x`, run with
   `ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=0`. Expected noise: stack
   overflow tests, huge-allocation tests (set allocator_may_return_null=1), heap blocks
