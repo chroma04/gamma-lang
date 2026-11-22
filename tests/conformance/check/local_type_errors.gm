@@ -4,7 +4,7 @@ Point :: struct { x, y: i32 }
 
 generic :: fn(T: type, N: usize, x: T) {
     A :: struct { v: T }              //~ ERROR cannot refer to a type or value parameter
-    B :: struct { v: [N]u8 }          //~ ERROR `N` is a variable
+    B :: struct { v: [N]u8 }          //~ ERROR the value of `N` is not known at compile time
     C :: union { a: ?T, b }           //~ ERROR cannot refer to a type or value parameter
     Ok :: struct { v: u8 }
     _ = Ok(v: 1)
