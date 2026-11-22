@@ -19,6 +19,24 @@ str :: import "std/str"
 thread :: import "std/thread"
 tir :: import "../tir"
 
+/// Copies of this process for running interpreted tests (POSIX; elsewhere `gm_proc_fork`
+/// fails and each test starts `gamma` again): `gm_proc_fork` returns 0 in the copy, which
+/// ends with `gm_proc_fork_exit`, and the copy's handle (a `process.Child`) here.
+rt :: foreign "c" {
+    gm_proc_fork :: fn() -> i64
+    gm_proc_fork_exit :: fn(status: i32)
+}
+
+/// What an interpreted test needs to run in a copy of this process, where the program is
+/// checked already, instead of in a new `gamma` that would check it again: the program,
+/// how `gamma` was invoked, and the function of each chosen test.
+InProcess :: struct {
+    s: ^sema.Sema
+    input: string
+    opts: driver.Options
+    entries: []const u32
+}
+
 /// Whether `t` is selected by `--filter`: its name or module path contains the filter text.
 selected :: fn(t: sema.TestCase, filter: ?string) -> bool {
     f := filter else return true
@@ -59,7 +77,7 @@ pub run :: fn(s: ^sema.Sema, input: string, opts: driver.Options) -> u8 needs Al
     if opts.filter is not null { filtered_out = cases.len - chosen.items.len }
     report := Report(bench: bench, filtered_out: filtered_out, show_output: opts.show_output, time: opts.time, started: Clock.now().ns)
     if opts.interp {
-        run_interp_tests(s, opts, cases, chosen.items, bench, &report) else return 1
+        run_interp_tests(s, input, opts, cases, chosen.items, bench, &report) else return 1
         return finish(&report)
     }
     if not opts.coverage {
@@ -107,7 +125,7 @@ run_native :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCa
     jobs := if bench { 1 } else { opts.jobs }
     // Each test writes its counters to a file of its own.
     cover_dir: ?string = if cover is not null { dir } else { null }
-    run_all(cmd, .Native, null, cases, chosen, jobs, opts.timeout, cover_dir, report)
+    run_all(cmd, .Native, null, null, cases, chosen, jobs, opts.timeout, cover_dir, report)
     if c := cover {
         for j in 0..chosen.len {
             text := fs.read_all(cover_file(dir, j)) else continue
@@ -140,14 +158,16 @@ entry_of :: fn(s: ^sema.Sema, c: sema.TestCase, bench: bool) -> u32 needs sema.L
     return if bench { check.entry_point(s, c.entry) } else { c.entry }
 }
 
-/// Runs each of the tests `chosen` of `cases` in the interpreter, in a `gamma` process of
-/// its own started with this command line and `--run-test=j`, so that a test that traps,
-/// exits or runs out of time ends only its process, and the tests can run in parallel.
+/// Runs each of the tests `chosen` of `cases` in the interpreter, in a process of its own,
+/// so that a test that traps, exits or runs out of time ends only its process, and the
+/// tests can run in parallel. Where the system can, the process is a copy of this one
+/// (`gm_proc_fork`), in which the program is checked already; elsewhere it is a `gamma`
+/// started with this command line and `--run-test=j`.
 /// The tests that reach foreign code or assembly, which the interpreter cannot run, are
 /// compiled into one native executable instead (unless `native_fallback` is off), as
 /// `gamma run --backend=interp` does with such a program. Fails if that executable cannot
 /// be built, reporting why.
-run_interp_tests :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.TestCase, chosen: []const usize, bench: bool, report: ^Report) -> ?() needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+run_interp_tests :: fn(s: ^sema.Sema, input: string, opts: driver.Options, cases: []const sema.TestCase, chosen: []const usize, bench: bool, report: ^Report) -> ?() needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     args := Env.args()
     cmd := list(string)
     cmd.push(load.executable())!
@@ -155,12 +175,14 @@ run_interp_tests :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.
     cmd.push("--run-test=")!
     cmd.extend(args[2..])!
     jobs := if bench { 1 } else { opts.jobs }
+    roots := list(u32)
+    for i in chosen { roots.push(entry_of(s, cases[i], bench))! }
+    // Every test's code is prepared here once, rather than in each copy of this process.
+    if not check.prepare_codegen(s, roots.items) { return null }
+    ip := InProcess(s: s, input: input, opts: opts, entries: roots.items)
     native := list(u32)
     at := list(?usize)
     if opts.native_fallback {
-        roots := list(u32)
-        for i in chosen { roots.push(entry_of(s, cases[i], bench))! }
-        if not check.prepare_codegen(s, roots.items) { return null }
         p := cgen.prog(s)
         for e in roots.items {
             if driver.needs_native(&p, e) {
@@ -172,7 +194,7 @@ run_interp_tests :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.
         }
     }
     if native.items.len is 0 {
-        run_all(cmd.items, .Interp, null, cases, chosen, jobs, opts.timeout, null, report)
+        run_all(cmd.items, .Interp, null, &ip, cases, chosen, jobs, opts.timeout, null, report)
         return ()
     }
     buf: [4096]u8 = ---
@@ -183,7 +205,7 @@ run_interp_tests :: fn(s: ^sema.Sema, opts: driver.Options, cases: []const sema.
     defer _ = fs.remove_all(dir)
     native_cmd := build_tests(s, opts, native.items, dir) else return null
     fallback := Fallback(cmd: native_cmd, at: at.items)
-    run_all(cmd.items, .Interp, &fallback, cases, chosen, jobs, opts.timeout, null, report)
+    run_all(cmd.items, .Interp, &fallback, &ip, cases, chosen, jobs, opts.timeout, null, report)
     return ()
 }
 
@@ -195,13 +217,42 @@ Fallback :: struct {
     at: []const ?usize
 }
 
-/// Runs the `j`th test: with `cmd`, which `selector` tells which test to run, or natively
-/// if `fallback` says so.
-launch :: fn(cmd: []const string, selector: Selector, fallback: ?^const Fallback, j: usize, timeout: ?f64, cover_dir: ?string) -> Finished needs Alloc + Clock + Proc + Sys {
+/// Runs the `j`th test: natively if `fallback` says so, else in the copy of this process
+/// `forked` if one was started for it, else with `cmd`, which `selector` tells which test to
+/// run.
+launch :: fn(cmd: []const string, selector: Selector, fallback: ?^const Fallback, forked: ?Forked, j: usize, timeout: ?f64, cover_dir: ?string) -> Finished needs Alloc + Clock + Proc + Sys {
     if fb := fallback {
         if k := fb.at[j] { return run_exe(fb.cmd, .Native, k, timeout, cover_dir) }
     }
+    if f := forked {
+        if f.handle > 0 { return collect(process.Child(handle: f.handle), "a copy of gamma", f.started, timeout) }
+    }
     return run_exe(cmd, selector, j, timeout, cover_dir)
+}
+
+/// Whether the `j`th test runs natively (`Fallback`).
+natively :: fn(fallback: ?^const Fallback, j: usize) -> bool {
+    fb := fallback else return false
+    return fb.at[j] is not null
+}
+
+/// A copy of this process started to run a test (`fork_test`): its handle, or a negative
+/// number if none could be started, and when, in nanoseconds of the clock.
+Forked :: struct {
+    handle: i64
+    started: u64
+}
+
+/// Starts the `j`th test of `ip` in a copy of this process, returning the copy's handle
+/// here. The copy runs the test and ends with its status. Called on the main thread, whose
+/// stack (larger than other threads') the copy runs the test on.
+fork_test :: fn(ip: ^const InProcess, j: usize) -> Forked needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
+    started := Clock.now().ns
+    h := rt.gm_proc_fork()
+    if h is not 0 { return Forked(handle: h, started: started) }
+    status := driver.run_interp_entry(ip.s, ip.entries[j], ip.input, ip.opts)
+    rt.gm_proc_fork_exit(i32(status))
+    @unreachable()
 }
 
 /// How the command that runs the tests is told which test to run.
@@ -222,6 +273,13 @@ Pool :: struct {
     fallback: ?^const Fallback
     timeout: ?f64
     cover_dir: ?string
+    /// Whether tests are run in copies of this process, which the main thread starts:
+    /// a thread takes `fork_busy`, puts the test it wants a copy for in `fork_ask` and waits
+    /// for the main thread to put the copy in `fork_answer`.
+    forking: bool
+    fork_busy: bool
+    fork_ask: ?usize
+    fork_answer: ?Forked
     /// The number of tests, and the next one to run.
     n: usize
     next: usize
@@ -232,11 +290,12 @@ Pool :: struct {
 
 /// Runs the tests `chosen` of `cases` with the command `cmd`, `jobs` at a time, and hands
 /// each result to `report` in the order of the tests, as soon as it and all before it are
-/// done. The tests that `fallback` names run natively instead.
-run_all :: fn(cmd: []const string, selector: Selector, fallback: ?^const Fallback, cases: []const sema.TestCase, chosen: []const usize, jobs: usize, timeout: ?f64, cover_dir: ?string, report: ^Report) needs Alloc + Clock + Out + Proc + Sys {
+/// done. The tests that `fallback` names run natively instead; with `ip`, the others run in
+/// copies of this process where the system has them.
+run_all :: fn(cmd: []const string, selector: Selector, fallback: ?^const Fallback, ip: ?^const InProcess, cases: []const sema.TestCase, chosen: []const usize, jobs: usize, timeout: ?f64, cover_dir: ?string, report: ^Report) needs Alloc + Clock + Env + Err + Fs + Out + Proc + Rand + Sys {
     n := chosen.len
     threads := list(thread.Thread)
-    pool := Pool(cmd: cmd, selector: selector, fallback: fallback, timeout: timeout, cover_dir: cover_dir, n: n, next: 0, results: list(?Finished), lock: thread.mutex(), ready: thread.condvar())
+    pool := Pool(cmd: cmd, selector: selector, fallback: fallback, timeout: timeout, cover_dir: cover_dir, forking: ip is not null, fork_busy: false, fork_ask: null, fork_answer: null, n: n, next: 0, results: list(?Finished), lock: thread.mutex(), ready: thread.condvar())
     if jobs > 1 and n > 1 {
         for _ in 0..n { pool.results.push(null)! }
         for _ in 0..(if jobs < n { jobs } else { n }) {
@@ -245,12 +304,32 @@ run_all :: fn(cmd: []const string, selector: Selector, fallback: ?^const Fallbac
         }
     }
     if threads.items.len is 0 {
-        for j in 0..n { report.record(cases[chosen[j]], launch(cmd, selector, fallback, j, timeout, cover_dir)) }
+        for j in 0..n {
+            forked: ?Forked = null
+            if x := ip {
+                if not natively(fallback, j) { forked = fork_test(x, j) }
+            }
+            report.record(cases[chosen[j]], launch(cmd, selector, fallback, forked, j, timeout, cover_dir))
+        }
         return
     }
     for j in 0..n {
         thread.lock(&pool.lock)
-        while pool.results.items[j] is null { thread.wait(&pool.ready, &pool.lock) }
+        while pool.results.items[j] is null {
+            if k := pool.fork_ask {
+                if x := ip {
+                    // The copy is made without the lock, which it would otherwise inherit.
+                    pool.fork_ask = null
+                    thread.unlock(&pool.lock)
+                    f := fork_test(x, k)
+                    thread.lock(&pool.lock)
+                    pool.fork_answer = f
+                    thread.broadcast(&pool.ready)
+                    continue
+                }
+            }
+            thread.wait(&pool.ready, &pool.lock)
+        }
         f := pool.results.items[j] else @unreachable()
         thread.unlock(&pool.lock)
         report.record(cases[chosen[j]], f)
@@ -267,13 +346,31 @@ worker :: fn(p: ^Pool) needs Sys {
             p.next += 1
             thread.unlock(&p.lock)
             if j >= p.n { break }
-            f := launch(p.cmd, p.selector, p.fallback, j, p.timeout, p.cover_dir)
+            forked: ?Forked = null
+            if p.forking and not natively(p.fallback, j) { forked = ask_fork(p, j) }
+            f := launch(p.cmd, p.selector, p.fallback, forked, j, p.timeout, p.cover_dir)
             thread.lock(&p.lock)
             p.results.items[j] = f
             thread.broadcast(&p.ready)
             thread.unlock(&p.lock)
         }
     }
+}
+
+/// Has the main thread start a copy of this process for the `j`th test, and waits for it.
+ask_fork :: fn(p: ^Pool, j: usize) -> Forked needs Sys {
+    thread.lock(&p.lock)
+    while p.fork_busy { thread.wait(&p.ready, &p.lock) }
+    p.fork_busy = true
+    p.fork_ask = j
+    thread.broadcast(&p.ready)
+    while p.fork_answer is null { thread.wait(&p.ready, &p.lock) }
+    f := p.fork_answer else @unreachable()
+    p.fork_answer = null
+    p.fork_busy = false
+    thread.broadcast(&p.ready)
+    thread.unlock(&p.lock)
+    return f
 }
 
 test "selection by filter" {

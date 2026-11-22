@@ -10,9 +10,6 @@ Linguist/nvim-treesitter submissions. (Private vulnerability reporting: enabled.
 - Regenerate `docs/std` after std changes: `gamma doc lib/std --all -o docs/std`.
 
 ## 1. Tooling gaps
-- `test --backend=interp`: each test process re-checks the program (~1 s for the
-  compiler package; a shared checked-program cache, or fork on POSIX, would remove it).
-  Foreign-code tests already run natively (testing/run.gm `Fallback`).
 - Windows: Safe, `gamma debug`, gdb printers are Linux-only; ARM64 Windows. (Quoting is
   done: runtime gm_win_cmdline + rt_test.c; cache root made 0700 on POSIX only, Windows
   relies on %LOCALAPPDATA%'s ACL.) Windows-only code paths (spawn, install.ps1,

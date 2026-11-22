@@ -369,7 +369,7 @@ Options of `gamma test`:
 
 `gamma bench` takes the same file or directory and runs the top-level `bench` declarations the same way, reporting the time per run; it compiles through C in Fast mode unless you pass `--mode`.
 
-By default tests are compiled through C: the compiler builds one executable and runs it once per test. With `--backend=interp` each test runs in the interpreter instead, in a process of its own, so a test that traps or runs out of time ends only itself; this needs no C compiler and skips the C compilation, which suits a quick run of a few tests, but compute-heavy tests run much slower, and `--coverage` needs C. A test that calls foreign C code or uses assembly cannot be interpreted: those tests are compiled through C and run natively, so they still need a C compiler. The report is the same either way.
+By default tests are compiled through C: the compiler builds one executable and runs it once per test. With `--backend=interp` each test runs in the interpreter instead, in a process of its own, so a test that traps or runs out of time ends only itself; this needs no C compiler and skips the C compilation (on Linux and macOS each test's process is a copy of `gamma`, so the program is checked only once), which suits a quick edit-and-test loop, but compute-heavy tests run much slower, and `--coverage` needs C. A test that calls foreign C code or uses assembly cannot be interpreted: those tests are compiled through C and run natively, so they still need a C compiler. The report is the same either way.
 
 ## Where to go next
 

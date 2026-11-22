@@ -73,6 +73,13 @@ run_exe :: fn(cmd: []const string, selector: Selector, j: usize, timeout: ?f64, 
     child := Proc.spawn(argv.items, process.SpawnOptions(stdin: .Null, stdout: .Pipe, stderr: .Pipe)) else {
         return failed_to_run(str.format("cannot run {}: the process cannot be started\n", exe)!)
     }
+    return collect(child, exe, started, timeout)
+}
+
+/// The result of the test that `child` (whose program is `exe`, started at `started` in
+/// nanoseconds of the clock) runs, once it has ended: its output, and why it failed if it
+/// did. It is killed if still running after `timeout` seconds.
+collect :: fn(child: process.Child, exe: string, started: u64, timeout: ?f64) -> Finished needs Alloc + Clock + Proc + Sys {
     w := Watch(lock: thread.mutex(), wake: thread.condvar(), child: child, deadline: 0, done: false, fired: false)
     watching: ?thread.Thread = null
     if limit := timeout {

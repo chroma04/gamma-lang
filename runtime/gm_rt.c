@@ -2489,6 +2489,8 @@ GM_API int64_t gm_proc_read_out(int64_t h, void *buf, size_t n) { (void)h; (void
 GM_API int64_t gm_proc_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_try_wait(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
 GM_API int64_t gm_proc_kill(int64_t h) { (void)h; return gm_io_error(ENOTSUP); }
+GM_API int64_t gm_proc_fork(void) { return gm_io_error(ENOTSUP); }
+GM_API void gm_proc_fork_exit(int32_t status) { exit(status); }
 #else
 /* Resolves host:port for a stream socket (passive: for listening). */
 static struct addrinfo *gm_resolve(const void *host, size_t len, uint16_t port, bool passive, int64_t *err) {
@@ -2703,6 +2705,10 @@ typedef struct {
 
 static gm_table gm_procs;
 
+/* Held from creating a child's pipes until our copies of its ends are closed, so that
+ * gm_proc_fork's child inherits no other child's pipe ends. */
+static pthread_mutex_t gm_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* A pipe whose both ends are close-on-exec. */
 static int gm_pipe_cloexec(int fds[2]) {
 #if defined(__linux__) && !defined(__FILC__)
@@ -2913,6 +2919,7 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
     /* Per stream: the child's end, and ours. */
     int child_fd[3] = {-1, -1, -1}, mine[3] = {-1, -1, -1};
     int null_fd = -1;
+    pthread_mutex_lock(&gm_spawn_lock);
     for (int i = 0; i < 3 && err == 0; i++) {
         int mode = (int)((flags >> (2 * i)) & 3);
         if (mode == 1) {
@@ -2992,6 +2999,7 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
     for (int i = 0; i < 3; i++)
         if (child_fd[i] >= 0 && child_fd[i] != null_fd) close(child_fd[i]);
     if (null_fd >= 0) close(null_fd);
+    pthread_mutex_unlock(&gm_spawn_lock);
     gm_free_cstrs(av, argc);
     gm_free_cstr_list(ev);
     free(cwd);
@@ -3013,6 +3021,79 @@ GM_API int64_t gm_proc_launch(const void *argv, size_t argc, const void *env, si
     if (h == 0) gm_trap("out of memory", NULL, 0, 0);
     return h;
 }
+
+/* Forks this process, to run work in a copy of it whose state is already built. The child's
+ * standard input is the null device and its output streams are pipes to us; it leads a
+ * process group of its own. Returns 0 in the child, a handle as gm_proc_launch does in the
+ * parent, or an IoError. Holding the runtime's lock and the standard streams across the fork
+ * leaves the child no lock held by a thread it does not have and none of our buffered
+ * output; holding gm_spawn_lock keeps it from inheriting the pipe ends of a child that
+ * another thread is starting. The child ends with gm_proc_fork_exit. */
+GM_API int64_t gm_proc_fork(void) {
+    gm_flush();
+    fflush(stderr);
+    pthread_mutex_lock(&gm_spawn_lock);
+    int out[2] = {-1, -1}, err[2] = {-1, -1};
+    int e = 0;
+    int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (null_fd < 0 || gm_fd_above_std(&null_fd) != 0) e = errno;
+    if (e == 0 && (gm_pipe_cloexec(out) != 0 || gm_fd_above_std(&out[0]) != 0 || gm_fd_above_std(&out[1]) != 0)) e = errno;
+    if (e == 0 && (gm_pipe_cloexec(err) != 0 || gm_fd_above_std(&err[0]) != 0 || gm_fd_above_std(&err[1]) != 0)) e = errno;
+    pid_t pid = -1;
+    if (e == 0) {
+        sigset_t all, old;
+        sigfillset(&all);
+        pthread_sigmask(SIG_SETMASK, &all, &old);
+        flockfile(stdout);
+        flockfile(stderr);
+        gm_rt_acquire();
+        pid = fork();
+        if (pid < 0) e = errno;
+        gm_rt_release();
+        funlockfile(stderr);
+        funlockfile(stdout);
+        if (pid == 0) {
+            setpgid(0, 0);
+            if (dup2(null_fd, 0) < 0 || dup2(out[1], 1) < 0 || dup2(err[1], 2) < 0) _exit(127);
+            close(null_fd);
+            close(out[0]);
+            close(out[1]);
+            close(err[0]);
+            close(err[1]);
+            pthread_mutex_unlock(&gm_spawn_lock);
+            pthread_sigmask(SIG_SETMASK, &old, NULL);
+            return 0;
+        }
+        /* Both sides make the group, so that it exists whichever runs first; with no exec in
+         * between, the parent's call cannot come too late. */
+        if (pid > 0) setpgid(pid, pid);
+        pthread_sigmask(SIG_SETMASK, &old, NULL);
+    }
+    if (null_fd >= 0) close(null_fd);
+    if (out[1] >= 0) close(out[1]);
+    if (err[1] >= 0) close(err[1]);
+    pthread_mutex_unlock(&gm_spawn_lock);
+    if (e != 0) {
+        if (out[0] >= 0) close(out[0]);
+        if (err[0] >= 0) close(err[0]);
+        return gm_io_error(e);
+    }
+    gm_proc *p = (gm_proc *)calloc(1, sizeof(gm_proc));
+    if (p == NULL) gm_trap("out of memory", NULL, 0, 0);
+    p->pid = pid;
+    p->group = 1;
+    p->in_fd = -1;
+    p->out_fd = out[0];
+    p->err_fd = err[0];
+    p->refs = 1;
+    int64_t h = gm_table_add(&gm_procs, p);
+    if (h == 0) gm_trap("out of memory", NULL, 0, 0);
+    return h;
+}
+
+/* Ends the child of gm_proc_fork with `status` once what it buffered is written, without
+ * running the exit handlers of the process it is a copy of. */
+GM_API void gm_proc_fork_exit(int32_t status) { _exit(gm_finish_main(status)); }
 
 /* The child of handle h, with a reference that gm_proc_put drops; NULL if h is not live. */
 static gm_proc *gm_proc_get(int64_t h) {
@@ -4384,6 +4465,10 @@ GM_API int64_t gm_proc_kill(int64_t h) {
     gm_rt_release();
     return r;
 }
+
+/* Windows has no fork: callers start a process instead. */
+GM_API int64_t gm_proc_fork(void) { return gm_io_error(ENOTSUP); }
+GM_API void gm_proc_fork_exit(int32_t status) { exit(status); }
 #endif
 
 #endif /* GM_FREESTANDING */
