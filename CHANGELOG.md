@@ -87,6 +87,10 @@ Versions and what each kind of change means are described in
 
 ### Fixed
 
+- **The interpreter no longer hangs when one thread reads a child process's output while
+  another writes its input**: reading, writing and waiting for a child run on a host thread
+  when the program has several threads, as file and socket calls already did, and a thread
+  waiting with a far deadline no longer delays noticing that such a call has finished.
 - **A local constant that called the core library could fail to evaluate**, depending on
   the order in which the compiler checked function bodies: `b: bool : s.starts_with("ab")`
   in `main`, or a call of a standard library function that uses such a method, reported

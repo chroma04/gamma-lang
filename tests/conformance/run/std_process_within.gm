@@ -1,7 +1,6 @@
 // process.output_within and process.watch: a time limit on a program, input fed on a thread,
 // the whole process group killed.
 //! os: unix
-//! native: the interpreter hangs when one thread reads a child's output while another writes its input
 process :: import "std/process"
 
 sh :: fn(script: string) -> [3]string => [_]string("sh", "-c", script)
