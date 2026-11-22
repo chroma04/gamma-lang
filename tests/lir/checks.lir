@@ -464,54 +464,45 @@ fn main@checks.gm:93:1 escapes 0
   %0 = aggregate (1:i64, 2:i64, 3:i64)
   store l0, %0
   %1 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %2 = slice %1 0:usize..3:usize *8
   %3 = coerce PtrToPtr %2
   %4 = call fn range (%3)
   %5 = call fn array ()
   %6 = Add(Checked) %4, %5
   %7 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %8 = slice %7 0:usize..3:usize *8
   %9 = coerce PtrToPtr %8
   %10 = call fn shorter (%9, 2:usize)
   %11 = Add(Checked) %6, %10
   %12 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %13 = slice %12 0:usize..3:usize *8
   %14 = coerce PtrToPtr %13
   %15 = call fn grow (%14)
   %16 = Add(Checked) %11, %15
   %17 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %18 = slice %17 0:usize..3:usize *8
   %19 = coerce PtrToPtr %18
   %20 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %21 = slice %20 0:usize..3:usize *8
   %22 = coerce PtrToPtr %21
   %23 = call fn reassign (%19, %22)
   %24 = Add(Checked) %16, %23
   %25 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %26 = slice %25 0:usize..3:usize *8
   %27 = coerce PtrToPtr %26
   %28 = call fn maybe (%27, 0:bool)
   %29 = Add(Checked) %24, %28
   %30 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %31 = slice %30 0:usize..3:usize *8
   %32 = coerce PtrToPtr %31
   %33 = call fn other (%32, 1:u8)
   %34 = Add(Checked) %29, %33
   %35 = addr l0
-  check range 0:usize..0:usize len 3:usize
   %36 = slice %35 0:usize..0:usize *8
   %37 = coerce PtrToPtr %36
   %38 = call fn after (%37)
   %39 = Add(Checked) %34, %38
   %40 = addr l0
-  check range 0:usize..3:usize len 3:usize
   %41 = slice %40 0:usize..3:usize *8
   %42 = coerce PtrToPtr %41
   %43 = call fn addressed (%42)

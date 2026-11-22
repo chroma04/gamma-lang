@@ -1,0 +1,326 @@
+fn sum@range_checks.gm:4:1 escapes 0
+  local 0 xs: []const u32 param
+  local 1 t: u32
+  local 2 <tmp>: []const u32
+  local 3 <tmp>: usize
+  local 4 x: u32
+  temp 0: []const u32
+  temp 1: usize
+  temp 2: usize
+  temp 3: bool
+  temp 4: [^]const u32
+  temp 5: usize
+  temp 6: usize
+  temp 7: u32
+  temp 8: u32
+  temp 9: u32
+  temp 10: u32
+  temp 11: usize
+  temp 12: usize
+  temp 13: u32
+  ret u32
+  store l1, 0:u32
+  %0 = load l0
+  store l2, %0
+  store l3, 0:usize
+  block @0
+    loop @1
+      %1 = load l3
+      %2 = load l2.1@8
+      %3 = Lt %1, %2
+      br-unless %3 @0
+      block @2
+        %4 = load l2.0@0
+        %5 = load l2.1@8
+        %6 = load l3
+        block @3
+          block @4
+            %7 = load *%4+[%6 *4]
+            store l4, %7
+            %8 = load l1
+            %9 = load l4
+            %10 = Add(Wrap) %8, %9
+            store l1, %10
+            br @3
+          no-arm
+      %11 = load l3
+      %12 = Add(Wrap) %11, 1:usize
+      store l3, %12
+  %13 = load l1
+  return %13
+fn tail@range_checks.gm:11:1 escapes 0
+  local 0 xs: []const u32 param
+  local 1 i: usize param
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: [^]const u32
+  temp 4: usize
+  temp 5: usize
+  temp 6: []const u32
+  temp 7: u32
+  ret u32
+  %0 = load l1
+  %1 = load l0.1@8
+  %2 = Gt %0, %1
+  if %2
+    return 0:u32
+  %3 = load l0.0@0
+  %4 = load l0.1@8
+  %5 = load l1
+  %6 = slice %3 %5..%4 *4
+  %7 = call fn sum (%6)
+  return %7
+fn head@range_checks.gm:16:1 escapes 0
+  local 0 xs: []const u32 param
+  local 1 n: usize param
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: [^]const u32
+  temp 4: usize
+  temp 5: usize
+  temp 6: []const u32
+  temp 7: u32
+  ret u32
+  %0 = load l1
+  %1 = load l0.1@8
+  %2 = Le %0, %1
+  if %2
+    %3 = load l0.0@0
+    %4 = load l0.1@8
+    %5 = load l1
+    %6 = slice %3 0:usize..%5 *4
+    %7 = call fn sum (%6)
+    return %7
+  return 0:u32
+fn middle@range_checks.gm:21:1 escapes 0
+  local 0 xs: []const u32 param
+  local 1 i: usize param
+  local 2 j: usize param
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: usize
+  temp 4: usize
+  temp 5: bool
+  temp 6: [^]const u32
+  temp 7: usize
+  temp 8: usize
+  temp 9: usize
+  temp 10: []const u32
+  temp 11: u32
+  ret u32
+  block @0
+    block @1
+      %0 = load l1
+      %1 = load l2
+      %2 = Le %0, %1
+      br-unless %2 @1
+      %3 = load l2
+      %4 = load l0.1@8
+      %5 = Le %3, %4
+      br-unless %5 @1
+      %6 = load l0.0@0
+      %7 = load l0.1@8
+      %8 = load l1
+      %9 = load l2
+      %10 = slice %6 %8..%9 *4
+      %11 = call fn sum (%10)
+      return %11
+  return 0:u32
+fn whole@range_checks.gm:26:1 escapes 0
+  local 0 xs: []const u32 param
+  temp 0: [^]const u32
+  temp 1: usize
+  temp 2: []const u32
+  temp 3: u32
+  temp 4: [^]const u32
+  temp 5: usize
+  temp 6: usize
+  temp 7: []const u32
+  temp 8: u32
+  temp 9: u32
+  ret u32
+  %0 = load l0.0@0
+  %1 = load l0.1@8
+  %2 = slice %0 0:usize..%1 *4
+  %3 = call fn sum (%2)
+  %4 = load l0.0@0
+  %5 = load l0.1@8
+  %6 = load l0.1@8
+  %7 = slice %4 0:usize..%6 *4
+  %8 = call fn sum (%7)
+  %9 = Add(Checked) %3, %8
+  return %9
+fn array@range_checks.gm:28:1 escapes 0
+  local 0 a: [4]u32 addressed
+  temp 0: [4]u32
+  temp 1: [^]u32
+  temp 2: []u32
+  temp 3: []const u32
+  temp 4: u32
+  temp 5: [^]u32
+  temp 6: []u32
+  temp 7: []const u32
+  temp 8: u32
+  temp 9: u32
+  ret u32
+  %0 = aggregate (1:u32, 2:u32, 3:u32, 4:u32)
+  store l0, %0
+  %1 = addr l0
+  %2 = slice %1 1:usize..3:usize *4
+  %3 = coerce PtrToPtr %2
+  %4 = call fn sum (%3)
+  %5 = addr l0
+  %6 = slice %5 0:usize..=3:usize *4
+  %7 = coerce PtrToPtr %6
+  %8 = call fn sum (%7)
+  %9 = Add(Checked) %4, %8
+  return %9
+fn unknown@range_checks.gm:36:1 escapes 0
+  local 0 xs: []const u32 param
+  local 1 i: usize param
+  temp 0: [^]const u32
+  temp 1: usize
+  temp 2: usize
+  temp 3: []const u32
+  temp 4: u32
+  ret u32
+  %0 = load l0.0@0
+  %1 = load l0.1@8
+  %2 = load l1
+  check range %2..%1 len %1
+  %3 = slice %0 %2..%1 *4
+  %4 = call fn sum (%3)
+  return %4
+fn unordered@range_checks.gm:39:1 escapes 0
+  local 0 xs: []const u32 param
+  local 1 i: usize param
+  local 2 j: usize param
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: [^]const u32
+  temp 4: usize
+  temp 5: usize
+  temp 6: usize
+  temp 7: []const u32
+  temp 8: u32
+  ret u32
+  %0 = load l2
+  %1 = load l0.1@8
+  %2 = Le %0, %1
+  if %2
+    %3 = load l0.0@0
+    %4 = load l0.1@8
+    %5 = load l1
+    %6 = load l2
+    check range %5..%6 len %4
+    %7 = slice %3 %5..%6 *4
+    %8 = call fn sum (%7)
+    return %8
+  return 0:u32
+fn inclusive@range_checks.gm:45:1 escapes 0
+  local 0 xs: []const u32 param
+  local 1 n: usize param
+  temp 0: usize
+  temp 1: usize
+  temp 2: bool
+  temp 3: [^]const u32
+  temp 4: usize
+  temp 5: usize
+  temp 6: []const u32
+  temp 7: u32
+  ret u32
+  %0 = load l1
+  %1 = load l0.1@8
+  %2 = Le %0, %1
+  if %2
+    %3 = load l0.0@0
+    %4 = load l0.1@8
+    %5 = load l1
+    check range 0:usize..=%5 len %4
+    %6 = slice %3 0:usize..=%5 *4
+    %7 = call fn sum (%6)
+    return %7
+  return 0:u32
+fn main@range_checks.gm:50:1 escapes 0
+  local 0 xs: [3]u32 addressed
+  temp 0: [3]u32
+  temp 1: [^]u32
+  temp 2: []u32
+  temp 3: []const u32
+  temp 4: u32
+  temp 5: [^]u32
+  temp 6: []u32
+  temp 7: []const u32
+  temp 8: u32
+  temp 9: u32
+  temp 10: [^]u32
+  temp 11: []u32
+  temp 12: []const u32
+  temp 13: u32
+  temp 14: u32
+  temp 15: [^]u32
+  temp 16: []u32
+  temp 17: []const u32
+  temp 18: u32
+  temp 19: u32
+  temp 20: u32
+  temp 21: u32
+  temp 22: [^]u32
+  temp 23: []u32
+  temp 24: []const u32
+  temp 25: u32
+  temp 26: u32
+  temp 27: [^]u32
+  temp 28: []u32
+  temp 29: []const u32
+  temp 30: u32
+  temp 31: u32
+  temp 32: [^]u32
+  temp 33: []u32
+  temp 34: []const u32
+  temp 35: u32
+  temp 36: u32
+  ret ()
+  %0 = aggregate (1:u32, 2:u32, 3:u32)
+  store l0, %0
+  %1 = addr l0
+  %2 = slice %1 0:usize..3:usize *4
+  %3 = coerce PtrToPtr %2
+  %4 = call fn tail (%3, 1:usize)
+  %5 = addr l0
+  %6 = slice %5 0:usize..3:usize *4
+  %7 = coerce PtrToPtr %6
+  %8 = call fn head (%7, 2:usize)
+  %9 = Add(Checked) %4, %8
+  %10 = addr l0
+  %11 = slice %10 0:usize..3:usize *4
+  %12 = coerce PtrToPtr %11
+  %13 = call fn middle (%12, 0:usize, 2:usize)
+  %14 = Add(Checked) %9, %13
+  %15 = addr l0
+  %16 = slice %15 0:usize..3:usize *4
+  %17 = coerce PtrToPtr %16
+  %18 = call fn whole (%17)
+  %19 = Add(Checked) %14, %18
+  %20 = call fn array ()
+  %21 = Add(Checked) %19, %20
+  %22 = addr l0
+  %23 = slice %22 0:usize..3:usize *4
+  %24 = coerce PtrToPtr %23
+  %25 = call fn unknown (%24, 1:usize)
+  %26 = Add(Checked) %21, %25
+  %27 = addr l0
+  %28 = slice %27 0:usize..3:usize *4
+  %29 = coerce PtrToPtr %28
+  %30 = call fn unordered (%29, 0:usize, 1:usize)
+  %31 = Add(Checked) %26, %30
+  %32 = addr l0
+  %33 = slice %32 0:usize..3:usize *4
+  %34 = coerce PtrToPtr %33
+  %35 = call fn inclusive (%34, 1:usize)
+  %36 = Add(Checked) %31, %35
+  return zero:()

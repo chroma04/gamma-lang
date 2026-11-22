@@ -26,6 +26,11 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
+- **Slicing checks that a comparison proves are removed**, as bounds checks already were:
+  `xs[i..]` after `if i > xs.len { return }`, `xs[..n]` inside `if n <= xs.len`, `xs[..]`
+  and constant slices of arrays no longer check their range. A third of the slicings in
+  the compiler lose their check.
+
 - **`gamma test --backend=interp` checks the program once.** On POSIX systems each test
   runs in a copy of `gamma` made by `fork`, in which the program is checked already,
   instead of in a new `gamma` that checked it again: the compiler's own 179 tests take 7 s
