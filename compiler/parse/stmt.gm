@@ -125,8 +125,22 @@ parse_let_else :: fn(p: ^Parser) -> Abort!?ast.StmtKind needs Alloc {
         }
         return ast.StmtKind.LetElse(pat: pat, value: e.lhs, fallback: e.rhs)
     }
-    p.report(pat.span, "a binding with a pattern that can fail needs `else` to leave the block: `.V(x) := e else return …` (§4.5)")
+    if is_flat_tuple(pat) {
+        p.report(pat.span, "a tuple is destructured without parentheses: `a, b := e` (§4.5); a parenthesized pattern needs `else` to leave the block")
+    } else {
+        p.report(pat.span, "a binding with a pattern that can fail needs `else` to leave the block: `.V(x) := e else return …` (§4.5)")
+    }
     return ast.StmtKind.Expr(box(value))
+}
+
+// Whether `pat` is a tuple pattern of plain names and `_` only, as a destructuring
+// `a, b := e` mistakenly written with parentheses is.
+is_flat_tuple :: fn(pat: ast.Pattern) -> bool {
+    .Tuple(args) := pat.kind else return false
+    for a in args {
+        if a.name is not null or not (a.pat.kind is .Bind(_) or a.pat.kind is .Wildcard) { return false }
+    }
+    return true
 }
 
 /// True if a binding (`x :: e`, `x := e`, `x: T …`, `a, b := e`) starts here.

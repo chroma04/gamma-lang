@@ -68,7 +68,8 @@ visit_fact :: fn(s: ^const sema.Sema, f: u32, e: ^tir.Expr, facts: ^Facts) needs
     // Children are visited first, so the innermost expression of a span wins.
     tir.for_each_child(e, fn(c: ^tir.Expr) { visit_fact(s, f, c, facts) })
     if e.span is source.DUMMY { return }
-    hover := match e.kind {
+    // An expression whose type could not be found has no type to show.
+    hover := not s.tys.is_error(e.ty) and match e.kind {
         .Block(_), .If(_), .Match(_), .Loop(_), .With(_), .Coerce(_), .Return(_), .Break(_), .Continue(_) => false
         _ => true
     }

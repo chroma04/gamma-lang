@@ -1,6 +1,15 @@
 //! stage: check
 // Only constants, not variables, give compile-time values; a constant is visible in its block only.
+// An immutable local evaluated at run time (here, it calls a function nested in the one being
+// checked) and a parameter have no compile-time value either, and the error does not suggest `::`.
 n :: 2
+
+f :: fn(m: usize) {
+    c: [m]u8 = --- //~ ERROR the value of `m` is not known at compile time
+    four :: fn() -> usize => 4
+    k :: four()
+    d: [k]u8 = --- //~ ERROR the value of `k` is not known at compile time
+}
 
 main :: fn() {
     n := 4 // hides the top-level `n`, also in compile-time expressions

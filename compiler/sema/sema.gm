@@ -317,8 +317,9 @@ pub LocalConstKind :: union {
     Untyped: Untyped
     /// A constant evaluated at compile time: its type, and the place of its name.
     Const: (ty: Ty, name: string, span: source.Span)
-    /// A variable, whose value is not known at compile time.
-    Var
+    /// A variable, whose value is not known at compile time: `true` if it is mutable, and
+    /// `false` for a parameter or an immutable local evaluated at run time.
+    Var: bool
 }
 
 pub LocalConst :: struct {
@@ -422,6 +423,9 @@ pub Sema :: struct {
     /// expressions in it.
     pub local_consts: List(LocalConst)
     pub local_fns: List(LocalFn)
+    /// The lowest host stack address that compile-time evaluation may use, while one runs
+    /// (0 otherwise); evaluations started inside it share it.
+    pub eval_stack_floor: usize = 0
     /// The declarations being resolved, for cycle reports.
     resolving: List(usize)
     /// Structural type aliases being resolved a second time (see `resolve_decl`).

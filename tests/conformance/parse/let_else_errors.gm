@@ -1,7 +1,10 @@
 //! stage: parse
-// A pattern binding needs an `else` that does not capture an error (§4.5).
-f :: fn(v: V) -> i32 {
+// A pattern binding needs an `else` that does not capture an error (§4.5). A tuple of
+// names in parentheses is pointed to destructuring, which is written without them.
+f :: fn(v: V, t: (i32, i32)) -> i32 {
     .A(m) := v              //~ ERROR needs `else` to leave the block
     .A(k) := v else e => 1  //~ ERROR cannot capture an error
+    (a, _) := t             //~ ERROR destructured without parentheses: `a, b := e`
+    (b, 1) := t             //~ ERROR needs `else` to leave the block
     return 0
 }

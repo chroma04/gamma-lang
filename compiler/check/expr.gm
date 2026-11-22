@@ -315,10 +315,14 @@ name :: fn(cx: ^FnCx, name: string, expect: ?Ty, span: source.Span) -> ^Expr nee
         match c.kind {
             .Untyped(v) => return cx.untyped_literal(&v, span)
             .Const(k) => return tir.mk(k.ty, .Const(k.name, k.span), span)
-            .Var => {
-                d := diag.error(span, str.format("`{}` is a variable, so its value is not known at compile time", name)!)
-                d.add_note("declare it with `::` to make it a compile-time constant (§17.2)")
-                cx.s.emit(d)
+            .Var(mutable) => {
+                if mutable {
+                    d := diag.error(span, str.format("`{}` is a variable, so its value is not known at compile time", name)!)
+                    d.add_note("declare it with `::` to make it a compile-time constant (§17.2)")
+                    cx.s.emit(d)
+                } else {
+                    cx.error(span, str.format("the value of `{}` is not known at compile time: it is computed when the program runs (§17.2)", name)!)
+                }
                 return error_expr(cx.s, span)
             }
         }

@@ -17,7 +17,8 @@ thread :: import "std/thread"
 
 USAGE :: `usage: difftest [options]
 
-Runs random programs through the interpreter and the C back end (gcc, clang).
+Runs random programs through the interpreter and the C back end (gcc, clang). An option's
+value may also be written --option=value.
 
   --start N          first seed (default 0)
   --count N          number of seeds to run (default 100)
@@ -100,8 +101,20 @@ run :: fn() -> u8 needs Effects {
         step: usize = 2
         if opt is "--stop-first" or opt is "-h" or opt is "--help" { step = 1 }
         value := ""
+        // `--mode=checked` is `--mode checked`, as for `gamma` itself.
+        inline: ?string = null
+        if opt.starts_with("--") {
+            if p := str.split_once(opt, "=") {
+                opt = p.before
+                inline = p.after
+                step = 1
+            }
+        }
         known := opt in [_]string("--start", "--count", "--jobs", "-j", "--gamma", "--cc", "--mode", "--work", "--timeout", "--print", "--save", "--reduce")
-        if known {
+        if v := inline {
+            if not known { usage_error(str.format("{} takes no value", opt)!) }
+            value = v
+        } else if known {
             value = args.get(i + 1) else usage_error(str.format("{} needs a value", opt)!)
         }
         match opt {
@@ -126,7 +139,7 @@ run :: fn() -> u8 needs Effects {
             }
             "--save" => {
                 seed := number(value)
-                file := args.get(i + 2) else usage_error("--save needs a seed and a file")
+                file := args.get(i + step) else usage_error("--save needs a seed and a file")
                 fs.write_all(file, generate(seed)) else e => {
                     eprint("difftest: cannot write {}: {}\n", file, e)
                     return 2

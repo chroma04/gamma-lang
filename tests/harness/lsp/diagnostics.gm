@@ -167,6 +167,29 @@ later :: fn() -> i32 {
     return ()
 }
 
+hover_shows_no_type_for_an_expression_in_error :: fn(t: ^kit.T) -> kit.Fail!() needs kit.Run {
+    dir := try t.scratch("lsp-hover_no_error_type")
+    text :: `main :: fn() {
+    x := missing(1) + 2
+    _ = x
+}
+`
+    path := try put(t, dir, "main.gm", text)
+    l := try start(t)
+    defer l.stop()
+    _ = try l.initialize()
+    try l.open(path, text)
+    d := try l.diagnostics(path, 1)
+    try expect_message(t, d, "unknown name `missing`")
+    // The call and the sum have no type; the hover shows nothing rather than a placeholder.
+    for col in (10, 20) {
+        h := try l.result("textDocument/hover", at(path, 1, col))
+        try expect_null(t, str.format("the hover at column {}", col)!, h)
+    }
+    try l.shutdown()
+    return ()
+}
+
 /// Fails the test unless the string `v` contains `needle`.
 expect_contains_text :: fn(t: ^kit.T, what: string, v: json.Value, needle: string) -> kit.Fail!() needs Alloc {
     s := try as_text(t, v)

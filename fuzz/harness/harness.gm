@@ -10,10 +10,19 @@
 
 c :: import "std/c"
 arena :: import "std/arena"
+fiber :: import "std/fiber"
 
 libc :: foreign "c" {
     exit :: fn(status: c.c_int) -> never
+    calloc :: fn(n, size: usize) -> ?[^]u8 needs not
 }
+
+/// The stack `exec_compiler` runs an input on: as large as the one `gamma` runs on
+/// (`COMPILER_STACK` in the compiler's main.gm), which the compiler's recursion limits
+/// assume. Zeroed pages cost memory only as they are used.
+COMPILER_STACK: usize : 1 << 30
+
+#global compiler_stack: ?[^]u8 = null
 
 libfuzzer :: foreign "c" {
     /// Runs libFuzzer with the command line of the process and `callback` as the target;
@@ -78,6 +87,29 @@ pub exec :: fn(
         a := arena.new()
         defer a.deinit()
         with a.allocator() { body(data[0..size]) }
+    }
+    return 0
+}
+
+/// `exec` on a stack of `COMPILER_STACK` bytes, for targets that run the compiler's passes.
+pub exec_compiler :: fn(
+    data: [^]const u8,
+    size: usize,
+    body: fn(input: string) needs Alloc + Env + Out + Err + In + Clock + Rand + Fs + Proc,
+) -> c.c_int needs Sys {
+    if compiler_stack is null { compiler_stack = libc.calloc(1, COMPILER_STACK) }
+    p := compiler_stack else return exec(data, size, body)
+    with heap_allocator(), system_io(), system_output(), FuzzEnv() {
+        a := arena.new()
+        defer a.deinit()
+        with a.allocator() {
+            sched := fiber.scheduler()
+            defer sched.deinit()
+            with &sched on p[0..COMPILER_STACK] {
+                body(data[0..size])
+                fiber.Sched.join()
+            }
+        }
     }
     return 0
 }

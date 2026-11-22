@@ -61,3 +61,8 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
   `let` result hint in LIR, statement-run C blocks (frames −3..−7%), template forwarding
   (`log.info` → `log.log` share), thunks without unused locals. Dropped with numbers:
   nested helpers. Roadmap §2 empty.
+- s86: bug sweep. Found and fixed: compile-time recursion crashed the compiler (eval.gm
+  host-stack floor), local `x :: f([_]T(...))` never const (closed_const saw the hidden
+  temp-array local), misleading "declare it with `::`" note, LSP hover `{error}`,
+  difftest `--opt=value`, `(a, b) := t` error. Clean: 600 + 300 (checked) difftest seeds,
+  ASan+UBSan over tests/conformance/run, libFuzzer parse/fmt/check/lower, fmt round trips.

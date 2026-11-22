@@ -53,6 +53,10 @@ pub tests :: fn(cfg: ^const kit.Config, out: ^List(kit.Test)) needs Alloc {
         run: names_after_a_syntax_error_are_still_resolved,
     ))!
     out.push(kit.Test(
+        name: "hover_shows_no_type_for_an_expression_in_error",
+        run: hover_shows_no_type_for_an_expression_in_error,
+    ))!
+    out.push(kit.Test(
         name: "an_unclosed_paren_does_not_hide_later_declarations",
         run: an_unclosed_paren_does_not_hide_later_declarations,
     ))!

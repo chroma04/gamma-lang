@@ -112,3 +112,4 @@
 - s60: §5.9 tuple expressions take spreads (argument-list rules; named replacement keeps type); §11.4 intro + `..` sentence; A grammar `tuple_expr` uses `arg` (decisions/061).
 - s73: §16.8 const `@hash` equals the run-time hash; hashing a value holding a pointer at compile time is an error (null optional pointer allowed).
 - s84: §18.4 case 2 = misaligned or past-the-object access only; new paragraph "Memory has no declared type" (no strict aliasing) + rationale; §5.10 `downcast_unchecked` wording follows. §5.6.2/§21.3 vector `sqrt`, `trunc/round/floor/ceil/sat(I)`, `shuffle(w, …)`.
+- s86: §17.3 calls nest to an implementation-defined depth (≥ 10⁴); deeper is a stack overflow, a compile error in every evaluation (compiler: eval.gm EVAL_STACK = 512 MiB of host stack).

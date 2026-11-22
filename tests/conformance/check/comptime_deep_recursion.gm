@@ -1,0 +1,11 @@
+//! stage: check
+// Recursion too deep for the compile-time evaluator is a compile error that names the
+// evaluation (§17.1), not a crash of the compiler.
+depth :: fn(n: u32) -> u32 => if n is 0 { 0 } else { depth(n - 1) + 1 }
+SHALLOW :: depth(1000)
+DEEP :: depth(1_000_000) //~ ERROR compile-time evaluation failed: stack overflow
+main :: fn() {
+    @static_assert(SHALLOW is 1000, "shallow recursion evaluates")
+    local :: depth(2_000_000) //~ ERROR compile-time evaluation failed: stack overflow
+    _ = local
+}
