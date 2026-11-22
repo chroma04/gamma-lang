@@ -26,6 +26,11 @@ Versions and what each kind of change means are described in
 
 ### Tooling
 
+- **ARM64 Windows.** `gamma` builds for `aarch64-w64-mingw32` (fibers switch the stack
+  bounds Windows keeps for each thread, as on x86-64 Windows), and CI cross-builds it with
+  Zig's Clang (`tools/zig-cc-windows-arm64.sh`) and runs the conformance tests and examples
+  on an ARM64 Windows runner.
+
 - **Slicing checks that a comparison proves are removed**, as bounds checks already were:
   `xs[i..]` after `if i > xs.len { return }`, `xs[..n]` inside `if n <= xs.len`, `xs[..]`
   and constant slices of arrays no longer check their range. A third of the slicings in

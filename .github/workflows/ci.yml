@@ -167,6 +167,69 @@ jobs:
           GAMMA_TEST_COMPILER="$(cygpath -w "$PWD/gamma/gamma.exe")" \
             GAMMA_TEST_HARNESS="$PWD/gamma/harness.exe" tools/test.sh --slowest 25 conformance/ examples/
 
+  windows-arm64-build:
+    # gamma and the test harness for ARM64 Windows, cross-compiled on Linux with Zig's Clang
+    # and MinGW-w64 (tools/zig-cc-windows-arm64.sh) by the gamma built from the seed.
+    name: Cross-build gamma for ARM64 Windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Zig
+        run: python3 -m pip install --user ziglang==0.17.1
+      - name: Build gamma from the seed
+        run: bootstrap/build.sh
+      - name: Build gamma.exe
+        env:
+          GAMMA_STD: ${{ github.workspace }}/lib/std
+          GAMMA_RUNTIME: ${{ github.workspace }}/runtime
+          CC: ${{ github.workspace }}/tools/zig-cc-windows-arm64.sh
+        run: |
+          target/bootstrap/gamma build compiler --target=aarch64-w64-mingw32 -o gamma.exe
+          target/bootstrap/gamma build tests/harness --target=aarch64-w64-mingw32 -o harness.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gamma-exe-arm64
+          path: |
+            gamma.exe
+            harness.exe
+
+  windows-arm64:
+    # The conformance tests and examples with the cross-built gamma and harness, on ARM64
+    # Windows, with MSYS2's Clang for its C back end.
+    name: Test (ARM64 Windows, MinGW-w64 clang)
+    needs: windows-arm64-build
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install MinGW-w64 clang
+        id: msys
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          install: mingw-w64-clang-aarch64-clang
+      - name: Put clang on PATH
+        shell: pwsh
+        run: |
+          "${{ steps.msys.outputs.msys2-location }}\clangarm64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - uses: actions/download-artifact@v8
+        with:
+          name: gamma-exe-arm64
+          path: gamma
+      - name: Versions
+        shell: bash
+        run: |
+          clang --version | head -n 1
+          gamma/gamma.exe version
+      # Gamma takes the first of cc, gcc and clang on PATH: MSYS2's clang here.
+      - name: Test
+        shell: bash
+        run: |
+          GAMMA_TEST_COMPILER="$(cygpath -w "$PWD/gamma/gamma.exe")" \
+            GAMMA_TEST_HARNESS="$PWD/gamma/harness.exe" tools/test.sh --slowest 25 conformance/ examples/
+
   fuzz-gammac:
     # The compiler's fuzz targets (libFuzzer) build, and each runs for a while on the seed
     # corpus without a crash.
