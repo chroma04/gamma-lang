@@ -57,6 +57,11 @@ Lw :: struct {
     results: List(?u32)
     /// How many bounds and slicing checks the body has.
     bounds: u32 = 0
+    /// The local that `let` stores the value of an expression in: an `if`, `match` or `else`
+    /// leaves its value there instead of in a result local of its own (`result_for`).
+    into: ?(e: ^const Expr, l: u32) = null
+    /// Whether `into` was taken.
+    into_taken: bool = false
 }
 
 emit :: fn(lw: ^Lw, op: Op, span: source.Span) needs Alloc {
@@ -723,9 +728,22 @@ stmt :: fn(lw: ^Lw, st: ^tir.Stmt) needs Alloc {
     match st^ {
         .Let(l, ?init) => {
             x := init else return
+            lw.into = (e: x, l: l)
+            lw.into_taken = false
             v := lw.expr(x)
+            taken := lw.into_taken
+            lw.into = null
+            lw.into_taken = false
             if lw.diverges(x) { return }
             if lw.s.layout(x.ty).size is 0 { return }
+            // The value is in `l` already: the load of it that ends the expression goes.
+            if taken and lw.cur.items.len > 0 {
+                last := &lw.cur.items[lw.cur.items.len - 1]
+                if .Load(d, p) := last.op and v is .Temp(d) and p.proj.len is 0 and p.base is .Local(l) {
+                    _ = lw.cur.pop()
+                    return
+                }
+            }
             lw.emit(.Store(local_place(l), v), x.span)
         }
         .LetTuple(locals, init) => {
@@ -844,6 +862,19 @@ result_local :: fn(lw: ^Lw, t: Ty) -> ?u32 needs Alloc {
     return lw.synthetic(t)
 }
 
+/// The local the branching expression `e` leaves its value in: the one a `let` stores
+/// it in (`Lw.into`), or `result_local`'s.
+result_for :: fn(lw: ^Lw, e: ^Expr) -> ?u32 needs Alloc {
+    if h := lw.into and h.e is e {
+        lw.into = null
+        if lw.s.layout(e.ty).size > 0 and lw.s.tys.kind(e.ty) is not .Never and lw.locals.items[usize(h.l)].ty is e.ty {
+            lw.into_taken = true
+            return h.l
+        }
+    }
+    return lw.result_local(e.ty)
+}
+
 /// Stores the value of `e` in the result local `res`, unless `e` does not complete.
 store_result :: fn(lw: ^Lw, res: ?u32, e: ^Expr) needs Alloc {
     v := lw.expr(e)
@@ -858,7 +889,7 @@ read_result :: fn(lw: ^Lw, res: ?u32, t: Ty, span: source.Span) -> Value needs A
 }
 
 if_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.IfExpr) -> Value needs Alloc {
-    res := lw.result_local(e.ty)
+    res := lw.result_for(e)
     // A single boolean condition is an `If`.
     if x.cond.len is 1 {
         if .Bool(c) := x.cond[0] {
@@ -958,7 +989,7 @@ loop_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.LoopExpr) -> Value needs Alloc {
 /// `match`: `end: { a0: { tests of arm 0 (failing: leave a0); body; break end } a1: { … }
 /// … no arm }`.
 match_expr :: fn(lw: ^Lw, e: ^Expr, scrutinee: ^Expr, arms: []tir.Arm) -> Value needs Alloc {
-    res := lw.result_local(e.ty)
+    res := lw.result_for(e)
     p := lw.operand_place(scrutinee) else return lw.escape(e)
     end := lw.label()
     body := lw.region(fn() {
@@ -1131,8 +1162,8 @@ else_expr :: fn(lw: ^Lw, e: ^Expr, x: tir.ElseExpr) -> Value needs Alloc {
     s := lw.s
     is_result := s.tys.kind(x.lhs.ty) is .Result(_)
     inner := lw.payload_ty(x.lhs.ty) else return lw.escape(e)
+    res := lw.result_for(e)
     p := lw.operand_place(x.lhs) else return lw.escape(e)
-    res := lw.result_local(e.ty)
     present := lw.temp(s.tys.bool_ty())
     lw.emit(.IsPresent(present, p, is_result), e.span)
     off := lw.payload_off(x.lhs.ty)

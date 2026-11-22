@@ -105,7 +105,7 @@ pub load :: fn(fg: ^FnGen, t: Ty, a: string) -> string needs sema.Load {
 
 /// A zero-filled blob temporary of type `t`.
 blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
-    n := fg.tmp_uninit(t)
+    n := fg.blob_var(t)
     fg.linef("memset(&{}, 0, sizeof {});", n, n)
     return n
 }
@@ -117,9 +117,19 @@ blob :: fn(fg: ^FnGen, t: Ty) -> string needs sema.Load {
 /// writes less (an optimized build runs a few percent faster that way) and, under Fil-C,
 /// avoids `memset`, a call into its runtime.
 blob_over :: fn(fg: ^FnGen, t: Ty, parts: []const BlobPart) -> string needs sema.Load {
-    n := fg.tmp_uninit(t)
+    n := fg.blob_var(t)
     fg.clear_outside(t, n, parts)
     return n
+}
+
+/// The C variable a blob of type `t` is built in: `FnGen.blob_dest` (taken) if set, else a
+/// new temporary.
+blob_var :: fn(fg: ^FnGen, t: Ty) -> string needs Alloc {
+    if d := fg.blob_dest {
+        fg.blob_dest = null
+        return d
+    }
+    return fg.tmp_uninit(t)
 }
 
 /// Clears the bytes of `dest`, a C lvalue of type `t`, outside `parts`, as `blob_over`

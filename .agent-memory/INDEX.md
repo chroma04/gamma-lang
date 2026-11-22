@@ -1,6 +1,6 @@
 # Gamma: agent memory INDEX (read first)
 
-## State (2026-11-22)
+## State (2026-11-22, s85)
 - `main` = PRs #1–#141 merged (0.3.0 prepared in #132; tag v0.3.0 goes on its merge
   commit). `## Unreleased` in CHANGELOG.md started in s77.
   Tag `rust-reference-final` marks the last Rust implementation.
@@ -21,12 +21,14 @@
   (borrow.gm, may-exit, call depth) deliberately stay on TIR (075). s84 roadmap sweep
   (076): what was done, measured and dropped; what is blocked (32-bit embedded needs a
   software i128; Windows/FreeBSD/real-editor items need machines this box lacks).
+  s85 perf follow-ups (077): in-place results, `let` result hint, statement-run C
+  blocks, template forwarding; roadmap §2 now empty.
 - Gotcha: `gamma build` and bootstrap default to Debug = gcc -Og; perf numbers in
   068/069/072 are of that build (Fast is ~15% fewer Ir).
 
 ## Next steps
 1. roadmap/next.md, top down: tooling gaps (`test --backend=interp`, package manager
-   gaps), testing, language. Performance §2 now lists only structural changes.
+   gaps), testing, language. Performance §2 is empty (077).
 2. roadmap/bugs.md: small open bugs, good for a short session.
 3. spec-notes/pain-points.md "Open": flag to the user before acting on the big one.
 
@@ -42,7 +44,7 @@
                   platforms.md (clang, aarch64, s390x, Windows, WASI, Fil-C) ·
                   codegen.md (generated C, runtime, host stack) ·
                   parallel-agents.md (worktree workers: stale bases, limits)
-- history.md      compact project history, s1–s83
+- history.md      compact project history, s1–s85
 
 ## Conventions in Gamma code (quick reminders; the guide is the reference)
 - Effects: `fn() -> T needs Alloc + Out`; effect-set args `Sched(Out + Clock)`; pure

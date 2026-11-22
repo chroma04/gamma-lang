@@ -124,7 +124,6 @@ fn checks@effects.gm:27:1 escapes 0
   local 7 _: u8 synthetic
   local 8 _: ?u8 synthetic
   local 9 _: ?u8 synthetic
-  local 10 _: u8 synthetic
   temp 0: u8
   temp 1: bool
   temp 2: string
@@ -195,11 +194,9 @@ fn checks@effects.gm:27:1 escapes 0
   %17 = is-some l6
   if %17
     %18 = load l6.payload@0
-    store l7, %18
+    store l4, %18
   else
-    store l7, 0:u8
-  %19 = load l7
-  store l4, %19
+    store l4, 0:u8
   %20 = load l4
   %21 = coerce IntWiden %20
   %22 = Lt 0:usize, 4:usize
@@ -215,10 +212,10 @@ fn checks@effects.gm:27:1 escapes 0
   %27 = is-some l9
   if %27
     %28 = load l9.payload@0
-    store l10, %28
+    store l7, %28
   else
-    store l10, 0:u8
-  %29 = load l10
+    store l7, 0:u8
+  %29 = load l7
   %30 = coerce IntWiden %29
   %31 = Add(Checked) %21, %30
   return %31

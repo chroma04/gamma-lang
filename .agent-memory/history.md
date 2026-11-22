@@ -57,3 +57,7 @@ Sessions are numbered sNN; PR numbers are chroma04/gamma-lang pull requests.
   child-process calls on host threads (std_process_within interpreted); slicing-check
   elision; single-decl perform site (−3% with.gm); examples/rosetta.gm; tree-sitter on
   difftest programs in CI. Measured and dropped: interp frame memset / const copy.
+- s85 (077): perf follow-ups: results built in place (memmoves in compiler C halved),
+  `let` result hint in LIR, statement-run C blocks (frames −3..−7%), template forwarding
+  (`log.info` → `log.log` share), thunks without unused locals. Dropped with numbers:
+  nested helpers. Roadmap §2 empty.
