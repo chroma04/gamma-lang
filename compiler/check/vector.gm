@@ -226,6 +226,12 @@ vector_method :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []const ast
             }
             return builtin(.LaneConvert, tys.simd(len, f), one[..], span)
         }
+        "sqrt" => {
+            if not cx.arity(args, 0, n, span) { return error_expr(cx.s, span) }
+            if not tys.is_float(lane) { return cx.lane_needs(n, vt, "float lanes", span) }
+            return builtin(.LaneMap(.Sqrt), vt, one[..], span)
+        }
+        "trunc", "round", "floor", "ceil", "sat" => return cx.vector_lane_conversion(recv, vt, n, args, span)
         "shuffle" => return cx.vector_shuffle(recv, vt, args, span)
         "store" => {
             if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
@@ -234,55 +240,81 @@ vector_method :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []const ast
         }
         _ => {}
     }
-    cx.error(span, str.format("vectors have no method `.{}`; they have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, `max`, `abs`, `to`, `shuffle`, `store` and the comparisons `lanes_eq`, `lanes_ne`, `lanes_lt`, `lanes_le`, `lanes_gt` and `lanes_ge`, and masks `all`, `any`, `count` and `select` (§21.3)", n)!)
+    cx.error(span, str.format("vectors have no method `.{}`; they have `reduce_sum`, `reduce_min`, `reduce_max`, `min`, `max`, `abs`, `sqrt`, `to`, `trunc`, `round`, `floor`, `ceil`, `sat`, `shuffle`, `store` and the comparisons `lanes_eq`, `lanes_ne`, `lanes_lt`, `lanes_le`, `lanes_gt` and `lanes_ge`, and masks `all`, `any`, `count` and `select` (§21.3)", n)!)
     return error_expr(cx.s, span)
 }
 
+/// `v.trunc(T)`, `.round(T)`, `.floor(T)`, `.ceil(T)` and `.sat(T)`: the scalar conversion
+/// (§6.6) of each lane to the integer type `T`, giving a vector of as many `T` lanes.
+vector_lane_conversion :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, n: string, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
+    tys := &cx.s.tys
+    parts := tys.vector_parts(vt) else return error_expr(cx.s, span)
+    lane := parts.elem
+    if not cx.arity(args, 1, n, span) { return error_expr(cx.s, span) }
+    t := cx.type_arg(args, 0, span) else return error_expr(cx.s, span)
+    from_float := tys.is_float(lane)
+    from_int := tys.is_integer(lane)
+    op: tir.LaneOp = match n {
+        "trunc" => .Trunc
+        "round" => .Round
+        "floor" => .Floor
+        "ceil" => .Ceil
+        _ => .Sat
+    }
+    // As for scalars: `trunc` and `sat` take integer or float lanes, the roundings float
+    // lanes; all give integer lanes.
+    src_ok := if op in (tir.LaneOp.Trunc, tir.LaneOp.Sat) { from_int or from_float } else { from_float }
+    if not tys.is_integer(t) or not sema.lane_type_ok(tys, t) or not src_ok {
+        cx.error(span, str.format("`.{}(T)` converts the lanes of `{}` to integer lanes, not to `{}`", n, cx.show(vt), cx.show(t))!)
+        return error_expr(cx.s, span)
+    }
+    if msg := cx.s.vector_shape_error(parts.len, t) {
+        cx.error(span, msg)
+        return error_expr(cx.s, span)
+    }
+    return builtin(.LaneMap(op), tys.simd(parts.len, t), [1]^Expr(recv)[..], span)
+}
+
 /// `v.shuffle(i0, i1, …)`: a vector of the lanes `v[i0], v[i1], …`, whose indices are
-/// compile-time constants below the lane count.
+/// compile-time constants below the lane count. `v.shuffle(w, i0, …)` picks from the
+/// lanes of `v` followed by those of `w`, a vector of the same type: index `N + k` is
+/// `w[k]`.
 vector_shuffle :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, args: []const ast.Arg, span: source.Span) -> ^Expr needs Load {
     tys := &cx.s.tys
     parts := tys.vector_parts(vt) else return error_expr(cx.s, span)
-    len := parts.len
     usize_t := tys.usize_ty()
+    second: ?^Expr = null
+    first: ?^Expr = null
+    if args.len > 0 {
+        if .Positional(e) := args[0].kind {
+            // A vector first is the second operand; anything else is the first index.
+            v := cx.expr(&e, null)
+            if tys.is_vector(cx.infer.resolve(cx.s, v.ty)) {
+                second = v
+            } else {
+                first = v
+            }
+        }
+    }
+    len := parts.len
+    if w := second {
+        wt := cx.infer.resolve(cx.s, w.ty)
+        if wt is not vt {
+            cx.error(w.span, str.format("`v.shuffle(w, …)` takes a `w` of the same type as `v`, `{}`; not `{}`", cx.show(vt), cx.show(wt))!)
+            return error_expr(cx.s, span)
+        }
+        len = 2 * parts.len
+    }
     idx := list(Expr)
-    for a in args {
+    for k, a in enumerate(args) {
+        if k is 0 and second is not null { continue }
         .Positional(e) := a.kind else {
             cx.error(a.span, "`.shuffle` takes lane indices, written positionally")
             return error_expr(cx.s, span)
         }
-        v := cx.expr(&e, usize_t)
-        k: ?u64 = null
-        int_ok := false
-        if v.kind is .Int(_) { int_ok = not (cx.infer.unify(tys, v.ty, usize_t) is !_) }
-        if int_ok {
-            .Int(i) := v.kind else return error_expr(cx.s, span)
-            k = i.to_u64()
-        } else if tys.is_error(v.ty) {
-            return error_expr(cx.s, span)
-        } else if cx.infer.resolve(cx.s, v.ty) is not usize_t {
-            t := cx.infer.resolve(cx.s, v.ty)
-            cx.error(v.span, str.format("a lane index is a `usize`, not `{}`", cx.show(t))!)
-            return error_expr(cx.s, span)
-        } else if .Const(_, at) := v.kind {
-            if cell := const_value(cx.s, at, v.ty) {
-                if .Int(n) := cell.v { k = n.checked(u64) }
-            }
-        }
-        if x := k {
-            if x >= len {
-                cx.error(v.span, str.format("lane {} does not exist: `{}` has lanes 0 to {}", x, cx.show(vt), len - 1)!)
-                return error_expr(cx.s, span)
-            }
-            idx.push(tir.mk(usize_t, .Int(bigint.from_u64(x)), v.span)^)!
-        } else {
-            if .Int(i) := v.kind {
-                cx.error(v.span, str.format("lane {} does not exist: `{}` has lanes 0 to {}", i.to_decimal(), cx.show(vt), len - 1)!)
-                return error_expr(cx.s, span)
-            }
-            cx.error(v.span, "a lane index of `.shuffle` must be a compile-time constant")
-            return error_expr(cx.s, span)
-        }
+        v := if k is 0 { first? } else { cx.expr(&e, usize_t) }
+        x := cx.shuffle_index(v, vt, len, second is not null) else return error_expr(cx.s, span)
+        idx.push(tir.mk(usize_t, .Int(bigint.from_u64(x)), v.span)^)!
     }
     m := u64(idx.items.len)
     if msg := cx.s.vector_shape_error(m, parts.elem) {
@@ -291,8 +323,48 @@ vector_shuffle :: fn(cx: ^FnCx, recv: ^Expr, vt: Ty, args: []const ast.Arg, span
     }
     all := list(Expr)
     all.push(recv^)!
+    if w := second { all.push(w^)! }
     for i in idx.items { all.push(i)! }
-    return tir.mk(tys.simd(m, parts.elem), .Builtin(.Shuffle, all.items), span)
+    nv: u8 = if second is null { 1 } else { 2 }
+    return tir.mk(tys.simd(m, parts.elem), .Builtin(.Shuffle(nv), all.items), span)
+}
+
+/// The constant lane index `v` of a shuffle of `vt`, below `len` (the lanes of both
+/// operands when `two`), or `null` after reporting why it is not one.
+shuffle_index :: fn(cx: ^FnCx, v: ^Expr, vt: Ty, len: u64, two: bool) -> ?u64 needs Load {
+    tys := &cx.s.tys
+    usize_t := tys.usize_ty()
+    k: ?u64 = null
+    int_ok := false
+    if v.kind is .Int(_) { int_ok = not (cx.infer.unify(tys, v.ty, usize_t) is !_) }
+    if int_ok {
+        .Int(i) := v.kind else return null
+        k = i.to_u64()
+    } else if tys.is_error(v.ty) {
+        return null
+    } else if cx.infer.resolve(cx.s, v.ty) is not usize_t {
+        t := cx.infer.resolve(cx.s, v.ty)
+        cx.error(v.span, str.format("a lane index is a `usize`, not `{}`", cx.show(t))!)
+        return null
+    } else if .Const(_, at) := v.kind {
+        if cell := const_value(cx.s, at, v.ty) {
+            if .Int(n) := cell.v { k = n.checked(u64) }
+        }
+    }
+    which: string = if two { str.format("`v` and `w` of `{}` together have lanes 0 to {}", cx.show(vt), len - 1)! } else { str.format("`{}` has lanes 0 to {}", cx.show(vt), len - 1)! }
+    if x := k {
+        if x >= len {
+            cx.error(v.span, str.format("lane {} does not exist: {}", x, which)!)
+            return null
+        }
+        return x
+    }
+    if .Int(i) := v.kind {
+        cx.error(v.span, str.format("lane {} does not exist: {}", i.to_decimal(), which)!)
+        return null
+    }
+    cx.error(v.span, "a lane index of `.shuffle` must be a compile-time constant")
+    return null
 }
 
 /// `V.load(xs)`: a vector of the first lanes of the slice `xs` (checked: long enough).

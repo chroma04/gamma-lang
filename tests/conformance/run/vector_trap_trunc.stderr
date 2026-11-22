@@ -1,0 +1,2 @@
+trap: float to integer conversion out of range
+  at tests/conformance/run/vector_trap_trunc.gm:8:19 in main

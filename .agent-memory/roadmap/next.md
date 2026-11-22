@@ -1,7 +1,7 @@
 # Open work, in priority order (delete items when done; finished work goes to git log)
 Outside the repo and the user's to do: package registry, hosted website/playground,
 Homebrew, macOS signing, VS Code Marketplace/Open VSX and Zed extension publishing,
-Linguist/nvim-treesitter submissions, enabling GitHub private vulnerability reporting.
+Linguist/nvim-treesitter submissions. (Private vulnerability reporting: enabled.)
 
 ## Always
 - Keep `CHANGELOG.md` `## Unreleased` current (0.3.0 is the last release section; start
@@ -39,9 +39,6 @@ rest with numbers. What is left needs a structural change; do it only if asked:
 - Editors: Zed extension untried in real Zed; Emacs mode tested in batch only.
 
 ## 4. Language and library (only with evidence; check spec §22 for std additions)
-- Vector follow-ups if asked: lane sqrt, two-input shuffles, lane trunc/round to ints.
-- Spec: §18.4.2 "compatible type" is undefined (Safe = reinterpret bytes; interp = bytes;
-  decisions/074 TBAA note). Define it, likely as layout/bits-based, with the tests.
 - Platforms: FreeBSD, a freestanding/embedded profile. Docs: Rosetta-style examples.
 
 ## Small cleanups (only when touching the code)

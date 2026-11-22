@@ -100,13 +100,33 @@ vector_builtin :: fn(m: ^Machine, span: source.Span, op: tir.Builtin, res_ty, t0
             how: tir.Builtin = if m.kind(to) is .Float(_) { .Round } else { .Convert }
             for i in 0..us(n) { try m.convert(span, how, from, to, v[0][i * fsz..(i + 1) * fsz], dst[i * tsz..(i + 1) * tsz]) }
         }
-        .Shuffle => {
+        .LaneMap(lop) => {
+            .Array(n, from, _) := m.kind(t0) else return !m.trap(span, "internal error: a lane operation on a value that is not a vector")
+            .Array(_, to, _) := m.kind(res_ty) else return !m.trap(span, "internal error: a lane operation giving a value that is not a vector")
+            fsz := us(m.size(from))
+            tsz := us(m.size(to))
+            scalar := tir.lane_scalar(lop)
+            for i in 0..us(n) {
+                x := v[0][i * fsz..(i + 1) * fsz]
+                d := dst[i * tsz..(i + 1) * tsz]
+                if lop is .Sqrt {
+                    args := [1][]u8(x)
+                    try m.apply_builtin(span, scalar, to, from, from, args[..], d)
+                } else {
+                    try m.convert(span, scalar, from, to, x, d)
+                }
+            }
+        }
+        .Shuffle(nv) => {
             .Array(n, lane, _) := m.kind(t0) else return !m.trap(span, "internal error: a shuffle of a value that is not a vector")
             sz := us(m.size(lane))
-            for j in 1..v.len {
+            ops := us(nv)
+            for j in ops..v.len {
                 k := us(m.get_u64(v[j]))
-                if k >= us(n) { return !m.trap(span, "internal error: a shuffle index out of range") }
-                dst[(j - 1) * sz..j * sz].copy_from(v[0][k * sz..(k + 1) * sz])
+                if k >= ops * us(n) { return !m.trap(span, "internal error: a shuffle index out of range") }
+                src := v[k / us(n)]
+                r := k % us(n)
+                dst[(j - ops) * sz..(j - ops + 1) * sz].copy_from(src[r * sz..(r + 1) * sz])
             }
         }
         _ => return !m.unsupported(span, "this vector builtin")

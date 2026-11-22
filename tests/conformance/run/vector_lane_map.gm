@@ -1,0 +1,35 @@
+// Lane-wise `sqrt`, conversions of lanes to integers (§5.6.2, with the scalar rules of
+// §6.6), and shuffles of two vectors.
+F4 :: #simd [4]f32
+D2 :: #simd [2]f64
+I4 :: #simd [4]i32
+U4 :: #simd [4]u8
+B8 :: #simd [8]u8
+
+K :: 6
+
+main :: fn() needs Out {
+    f := F4(4.0, 2.25, 0.0, 100.0)
+    print("{}\n", f.sqrt())
+    print("{}\n", D2(2.0, 9.0).sqrt())
+    g := F4(2.5, -2.5, 3.7, -3.7)
+    print("{}\n", g.trunc(i32))
+    print("{}\n", g.round(i32))
+    print("{}\n", g.floor(i32))
+    print("{}\n", g.ceil(i64))
+    print("{}\n", F4(300.0, -5.0, 1.0e10, 0.0 / 0.0).sat(u8))
+    // Integer lanes: `trunc` keeps the low bits, `sat` clamps.
+    i := I4(-1, 256, 255, -129)
+    print("{}\n", i.trunc(u8))
+    print("{}\n", i.sat(i8))
+
+    a := I4(0, 1, 2, 3)
+    b := I4(10, 11, 12, 13)
+    print("{}\n", a.shuffle(b, 0, 4, 1, 5))
+    print("{}\n", a.shuffle(b, 7, 6, 3, 2))
+    print("{}\n", a.shuffle(b, 0, 1, 2, 3, 4, 5, K, 7))
+    print("{}\n", a.shuffle(3, 3))
+    x := B8(1, 2, 3, 4, 5, 6, 7, 8)
+    print("{}\n", x.shuffle(x, 8, 0))
+    print("{}\n", U4(fill: 9).shuffle(U4(fill: 1), 0, 4))
+}

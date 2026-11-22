@@ -6,6 +6,18 @@ Versions and what each kind of change means are described in
 
 ## Unreleased
 
+### Language
+
+- **Memory has no declared type** (spec §18.4): an aligned access through a `^T` that
+  covers `@size_of(T)` bytes of one live object reads or writes those bytes as a `T`,
+  whatever they were written as, so pointers to different types may alias. This replaces
+  the undefined "compatible type" of §18.4 case 2, which is now only misaligned accesses
+  and accesses that run past an object. Implementations already behaved this way.
+- **More lane-wise vector methods** (§5.6.2): `v.sqrt()`, and `v.trunc(I)`, `.round(I)`,
+  `.floor(I)`, `.ceil(I)` and `.sat(I)`, which convert each lane to the integer lane type
+  `I` with the checks of the scalar conversions. `v.shuffle(w, i0, …)` picks lanes from two
+  vectors: index `N + k` is `w[k]`.
+
 ### Tooling
 
 - **The interpreter runs every function from LIR**: each body is lowered to LIR and
