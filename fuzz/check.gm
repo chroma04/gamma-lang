@@ -42,6 +42,6 @@ body :: fn(input: string) needs Alloc + Env + Fs + Proc + Rand + Clock {
     }
 }
 
-entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec(data, size, body)
+entry :: fn(data: [^]const u8, size: usize) -> c.c_int needs Sys => harness.exec_compiler(data, size, body)
 
 main :: fn() needs Alloc + Env + Sys { harness.run(entry) }
